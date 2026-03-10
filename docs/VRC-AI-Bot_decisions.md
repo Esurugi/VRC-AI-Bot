@@ -27,3 +27,13 @@
 - 代替案：通常会話や admin_control の通常メッセージから owner/admin の明示依頼だけで自己改造を開始する案。Codex を常時 workspace-write で動かし、アプリ側ロジックだけで自己改造要求を拒否する案。
 - 捨てた理由：前者は Discord の command 権限で入口を閉じられず、通常会話経路との境界が曖昧に残る。後者は Codex 側の書込み権限が常時開いてしまい、通常 turn の破壊半径が広すぎる。
 - 影響範囲：管理者 override の入口、Codex sandbox policy、自己改造の受理条件、実装タスク T05/T13、初回コミット時の repo ドキュメント導線に影響する。
+
+---
+- 日時：2026-03-11T05:40:00+09:00
+- 事項：管理者 override の終了条件は時間ベースの TTL ではなく、同じ place からの明示終了 command を正本とし、bot 再起動時は fail-closed で read-only へ戻す方針を採用した。
+- 背景：ユーザーから、`AUTH.03.02` を時間で扱うのは command 管理を思いつく前の制約であり、今はそれを行わず、その代わりに明示的に終了できる方法を持つべきだと修正要求があった。直前の仕様では管理者限定 command の導入後も「30 分または 5 bot turn」で override が失効する設計が残っていた。
+- 関連：implementation/docs/discord-llm-bot-requirements.md, implementation/docs/discord-llm-bot-spec-delta-v0.4.md, implementation/docs/discord-llm-bot-implementation-tasks.md, implementation/docs/codex-multi-agent-plan.svg, docs/VRC-AI-Bot_decisions.md
+- 理由：「AUTH0302を時間で扱うのはコマンド管理を思いつく前の制約だったのでこれを行なわない。その代わりに、明示的に終了出来る方法を持つべき」
+- 代替案：30 分または 5 turn の TTL を維持する案。TTL と終了 command を両方持つ案。
+- 捨てた理由：前者は command ベースの明示運用と整合しない。後者は「どちらが正本の終了条件か」を増やして運用判断を曖昧にする。
+- 影響範囲：AUTH.03.02 の終了条件、`src/override` の責務、T13 の完了条件、運用者が認識する sandbox 状態の扱いに影響する。

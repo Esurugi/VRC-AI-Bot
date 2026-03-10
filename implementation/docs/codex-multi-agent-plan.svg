@@ -118,7 +118,7 @@
   <rect class="parallelB" x="316" y="812" width="200" height="94" />
   <text class="label" x="336" y="842">Phase 7B</text>
   <text class="body" x="336" y="868">T13 Override</text>
-  <text class="body" x="336" y="890">TTL + audit + cleanup</text>
+  <text class="body" x="336" y="890">End command + audit + cleanup</text>
   <text class="mono" x="336" y="910">src/override/*</text>
 
   <rect class="parallelA" x="560" y="702" width="200" height="94" />

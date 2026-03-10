@@ -124,17 +124,18 @@
 
 | ID | 要求文 |
 |---|---|
-| AUTH.03-02 | bot は、管理者限定 command による一時緩和を place と時間で限定して扱い、終了後に通常制約へ戻す。 |
-| 理由 | Discord 側では Administrator だけが使える command を入口にし、Codex 側では通常 read-only / 緩和時のみ workspace-write を分離して自己改造権限を閉じ込めるため。 |
+| AUTH.03-02 | bot は、管理者限定 command による一時緩和を place 限定で扱い、終了 command により通常制約へ戻せるようにする。 |
+| 理由 | command 管理を導入した以上、時間ベースの失効よりも、管理者が開始と終了を明示できる方が運用意図と実際の sandbox 状態を一致させやすいため。 |
 | 範囲 | `implementation/src/discord`, `implementation/src/override`, `implementation/src/codex`, `implementation/src/storage/database.ts`, `implementation/docs/discord-llm-bot-implementation-tasks.md` |
 | AUTH.03-02-01 | 管理者緩和の入口は guild 内の管理者限定 application command とし、command 定義の default permissions では非管理者に開かない。 |
 | AUTH.03-02-02 | bot は command 実行時にも actor role を再評価し、`owner` または `admin` 以外の実行を拒否する。 |
 | AUTH.03-02-03 | command は configured `admin_control` channel またはその thread でだけ有効とし、対応 scope は常に `conversation_only` とする。 |
-| AUTH.03-02-04 | command で開始した override session は `guild_id + channel_id/thread_id + actor_id` 単位で保存し、有効期限は 30 分または 5 bot turn の早い方とする。 |
+| AUTH.03-02-04 | command で開始した override session は `guild_id + channel_id/thread_id + actor_id` 単位で保存し、同じ place からの明示終了 command が来るまで active とする。 |
 | AUTH.03-02-05 | 通常の `chat_reply`, `knowledge_ingest`, knowledge thread follow-up, `admin_diagnostics` は Codex `read-only` sandbox で動かす。 |
 | AUTH.03-02-06 | override session 中の自己改造 turn だけは Codex `workspace-write` sandbox で開始または resume し、global `config.toml` を書き換えて常設化しない。 |
-| AUTH.03-02-07 | override session の失効時または終了 command 実行時は read-only へ戻し、`who`, `when`, `place`, `sandbox`, `started_at`, `ended_at` を audit log に残す。 |
-| AUTH.03-02-08 | `allow_moderation` は actor role が `owner` または `admin` の場合にのみ true にできる。 |
+| AUTH.03-02-07 | bot は override の明示終了 command を提供し、終了 command 実行時は read-only へ戻し、`who`, `when`, `place`, `sandbox`, `started_at`, `ended_at`, `ended_by` を audit log に残す。 |
+| AUTH.03-02-08 | bot 停止、再起動、container 再作成時に active override を持ち越さず、再開後は read-only から始める。 |
+| AUTH.03-02-09 | `allow_moderation` は actor role が `owner` または `admin` の場合にのみ true にできる。 |
 | AUTH.04-01 | bot は、リポジトリ改変を伴う自己改造を通常会話経路から開始させず、管理者限定 command で開始した active override session でだけ扱う。 |
 | 理由 | Discord 側の command 権限と Codex 側の sandbox mode を二段で分離し、通常利用者の会話や URL ingest を repo 変更経路へ接続しないため。 |
 | 範囲 | `implementation/src/discord`, `implementation/src/override`, `implementation/src/codex`, `implementation/src/app/bot-app.ts`, `implementation/docs/discord-llm-bot-implementation-tasks.md` |

@@ -68,8 +68,9 @@
 - soft-block 中は bot 要求を実行しない。最初の blocked message だけ簡潔に通知し、同一チャンネルでは 12 時間以内に通知を繰り返さない。
 - override の開始/終了は管理者限定の guild application command でのみ受理する。
 - override command は管理者制御チャンネルまたはその thread で、owner/admin から来たときだけ有効とする。
-- override の有効期限は 30 分または 5 bot turn の早い方。
+- override は同じ place からの明示終了 command が来るまで継続する。
 - 通常の Codex sandbox は `read-only` とし、active override session の自己改造 turn だけ `workspace-write` を使う。
+- bot 停止、再起動、container 再作成時は active override を持ち越さない。
 - override 中でも公開漏えいと知見共有範囲の拡大は禁止。
 
 ### system が固定するもの
@@ -141,7 +142,7 @@
 - `src/playwright`: URL 正規化、公開 URL 判定、allowlist 実行、artifact 収集
 - `src/knowledge`: ingest、retrieval、source hydration、dedupe、source_link
 - `src/retry`: retry scheduler、再試行状態、失敗通知
-- `src/override`: 管理者 override、TTL、監査ログ、cleanup
+- `src/override`: 管理者 override、終了 command、監査ログ、cleanup
 - `test`: unit / integration / regression
 
 ## 設計順の原則
@@ -170,7 +171,7 @@
 | 11 | T10 | Chat | T05, T07 | chat channel 応答と URL 混在時の ingest 優先分岐を実装する | CHAT.01 |
 | 12 | T11 | 出力安全境界 | T04, T08, T09, T10 | scope guard、再生成、公開再確認ルールを実装する | SEC.01-03, SEC.01-05 |
 | 13 | T12 | 制裁 | T01, T03, T04 | violation counter、timeout、kick、soft-block を実装する | AUTH.02 |
-| 14 | T13 | Override | T01, T03, T04, T05, T06, T12 | 管理者限定 command、override、TTL、監査ログ、cleanup を実装する | AUTH.03 |
+| 14 | T13 | Override | T01, T03, T04, T05, T06, T12 | 管理者限定 command、override、終了 command、監査ログ、cleanup を実装する | AUTH.03 |
 | 15 | T14 | 失敗処理 | T03, T05, T07, T09, T12, T13 | 失敗カテゴリ、通知先、retry scheduler を実装する | ERR.01 |
 | 16 | T15 | 仕上げ | T05, T09, T10, T11, T14 | compaction、統合テスト、運用文書を仕上げる | CHAT.01-04, 全体回帰 |
 
@@ -498,9 +499,9 @@
 - 完了条件:
 - 5 回到達時 timeout 試行、権限不足時 soft-block、90 日再発時 kick 試行、通知抑制が通る。
 - 非対象:
-- override TTL
+- override の明示終了
 
-### T13: 管理者限定 command、override、TTL、監査ログ、cleanup
+### T13: 管理者限定 command、override、終了 command、監査ログ、cleanup
 
 - 対象要求 ID: `AUTH.03-01`, `AUTH.03-02`, `AUTH.03-03`, `AUTH.03-04`, `AUTH.03-05`
 - 目的: 管理者限定 application command を入口に、place 限定の一時緩和と自己改造セッションを安全に扱う。
@@ -508,7 +509,7 @@
 - 入口は guild の管理者限定 application command
 - 受理場所は管理者制御チャンネルまたはその thread のみ
 - 許可 flag は `allow_playwright_headed`, `allow_playwright_persistent`, `allow_prompt_injection_test`, `suspend_violation_counter_for_current_thread`, `allow_external_fetch_in_private_context_without_private_terms`
-- 有効期限は 30 分または 5 turn
+- override は開始 place からの明示終了 command が来るまで active
 - 通常 sandbox は `read-only`、override self-mod turn だけ `workspace-write`
 - override 中でも公開漏えい禁止
 - 出力契約:
@@ -516,7 +517,7 @@
 - interaction permission check
 - override session 管理
 - sandbox mode selector
-- TTL evaluator
+- explicit end command handler
 - audit log
 - cleanup hook
 - 実装内容:
@@ -524,13 +525,14 @@
 - owner/admin の command だけを制御命令として受理する。
 - override を `thread` または `channel` 単位に限定し、bot 全体へ波及させない。
 - active override session の自己改造 turn だけ Codex `workspace-write` sandbox を使い、通常 turn は常に `read-only` に保つ。
+- 明示終了 command で active override を閉じ、bot 起動時 cleanup でも stale override を fail-closed で無効化する。
 - 終了時に headed/persistent session を閉じ、`who / when / scope / flags / started_at / ended_at` を記録する。
 - 変更境界:
 - moderation のしきい値計算は持たない。
 - 完了条件:
 - 制御チャンネル内の管理者限定 command だけが override を開始・終了できる。
 - 通常 message からは repo 書込み可能な sandbox へ切り替わらない。
-- TTL 満了で通常制約へ戻る。
+- 終了 command 実行後と bot 再起動後に通常制約へ戻る。
 - 非対象:
 - 一般利用者の chat 応答
 
@@ -597,6 +599,7 @@
 - catch-up と live の競合で同じ message を二重処理する。
 - URL ごとに thread を作ってしまい、「元メッセージにつき public thread 1 本」を破る。
 - override を bot 全体に効かせてしまい、place 限定にしない。
+- override を明示終了できず、管理者が sandbox 状態を閉じられないままにする。
 - `workspace-write` を global `config.toml` に常設してしまい、通常 turn まで書込み可能にする。
 - moderation の role hierarchy 失敗を拾わず soft-block fallback を欠く。
 - persistent/headed セッションの cleanup と audit log を忘れる。

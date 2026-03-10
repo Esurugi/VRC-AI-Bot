@@ -94,10 +94,10 @@
 | 理由 [引用] | 「管理者は一時的に制約を解除して試すことができてほしい」 |
 | AUTH.03.01 | 管理者限定の Discord bot command による制約緩和要求を識別する。 |
 | AUTH.03.02 | 制約緩和 command は Discord の Administrator 権限保持者だけが実行できるようにする。 |
-| AUTH.03.03 | 制約緩和の適用範囲と有効期間を、起動元の admin_control place 単位に限定して扱う。 |
+| AUTH.03.03 | 制約緩和の適用範囲を、起動元の admin_control place 単位に限定して扱う。 |
 | AUTH.03.04 | 制約緩和が有効でない通常運用の Codex は read-only sandbox で動作する。 |
 | AUTH.03.05 | 制約緩和中の自己改造セッションに限り、Codex を workspace-write sandbox で動作させる。 |
-| AUTH.03.06 | 制約緩和の終了後に通常の read-only 制約状態へ戻す。 |
+| AUTH.03.06 | 管理者が終了 command を明示実行できるようにし、終了後に通常の read-only 制約状態へ戻す。 |
 
 ### 【コンテナ運用】
 
