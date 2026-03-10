@@ -1,0 +1,33 @@
+{
+  "name": "vrc-ai-bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.6.5",
+  "engines": {
+    "node": ">=24 <25",
+    "pnpm": ">=10 <11"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "pnpm typecheck && pnpm test",
+    "dev": "powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./scripts/restart-dev-bot.ps1",
+    "dev:raw": "tsx implementation/src/main.ts",
+    "discord:invite": "tsx implementation/src/tools/print-discord-invite.ts",
+    "start": "node --enable-source-maps dist/src/main.js",
+    "test": "node --import tsx --test implementation/test/**/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.2.0",
+    "discord.js": "14.25.1",
+    "pino": "^9.7.0",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^24.0.0",
+    "tsx": "^4.19.3",
+    "typescript": "^5.9.2"
+  }
+}

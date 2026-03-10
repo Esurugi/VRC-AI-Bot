@@ -1,0 +1,22 @@
+{
+  "locations": [
+    {
+      "guildId": "756088878749712434",
+      "channelId": "756089034153132063",
+      "mode": "url_watch",
+      "defaultScope": "server_public"
+    },
+    {
+      "guildId": "756088878749712434",
+      "channelId": "756088878749712437",
+      "mode": "chat",
+      "defaultScope": "channel_family"
+    },
+    {
+      "guildId": "756088878749712434",
+      "channelId": "1480608987618607165",
+      "mode": "admin_control",
+      "defaultScope": "conversation_only"
+    }
+  ]
+}

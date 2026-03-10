@@ -1,0 +1,8 @@
+CREATE TABLE IF NOT EXISTS app_runtime_lock (
+  lock_name TEXT PRIMARY KEY,
+  instance_id TEXT NOT NULL,
+  owner_pid INTEGER NOT NULL,
+  lease_expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);

@@ -1,0 +1,12 @@
+dist
+node_modules
+.env
+bot.sqlite
+bot.sqlite-shm
+bot.sqlite-wal
+artifacts
+coverage
+.pnpm-store
+.tmp/
+document.body.innerText
+.claude/
