@@ -99,11 +99,7 @@ export function shouldProcessMessage(
   envelope: MessageEnvelope,
   watchLocation: WatchLocationConfig
 ): boolean {
-  if (watchLocation.mode !== "url_watch") {
-    return true;
-  }
-
-  return envelope.urls.length > 0 || envelope.placeType.endsWith("thread");
+  return true;
 }
 
 function resolveThreadPlaceType(channel: ThreadChannel): PlaceType {

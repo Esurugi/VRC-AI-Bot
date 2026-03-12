@@ -43,10 +43,12 @@ foreach ($volumeName in @($CodexVolume, $NodeModulesVolume, $PnpmStoreVolume)) {
   & docker volume create $volumeName | Out-Null
 }
 
-$existingContainerId = (& docker ps -aq --filter "name=^/${ContainerName}$").Trim()
+$existingContainerIdOutput = & docker ps -aq --filter "name=^/${ContainerName}$"
+$existingContainerId = if ($null -eq $existingContainerIdOutput) { "" } else { "$existingContainerIdOutput".Trim() }
 
 if ($existingContainerId) {
-  $runningContainerId = (& docker ps -q --filter "name=^/${ContainerName}$").Trim()
+  $runningContainerIdOutput = & docker ps -q --filter "name=^/${ContainerName}$"
+  $runningContainerId = if ($null -eq $runningContainerIdOutput) { "" } else { "$runningContainerIdOutput".Trim() }
 
   if ($runningContainerId) {
     Write-Output "Container '$ContainerName' is already running."

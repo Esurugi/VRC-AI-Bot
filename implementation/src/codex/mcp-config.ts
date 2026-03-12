@@ -8,7 +8,7 @@ type McpServerOverride = {
 
 export type CodexThreadConfigOverride = {
   features: {
-    skills: false;
+    skills: true;
   };
   mcp_servers?: Record<string, McpServerOverride>;
 };
@@ -51,7 +51,7 @@ export function buildMcpDisabledConfigOverride(
 ): CodexThreadConfigOverride {
   const configOverride: CodexThreadConfigOverride = {
     features: {
-      skills: false
+      skills: true
     }
   };
 

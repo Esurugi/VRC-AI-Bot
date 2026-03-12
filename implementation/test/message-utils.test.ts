@@ -34,7 +34,7 @@ test("resolveWatchLocation inherits parent watch location for thread messages", 
   });
 });
 
-test("shouldProcessMessage skips non-URL posts in url_watch base channel", () => {
+test("shouldProcessMessage no longer pre-drops non-empty url_watch root messages", () => {
   assert.equal(
     shouldProcessMessage(
       {
@@ -55,22 +55,22 @@ test("shouldProcessMessage skips non-URL posts in url_watch base channel", () =>
         defaultScope: "server_public"
       }
     ),
-    false
+    true
   );
 });
 
-test("shouldProcessMessage allows non-URL follow-ups inside knowledge threads", () => {
+test("shouldProcessMessage keeps blocked-only URL posts for LLM interpretation", () => {
   assert.equal(
     shouldProcessMessage(
       {
         guildId: "guild-1",
-        channelId: "thread-1",
-        messageId: "message-2",
+        channelId: "channel-1",
+        messageId: "message-4",
         authorId: "user-1",
-        placeType: "public_thread",
-        rawPlaceType: "PublicThread",
-        content: "もっと詳しく",
-        urls: [],
+        placeType: "guild_text",
+        rawPlaceType: "GuildText",
+        content: "http://localhost:3000/private",
+        urls: ["http://localhost:3000/private"],
         receivedAt: new Date().toISOString()
       },
       {

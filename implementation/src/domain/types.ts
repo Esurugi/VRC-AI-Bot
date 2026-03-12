@@ -25,6 +25,12 @@ export const PLACE_TYPE_VALUES = [
 ] as const;
 export type PlaceType = (typeof PLACE_TYPE_VALUES)[number];
 
+export const CODEX_SANDBOX_MODE_VALUES = [
+  "read-only",
+  "workspace-write"
+] as const;
+export type CodexSandboxMode = (typeof CODEX_SANDBOX_MODE_VALUES)[number];
+
 export type WatchLocationConfig = {
   guildId: string;
   channelId: string;

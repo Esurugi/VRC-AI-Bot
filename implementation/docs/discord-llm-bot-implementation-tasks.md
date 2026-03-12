@@ -67,10 +67,11 @@
 - kick に失敗したら 30 日 soft-block に切り替える。
 - soft-block 中は bot 要求を実行しない。最初の blocked message だけ簡潔に通知し、同一チャンネルでは 12 時間以内に通知を繰り返さない。
 - override の開始/終了は管理者限定の guild application command でのみ受理する。
-- override command は管理者制御チャンネルまたはその thread で、owner/admin から来たときだけ有効とする。
-- override は同じ place からの明示終了 command が来るまで継続する。
-- 通常の Codex sandbox は `read-only` とし、active override session の自己改造 turn だけ `workspace-write` を使う。
-- bot 停止、再起動、container 再作成時は active override を持ち越さない。
+- override 開始 command は管理者制御 root channel で、owner/admin から来たときだけ有効とする。
+- override 開始時は dedicated override thread を開き、終了 command はその thread 内でだけ受理する。
+- override は dedicated override thread からの明示終了 command が来るまで継続する。
+- 通常の Codex sandbox は `read-only` とし、active override thread では開始者本人の turn 全体を `workspace-write` で扱う。
+- bot 停止、再起動、container 再作成後も active override と対応する Codex thread を dedicated override thread 単位で再利用できるようにする。ただし session identity の version/generation が変わった旧 thread は resume しない。
 - override 中でも公開漏えいと知見共有範囲の拡大は禁止。
 
 ### system が固定するもの
@@ -85,6 +86,7 @@
 - 既存知見だけで足りるか、外部取得が必要かの判断
 - 応答文の本文
 - 無害な一回限りの軽い表現調整
+- repo-local skill/script を使った DB read と追加 Discord facts 取得
 
 ### LLM 出力契約
 
@@ -167,7 +169,7 @@
 | 7 | T06 | Playwright 基盤 | T00 | 公開 URL 判定、allowlist shell、artifact 収集を実装する | ING.01-01, ING.01-04 |
 | 8 | T07 | URL知見化 | T01, T03, T05, T06 | public thread 作成、要約、タグ、保存、dedupe を実装する | ING.01, THR.01-01, THR.01-02, MEM.01-03 |
 | 9 | T08 | Retrieval | T01, T04, T07 | 2 段階 retrieval と source hydration を実装する | MEM.01-02, MEM.01-05 |
-| 10 | T09 | Thread Q&A | T05, T07, T08 | thread 内質問応答と必要時のみ外部補強を実装する | THR.01-03, THR.01-06 |
+| 10 | T09 | Knowledge-Assisted Conversation | T05, T07, T08 | 全 place での知見参照会話と明示保存依頼を実装する | THR.01-03, THR.01-05, ING.01-02 |
 | 11 | T10 | Chat | T05, T07 | chat channel 応答と URL 混在時の ingest 優先分岐を実装する | CHAT.01 |
 | 12 | T11 | 出力安全境界 | T04, T08, T09, T10 | scope guard、再生成、公開再確認ルールを実装する | SEC.01-03, SEC.01-05 |
 | 13 | T12 | 制裁 | T01, T03, T04 | violation counter、timeout、kick、soft-block を実装する | AUTH.02 |
@@ -297,13 +299,13 @@
 - 非対象:
 - Codex 接続
 
-### T05: Codex App Server adapter と output schema validation
+### T05: Codex App Server adapter、session policy、output schema validation
 
 - 対象要求 ID: `BOT.01-04`, `BOT.01-05`, `THR.01-03`, `CHAT.01-02`
-- 目的: Discord の会話場所と Codex thread を対応付け、start/resume/turn を安全に実行する。
+- 目的: Discord の reply target と分離した `session identity` で Codex thread を管理し、start/resume/turn を安全に実行する。
 - 入力契約:
-- Discord place と Codex thread の対応は 1 対 1
-- 知見 thread ごとに 1 本、chat channel ごとに 1 本、管理者制御チャンネルごとに 1 本
+- `SessionPolicyResolver` が `workload_kind + binding_kind + binding_id + actor_id + sandbox_mode + model_profile + runtime_contract_version + lifecycle_policy` を返す
+- URL ingest root、thread follow-up、通常会話、override thread は place ではなく session policy で分岐する
 - 通常 turn の Codex sandbox は `read-only`
 - active override session の自己改造 turn だけ `workspace-write` を選べる
 - 出力契約:
@@ -314,15 +316,18 @@
 - place ごとの sandbox selector
 - schema validation と reject path
 - 実装内容:
-- `codex_session` repository を使って `discord_place_id -> codex_thread_id` を保存する。
-- 新規 place なら start、既存 place なら resume。
-- start/resume/turn では place と override 状態から sandbox policy を決定し、global config の常設変更に依存しない。
+- `codex_session_binding` repository を使って `session_identity -> codex_thread_id` を保存する。
+- `runtime_contract_version` が一致する binding だけ resume し、不一致なら新規 session を開始する。
+- `skills/changed` 通知を reusable session invalidation signal として扱い、同一 process 中でも stale binding を使い回さない。
+- override thread の close 時は対応する `workspace-write` Codex thread を archive し、必要なら unsubscribe する。
+- knowledge ingest で public thread を作成した場合は、作成後の thread conversation identity を同じ Codex thread へ bind する。
+- start/resume/turn では session identity から sandbox policy を決定し、global config の常設変更に依存しない。
 - `turn` の返り値を T00 の validator で検証し、不正なら安全失敗へ落とす。
 - compaction は後工程で使えるよう API だけ作ってよい。
 - 変更境界:
 - Playwright 実行や Discord 返信までは持たない。Codex 接続責務に限定。
 - 完了条件:
-- 新規 place、既存 place、schema 逸脱の 3 ケースをテストできる。
+- 新規 identity、既存 identity、skills/changed invalidation、schema 逸脱の 4 ケースをテストできる。
 - 非対象:
 - knowledge 保存
 
@@ -402,53 +407,63 @@
 - 非対象:
 - 公開再確認ルール
 
-### T09: Thread Q&A
+### T09: Knowledge-Assisted Conversation
 
-- 対象要求 ID: `THR.01-03`, `THR.01-04`, `THR.01-05`, `THR.01-06`
-- 目的: 知見 thread 内で、人間メッセージだけを対象に質問応答できるようにする。
+- 対象要求 ID: `THR.01-03`, `THR.01-04`, `THR.01-05`, `ING.01-02`
+- 目的: knowledge thread に限らず、通常 chat、knowledge thread、admin_control の全 place で visible knowledge を使って会話できるようにする。あわせて自然文の明示保存依頼を扱う。
 - 入力契約:
-- thread ごとに Codex thread を 1 本持ち、初回要約と以後の質問で同じ thread を resume
+- knowledge thread は thread ごとに Codex thread を 1 本持ち、初回要約と以後の質問で同じ thread を resume
+- 通常 chat と admin_control は place ごとに Codex thread を継続する
 - thread 内の bot/system 発話は質問候補にしない
 - 短い指示語だけなら直近 3〜5 発話を補助文脈へ含める
 - 既存知見で足りるなら外部取得しない
 - 不足時だけ `external_fetch_requests` を返す
+- 明示的な知見保存依頼では、貼り付け URL がなくても公開情報を取得して `knowledge_ingest` を返せる
+- 自然文保存の persistence scope は同一 guild の `server_public` に固定する
 - 出力契約:
-- thread reply 本文
+- same place / same thread reply 本文
 - `selected_source_ids`
 - `sources_used`
 - 必要時のみ `external_fetch_requests`
+- 必要時のみ `knowledge_writes`
 - 実装内容:
-- T08 の retrieval を使って質問候補の visible sources を作る。
+- T08 の retrieval storage を背後に持ちつつ、query wording は Harness が決め、repo-local skill/script で current place から見える visible sources を引く。
+- knowledge thread では thread lineage と `known_source_urls` を優先ヒントとして使うが、guild 内の可視知見も併用できるようにする。
+- 通常 chat や admin_control でも、関連する visible knowledge があれば same place reply に混ぜる。
 - LLM が追加取得を要求した場合のみ T06 を通して公開ページを取得し、同一 turn または再投入で回答を補強する。
+- 明示保存依頼では、URL がなくても外部公開情報を調べ、same place へ応答しつつ `server_public` へ保存する。
+- System は save intent や retrieval query を TypeScript heuristic で先決めしない。DB read は skill/script の read-only route、DB write は `knowledge_writes` handoff 経由に限定する。
 - 返信構成は `結論 -> 根拠 -> source 一覧`。
 - 無用な mention は送らない。
 - 変更境界:
-- chat channel の inline 雑談は持たない。
+- chat root の URL 自動知見化は持たない。保存は明示依頼時だけ。
 - 完了条件:
+- 通常 chat、knowledge thread、admin_control の各 place で visible knowledge を使った回答が通る。
 - 通常質問、指示語だけ、bot 発話、system 発話、追加外部取得あり/なしのケースが通る。
+- URL なしの自然文保存依頼で same place reply と `server_public` 保存が通る。
 - 非対象:
 - soft-block や sanction
 
 ### T10: chat channel 応答
 
 - 対象要求 ID: `CHAT.01-01`, `CHAT.01-02`, `CHAT.01-03`
-- 目的: 雑談チャンネルでだけ inline 会話を継続し、URL 混在時は ingest フローへ切り替える。
+- 目的: 雑談チャンネルでだけ inline 会話を継続し、URL が混在しても自動知見化へは切り替えない。
 - 入力契約:
 - plain message への雑談応答は chat channel のみ
-- chat channel ごとに Codex thread 1 本
-- 公開 URL を含み LLM が `ingest` または `mixed` と判定したら知見 thread 作成を優先
+- `workload=conversation + binding_kind=place` の session identity ごとに Codex thread 1 本
+- 公開 URL を含んでも chat root では知見 thread を自動作成しない
 - 出力契約:
 - inline chat reply
-- 必要時の ingest への委譲
-- chat place ごとの Codex session 継続
+- `workload=conversation + binding_kind=place` の session 継続
 - 実装内容:
-- chat mode の message を T05 へ流し、`chat` なら inline 応答、`ingest/mixed` なら T07 へ回す。
+- chat mode の message を T05 へ流し、URL があっても inline 応答または ignore に留める。
+- visible knowledge の参照自体は T09 に委ね、T10 は chat の UX と reply style に責務を絞る。
 - persona は「親しみやすいが落ち着いた秘書」を守る。
 - 変更境界:
 - compaction は次タスクへ回す。ここでは通常会話継続まで。
 - 完了条件:
 - chat channel 内外の同じ plain message で片方だけ応答する。
-- 雑談 / URL / URL+質問 の 3 ケースで分岐できる。
+- 雑談 / URL / URL+質問 の 3 ケースで、いずれも chat として自然に扱える。
 - 非対象:
 - 長会話 compaction
 
@@ -501,38 +516,41 @@
 - 非対象:
 - override の明示終了
 
-### T13: 管理者限定 command、override、終了 command、監査ログ、cleanup
+### T13: 管理者限定 command、override thread、終了 command、監査ログ
 
 - 対象要求 ID: `AUTH.03-01`, `AUTH.03-02`, `AUTH.03-03`, `AUTH.03-04`, `AUTH.03-05`
-- 目的: 管理者限定 application command を入口に、place 限定の一時緩和と自己改造セッションを安全に扱う。
+- 目的: 管理者限定 application command を入口に、override thread 限定の一時緩和と versioned session identity を安全に扱う。
 - 入力契約:
 - 入口は guild の管理者限定 application command
-- 受理場所は管理者制御チャンネルまたはその thread のみ
+- 開始 command は管理者制御 root channel のみ、終了 command は bot が開いた dedicated override thread のみ
 - 許可 flag は `allow_playwright_headed`, `allow_playwright_persistent`, `allow_prompt_injection_test`, `suspend_violation_counter_for_current_thread`, `allow_external_fetch_in_private_context_without_private_terms`
-- override は開始 place からの明示終了 command が来るまで active
-- 通常 sandbox は `read-only`、override self-mod turn だけ `workspace-write`
+- override は dedicated override thread からの明示終了 command が来るまで active
+- 通常 sandbox は `read-only`、active override thread では開始者本人の turn 全体を `workspace-write`
+- active override thread の開始者本人には Harness capability のうち `allow_external_fetch`, `allow_knowledge_write`, `allow_moderation` を true で渡す
 - override 中でも公開漏えい禁止
 - 出力契約:
 - command registration/update
+- dedicated override thread create/archive
 - interaction permission check
 - override session 管理
 - sandbox mode selector
 - explicit end command handler
 - audit log
-- cleanup hook
 - 実装内容:
 - 管理者限定 application command を登録し、Discord 側の default permissions と runtime の role 再判定を二重で適用する。
 - owner/admin の command だけを制御命令として受理する。
-- override を `thread` または `channel` 単位に限定し、bot 全体へ波及させない。
-- active override session の自己改造 turn だけ Codex `workspace-write` sandbox を使い、通常 turn は常に `read-only` に保つ。
-- 明示終了 command で active override を閉じ、bot 起動時 cleanup でも stale override を fail-closed で無効化する。
+- 開始 command では configured `admin_control` root channel 配下に dedicated override thread を作り、その thread ID を override scope とする。
+- override を dedicated override thread 単位に限定し、bot 全体へ波及させない。
+- active override thread では開始者本人の turn を常に Codex `workspace-write` sandbox に載せ、同時に Harness capability のうち `allow_external_fetch`, `allow_knowledge_write`, `allow_moderation` を true にする。Discord thread 作成は system 側の reply-routing で扱い、通常場所と非該当 actor の turn は `read-only` に保つ。
+- 明示終了 command で active override を閉じ、対応する Codex write thread を archive し、Discord thread も archive する。
+- bot 再起動後も dedicated override thread と Codex write thread の対応を維持し、session identity の version が一致する場合だけ同じ thread では resume を使う。
 - 終了時に headed/persistent session を閉じ、`who / when / scope / flags / started_at / ended_at` を記録する。
 - 変更境界:
 - moderation のしきい値計算は持たない。
 - 完了条件:
-- 制御チャンネル内の管理者限定 command だけが override を開始・終了できる。
+- 制御チャンネル root の管理者限定 command だけが override thread を開始でき、終了 command はその thread 内でだけ実行できる。
 - 通常 message からは repo 書込み可能な sandbox へ切り替わらない。
-- 終了 command 実行後と bot 再起動後に通常制約へ戻る。
+- 終了 command 実行後に thread と write session の両方が閉じ、再起動後も未終了 thread は再利用できる。
 - 非対象:
 - 一般利用者の chat 応答
 
@@ -582,7 +600,7 @@
 - 新機能追加はしない。運用仕上げだけ。
 - 完了条件:
 - 長会話後も文脈継続が崩れない。
-- URL ingest、thread Q&A、chat、scope guard、sanction、override、retry の回帰テストが揃う。
+- URL ingest、knowledge-assisted conversation、chat、scope guard、sanction、override、retry の回帰テストが揃う。
 - 非対象:
 - v2 機能追加
 
@@ -610,4 +628,7 @@
 - 最初の 1 セッションで `T00` と `T01` を終える。
 - 次の 1 セッションで `T02` と `T03` を終える。
 - その後は `T04` から `T06` を adapter/境界ごとに分割する。
-- end-to-end で最初に通すべき縦切りは `T07 -> T08 -> T09`。
+- end-to-end で最初に通すべき縦切りは `T07 -> T08 -> T09`。`T09` では thread 限定ではなく、全 place の知見参照会話を最初に通す。
+
+
+

@@ -37,3 +37,147 @@
 - 代替案：30 分または 5 turn の TTL を維持する案。TTL と終了 command を両方持つ案。
 - 捨てた理由：前者は command ベースの明示運用と整合しない。後者は「どちらが正本の終了条件か」を増やして運用判断を曖昧にする。
 - 影響範囲：AUTH.03.02 の終了条件、`src/override` の責務、T13 の完了条件、運用者が認識する sandbox 状態の扱いに影響する。
+
+---
+- 日時：2026-03-11T07:05:00+09:00
+- 事項：自己改造要求は 1 turn 目を常に read-only thread で分類し、`repo_write_intent` が true かつ active override がある場合だけ、place-local な別の workspace-write thread へ切り替えて再実行する方針を採用した。
+- 背景：現行実装の `CodexAppServerClient.startThread()` は通常会話も含めて常に `workspace-write` で thread を開始しており、AUTH.03/AUTH.04 の「通常は read-only」に反していた。単純に 1 本の thread に対して sandbox を都度切り替える案もあったが、通常会話と自己改造の履歴を同じ thread に混ぜると、override 終了後も write 用の実行文脈が残りやすかった。
+- 関連：implementation/src/codex/app-server-client.ts, implementation/src/harness/contracts.ts, implementation/src/harness/build-harness-request.ts, implementation/src/harness/harness-runner.ts, implementation/src/app/bot-app.ts
+- 代替案：1 本の thread を使い続け、turn ごとに sandbox だけ read-only / workspace-write へ切り替える案。owner/admin の通常メッセージは最初から workspace-write thread に流す案。
+- 捨てた理由：前者は read-only 会話と write 実行の履歴境界が曖昧になる。後者は active override がない turn や単なる相談・レビューまで write 用 thread に寄ってしまい、通常経路の安全境界が弱い。
+- 影響範囲：Codex session key の切り方、override なし自己改造要求の拒否方法、admin_control 内の self-mod 実行経路、T05/T13 のテスト観点に影響する。
+
+---
+- 日時：2026-03-11T18:25:00+09:00
+- 事項：`admin_control` の通常会話は diagnostics JSON に落とさず、`admin_diagnostics` は明示的な運用診断要求だけに限定し、権限確認のような会話は `chat_reply` へ正規化する方針を採用した。
+- 背景：実 Discord 試験で、`/override-start` 後に「今の貴方の権限は？」と質問すると、期待した自然文ではなく `admin_diagnostics` JSON が same place に返った。仕様上 `admin_diagnostics` は admin_control で使えるが、通常会話まで JSON 応答に落ちると運用者の確認操作が不自然になり、会話系確認と明示診断要求の境界が曖昧になる。
+- 関連：implementation/src/codex/app-server-client.ts, implementation/src/harness/harness-runner.ts, implementation/test/harness-runner.test.ts, scripts/docker/start-bot.ps1
+- 代替案：Codex 側 instruction の文言だけを修正して再発防止を期待する案。`admin_control` の全応答を引き続き JSON diagnostics 寄りにする案。
+- 捨てた理由：前者はモデルの選択が再度ぶれる余地を残す。後者は明示診断と通常会話の使い分けが利用者視点で悪く、権限確認やポリシー確認の UX を落とす。
+- 影響範囲：admin_control の会話 UX、`admin_diagnostics` の発火条件、Discord 実機試験時の確認手順、通常再起動導線の `start-bot.ps1` 安定性に影響する。
+
+---
+- 日時：2026-03-11T21:10:00+09:00
+- 事項：管理者 override は admin_control root から開く dedicated thread-local session を正本とし、終了 command で Discord thread と workspace-write Codex thread を同時に閉じる方針を採用した。
+- 背景：ユーザーから、open command 実行時に dedicated thread を開き、その thread に書込み権限を持つ Codex を対応付け、thread 内 close で thread と Codex の両方を終了する形へ要求を見直して実装も修正してほしいと指示があった。直前の正史と実装は place-local override と bot 起動時 fail-closed cleanup を前提にしていた。
+- 関連：AUTH.03-02, AUTH.04-01, implementation/docs/discord-llm-bot-spec-delta-v0.4.md, implementation/src/app/bot-app.ts, implementation/src/harness/harness-runner.ts, implementation/src/codex/app-server-client.ts
+- 理由：「「そうすれば、ボットがシャットダウンされた後や再起動後も、スレッド単位でコーデックスを保持できて見分けられるので、シャットダウン時にわざわざ終了させる必要もなくなります。」」
+- 代替案：place-local override を維持しつつ bot 起動/停止時に fail-closed cleanup する案。write 権限用 Codex を thread ではなく command 実行 place 全体に結び付ける案。
+- 捨てた理由：前者は restart 後に dedicated self-mod context を再利用できず、明示 close より先に bot lifecycle 側の都合で override が失効する。後者は Discord thread と Codex write session の境界が一致せず、どの write context を閉じるべきかが曖昧になる。
+- 影響範囲：AUTH.03/AUTH.04 の適用範囲、T05/T13 の完了条件、Discord command の受理場所、Codex thread archive/unsubscribe、起動時 fail-closed cleanup の扱いに影響する。
+
+---
+- 日時：2026-03-11T21:40:00+09:00
+- 事項：active override thread では、開始者本人の turn 全体を常時 workspace-write context に載せ、repo_write_intent で read-only を挟まない方針へ切り替えた。
+- 背景：ユーザーから、override thread に入っている間は常に write context で会話したい、それが正しい実装だと明示要求があった。直前の実装は override thread でもまず read-only turn を走らせ、repo_write_intent が true のときだけ workspace-write thread へ再実行していた。
+- 関連：AUTH.03.05, AUTH.03-02-05, AUTH.03-02-06, implementation/src/harness/harness-runner.ts, implementation/test/harness-runner.test.ts
+- 理由：「「もうスレッドに入っている間は常にライトコンテキストで会話したいです。そして、そちらの方が正しい実装です。」」
+- 代替案：override thread 内でも従来どおり read-only turn を先に実行し、repo_write_intent が true のときだけ workspace-write に上げる案。override thread の全 actor を常時 workspace-write にする案。
+- 捨てた理由：前者は thread を開いても会話コンテキストが read-only と workspace-write に分断され、運用者が write thread を明示的に開いた意味と一致しない。後者は override を開始していない別 actor まで write context に載せてしまい、最小権限を崩す。
+- 影響範囲：override thread の会話継続性、Harness の routeMessage 分岐、AUTH.03/AUTH.04 の説明文、回帰テストの期待値に影響する。
+
+---
+- 日時：2026-03-11T21:55:00+09:00
+- 事項：active override thread の開始者本人には Harness capability を全て true で渡し、開始メッセージも常時 workspace-write 前提へ更新する方針を採用した。
+- 背景：ユーザーから、active override thread で bot が external fetch / knowledge write / thread create を false と説明しているのは過剰であり、全て true であるべきだと修正要求があった。あわせて、override 開始時の案内文がまだ「通常会話は read-only、明示的な repo 改変要求の turn だけ workspace-write」と古い仕様を案内していると指摘があった。
+- 関連：AUTH.03.05a, AUTH.03-02-06a, implementation/src/harness/harness-runner.ts, implementation/src/app/bot-app.ts, implementation/test/build-harness-request.test.ts
+- 理由：「「全部tureであるべきだし、全体的に実装が制約多そうな実装になっていそう。」」
+- 代替案：workspace-write sandbox だけを広げ、Harness capability は従来どおり turn ごとに絞る案。開始メッセージだけ直して capability は変えない案。
+- 捨てた理由：前者は active override thread を開いた管理者の期待と実際の capability 表示が一致しない。後者は UI 文言だけ直っても、実際に bot が capability false を自己申告する不整合が残る。
+- 影響範囲：override thread 内の capability 表示、Codex の自己認識、AUTH.03 の仕様文、回帰テスト、運用者の期待値に影響する。
+
+---
+- 日時：2026-03-11T00:00:00+09:00
+- 事項：Discord thread 作成を Harness capability から外し、allow_external_fetch と allow_knowledge_write は turn-local capability として維持する方針に修正した。
+- 背景：ユーザー指摘どおり、read-only と capability の説明が混線し、allow_thread_create だけが Discord 副作用なのに capability として生えていた。仕様の system-thin 原則にも反していた。
+- 関連：BOT.01-04-06, ING.01-02-02, AUTH.03-02-06a, implementation/src/harness/contracts.ts, implementation/src/harness/build-harness-request.ts, implementation/src/codex/app-server-client.ts
+- 理由：「LLMの自由度を保ってシステムを薄くするって書いてるよな仕様に」
+- 代替案：allow_thread_create を残したまま説明だけ直す案もあるが、contract 自体が Discord 副作用を capability 化しており過剰。
+- 捨てた理由：thread 作成を capability として維持する案は、仕様の薄い system 境界と Discord side effect の system 所有原則に反するため却下。
+- 影響範囲：今後の権限説明で thread 作成可否を能力列挙に含めず、URL ingest と knowledge ingest は outcome と available_context 中心で表現される。
+- 検証：pnpm typecheck; pnpm test; docker restart vrc-ai-bot
+
+---
+- 日時：2026-03-11T00:00:00+09:00
+- 事項：chat root の URL 投稿は会話材料として扱い、自動知見化は url_watch に限定する方針へ戻した。
+- 背景：ユーザー指摘どおり、雑談チャンネルで URL を貼っただけで要約 thread 化するのはプロダクト意図に反する。場所ごとの役割を system が守るべきだった。
+- 関連：CHAT.01.04, CHAT.01-02-03, BOT.01-05-05, ING.01-02-02, implementation/src/harness/harness-runner.ts, implementation/src/codex/app-server-client.ts
+- 理由：「何のためにその機能を実装しているのか、ユーザーストーリーとしてどう動いてくれるのが理想なのか」
+- 代替案：LLM の判断だけで chat と url_watch を出し分ける案もあるが、場所の意味というプロダクト境界は system が固定した方が再発しにくい。
+- 捨てた理由：chat でも URL があれば自動 knowledge_ingest に進める案は、雑談 UX を壊し、知見共有チャンネルの存在意義も曖昧にするため却下。
+- 影響範囲：chat root では URL を含んでも thread 作成と知見保存を行わず、必要なら会話として読むだけに留める。url_watch と knowledge thread だけが共有知見の入口になる。
+- 検証：pnpm typecheck; pnpm test; docker restart vrc-ai-bot
+
+---
+- 日時：2026-03-11T23:35:00+09:00
+- 事項：LLM との turn 完了待ちに人工 timeout を置かず、Discord 返信は切り捨てではなく分割送信で扱う方針へ切り替えた。
+- 背景：ユーザーから、文字数制限や timeout のような LLM とのコミュニケーションを阻害する制約を足すべきではなく、既存のものも捨てるべきだと修正要求があった。直前の実装には Codex turn 完了待ちの 120 秒 timeout と、Discord 返信本文を 1900 文字単位で打ち切る経路が残っていた。
+- 関連：implementation/src/codex/app-server-client.ts, implementation/src/app/replies.ts, implementation/src/app/bot-app.ts, implementation/src/harness/harness-runner.ts, implementation/docs/discord-llm-bot-requirements.md, implementation/docs/discord-llm-bot-spec-delta-v0.4.md
+- 理由：「あらゆる実装で、文字数を切るとか、タイムアウトを設定するとか、LLMとのコミュニケーションを阻害する制約を足すな。今あるものは全て唾棄し」
+- 代替案：Codex turn に長めの timeout を残す案。Discord 返信は従来どおり 1900 文字で truncate する案。
+- 捨てた理由：前者は長い翻訳や deep follow-up を人工的に失敗へ寄せる。後者は海外記事を日本語で詳しく共有したい要求と両立せず、出力を途中で失う。
+- 影響範囲：Codex App Server client の turn completion 待機、Discord reply の送信方式、knowledge thread follow-up の UX、長文知見共有の可視性に影響する。
+- 検証：pnpm typecheck; pnpm test; docker restart vrc-ai-bot
+
+---
+- 日時：2026-03-11T23:59:00+09:00
+- 事項：T08 retrieval では knowledge schema を v2 に再構築し、可視境界は `scope` だけでなく `visibility_key` でも保持し、hydration 本文は `knowledge_source_text` に分離する方針を採用した。
+- 背景：現行 schema は `knowledge_record.scope` しか持たず、`channel_family` と `conversation_only` の再利用境界を正しく復元できなかった。加えて `knowledge_artifact.snapshot_path` は locator であり、retrieval で読む本文の保存先としては責務が違っていた。
+- 関連：MEM.01.02, MEM.01.03, T08 Retrieval, migrations/005_knowledge_retrieval_v2.sql, implementation/src/storage/database.ts, implementation/src/knowledge/knowledge-persistence-service.ts, implementation/src/knowledge/knowledge-retrieval-service.ts
+- 理由：「DB関連なのでアンチパターンが排除できているかよく自己確認して」
+- 代替案：`scope` だけで検索可否を決める案。`knowledge_artifact` に本文列を足して metadata と hydration を同居させる案。既存 knowledge を推定 backfill する案。
+- 捨てた理由：前者は channel/thread 境界をまたいだ誤再利用を防げない。2 つ目は artifact locator と retrieval 本文が混ざり、将来 Playwright artifact が濃くなったときの責務分離が崩れる。3 つ目は既存 row から正しい visibility を復元できず、静かに漏えいリスクを持ち込む。
+- 影響範囲：knowledge ingest の保存形、FTS 検索、source hydration、既存 knowledge データの扱い、T09 thread Q&A の前提に影響する。
+- 検証：pnpm typecheck; pnpm test
+
+---
+- 日時：2026-03-11T23:59:30+09:00
+- 事項：知見活用は knowledge thread 専用にせず全 place へ広げ、自然文の明示保存依頼は URL 貼付がなくても公開情報を保存できる方針に更新した。
+- 背景：ユーザーから、共有知見は thread 以外の雑談や質問でも引けるべきであり、URL を貼らなくても「調べて保存して」と頼める柔軟性が必要だと指摘があった。一方で、chat の URL 投稿を貼っただけで自動知見化される挙動は維持したくないという意図も明確だった。
+- 関連：AGENTS.md, .agents/skills/discord-harness/SKILL.md, implementation/docs/discord-llm-bot-requirements.md, implementation/docs/discord-llm-bot-spec-delta-v0.4.md, implementation/docs/discord-llm-bot-implementation-tasks.md
+- 理由：「Threadでなくても共有知見は普通の雑談や質問とかでもデータを引っ張ってくれて良い」「URLとして提示されたものでなくてもLLMに頼んだらBotがその場でDBSMを操作して追加出来るくらいの柔軟性がほしい」
+- 代替案：knowledge thread だけに retrieval を閉じる案。chat の URL 投稿も自動保存対象へ広げる案。
+- 捨てた理由：前者は蓄積知見の再利用価値を unnecessarily 狭める。後者は雑談 UX を壊し、明示保存と自動知見化の境界を曖昧にする。
+- 影響範囲：runtime harness の解釈、T09 の責務、same-place knowledge save の扱い、自然文保存の persistence scope が同一 guild の `server_public` であることに影響する。
+
+---
+- 日時：2026-03-12T01:15:00+09:00
+- 事項：DB 検索語や保存意図の意味解釈は System の TypeScript heuristic で持たず、repo-local skills と scripts を正規運用経路として Harness 主導に戻す方針を採用した。
+- 背景：ユーザーから、System と Harness の境界として重要なのは「DB 内の情報から欲しい情報を抜き取る精度が System 側に依存していないこと」であり、クエリ保存や検索語決定まで System が担うと精度の大部分が単純検索機能に依存してしまうと指摘があった。さらに、Harness とは必要な情報を必要な瞬間に最小コストで届ける外部構造であり、LLM が DB や Discord の運用手順を実装読解なしで使えるべきだという原則が再提示された。
+- 関連：AGENTS.md, .agents/skills/discord-harness/SKILL.md, .agents/skills/knowledge-runtime-ops/SKILL.md, implementation/src/harness/contracts.ts, implementation/src/harness/harness-runner.ts, implementation/src/discord/message-utils.ts, implementation/src/codex/mcp-config.ts, implementation/src/knowledge/runtime-ops.ts, implementation/src/discord/runtime-facts.ts
+- 理由：「Harnessとは『モデルを包み、コンテキスト供給・ツール実行・制御・品質・観測を統合する外部構造』。目標は必要な情報を必要な瞬間に最小コストで届けること」
+- 代替案：`knowledge-intent.ts` のような System heuristic を維持しつつ DB query shaping を続ける案。MCP server を増やして DB read や Discord facts 取得を肩代わりさせる案。
+- 捨てた理由：前者は意味解釈の主導権が System に戻り、ユーザーが重視する境界原則に反する。後者はこの repo の runtime 前提を複雑化し、ローカル artifact と skill で完結する最小コスト経路より重い。
+- 影響範囲：runtime contract からの precomputed retrieval 撤去、`knowledge_writes` への保存 handoff 統一、Discord facts artifact の導入、skills 有効化、今後の実装計画時のセルフチェック基準に影響する。
+---
+- 日時：2026-03-12T13:55:00+09:00
+- 事項：Discord 実地検証の観測経路は Docker 直接参照ではなく、repo-local の runtime trace と Discord facts artifact を正本にする方針を採用した。
+- 背景：今回のユーザー要求は、実際の Discord から知見保存と再検索が正しく動いているかを確認しつつ、「LLM が DB を直接触っていない」「skills と scripts を使って URL を復元している」ことまで証明できる観測が必要だった。一方で、この環境では Docker CLI の直接観測が安定せず、実行中 container の app-server 行動履歴をそのまま読む経路に依存すると検証が不安定になる。
+- 関連：implementation/src/codex/app-server-client.ts, implementation/src/knowledge/knowledge-persistence-service.ts, implementation/src/observability/runtime-trace.ts, implementation/src/discord/runtime-facts.ts, .tmp/runtime-trace/, .tmp/discord-runtime/
+- 理由：「Codex App Serverのログ(セッション行動履歴)をあなたが確認できる状態にしておいて」
+- 代替案：Docker logs や container 内 stdout/stderr のみを観測経路にする案。
+- 捨てた理由：実地検証の成否がホスト Docker 事情に引きずられ、repo 内から再現可能な証跡として残りにくい。runtime trace を repo-local に残した方が、Discord facts・knowledge persistence・Codex JSON-RPC の三者を同じ場所で突き合わせられる。
+- 影響範囲：今後の Discord 実地検証では `.tmp/runtime-trace/codex-app-server.ndjson`、`.tmp/runtime-trace/knowledge-persistence.ndjson`、`.tmp/discord-runtime/*.json` を一次観測とする。Docker 直接観測は補助経路に下げる。
+- 検証：pnpm typecheck; pnpm test
+
+---
+- 日時：2026-03-12T16:10:00+09:00
+- 事項：Codex thread の再利用単位を place-based key から versioned session identity へ切り替え、legacy `codex_session` は runtime から切り離す方針を採用した。
+- 背景：Discord 実地検証で、`knowledge-runtime-ops` skill 自体は有効なのに、旧 chat thread を `thread/resume` した結果だけ stale な skill set を引きずり、同じ place の会話で必要な skill が見えない問題が発生した。原因は「返信先の場所」と「どの runtime contract / skill set / sandbox / model で作られた thread か」を place key に押し込んでいたことだった。
+- 関連：BOT.01.04, BOT.01-08, THR.01-03-04, AUTH.03.07, AUTH.03-02-08, implementation/src/codex/session-policy.ts, implementation/src/codex/session-manager.ts, implementation/src/harness/harness-runner.ts, implementation/src/app/bot-app.ts, implementation/src/storage/database.ts, migrations/006_codex_session_binding_v1.sql
+- 理由：「App Server側のセッションどれ使うかは、この先色んな機能を追加していくうえでもっと抽象レイヤーで管理しないとダメそう」
+- 代替案：既存 `place_id -> codex_thread_id` を維持したまま、skill 変更時だけ resume 失敗を契機に新規 thread を切る案。workload ごとに ad-hoc な key 文字列を増やす案。legacy `codex_session` を自動移行して互換 resume する案。
+- 捨てた理由：前者は stale thread を成功裏に resume してしまうケースを防げず、今回の不具合を再発させる。2 つ目は playground や AI news のような将来 workload を増やすたびに key 規約が散らばる。3 つ目は旧 binding に runtime contract/version の情報が無く、安全に resume 可否を判定できない。
+- 影響範囲：session identity は `workload_kind + binding_kind + binding_id + actor_id + sandbox_mode + model_profile + runtime_contract_version + lifecycle_policy` を正本にする。`skills/changed` 通知は reusable session invalidation signal として扱い、同一 process 中でも stale binding を再利用しない。knowledge ingest で public thread を作成した後は、作成された thread conversation identity を同じ Codex thread に bind する。override 終了時の archive 対象も resolver/manager 経由で決める。
+- 検証：pnpm typecheck; pnpm test
+
+---
+- 日時：2026-03-12T16:20:00+09:00
+- 事項：Codex thread の再利用単位を `place` から versioned `session identity` へ切り替え、旧 `codex_session` は legacy 扱いとして runtime から切り離す方針を採用した。
+- 背景：Discord 実地検証で、同じ会話場所を再利用しているつもりでも、skill 追加後に古い Codex thread を `thread/resume` してしまい、新しい `knowledge-runtime-ops` がその thread からは見えない stale context が発生した。reply target の場所と、どの runtime contract / skills / sandbox / model で生まれた session かを place だけで一緒くたに持つ設計が限界だった。
+- 関連：implementation/src/codex/session-policy.ts, implementation/src/codex/session-manager.ts, implementation/src/storage/database.ts, migrations/006_codex_session_binding_v1.sql, implementation/src/app/bot-app.ts, implementation/src/harness/harness-runner.ts, implementation/src/codex/app-server-client.ts
+- 理由：「App Server側のセッションどれ使うかは、この先色んな機能を追加していくうえでもっと抽象レイヤーで管理しないとダメそう」
+- 代替案：`place_id -> codex_thread_id` を維持しつつ、skills 更新時だけ手動で session を掃除する案。runtime contract hash を自動生成して hidden key に混ぜる案。
+- 捨てた理由：前者は stale thread 再利用を運用手順に押し付けるだけで、今後追加する playground / AI news / ArXiv news のような workload 差分を吸収できない。後者は change boundary が不透明になり、いつ resume を切るかが人間に説明しづらい。
+- 影響範囲：session identity は `workload_kind + binding_kind + binding_id + actor_id + sandbox_mode + model_profile + runtime_contract_version + lifecycle_policy` を正本にする。`skills/changed` は reusable session invalidation signal とする。knowledge ingest root から public thread を作った後は、その thread conversation identity を同じ Codex thread に bind する。旧 `codex_session` は `codex_session_legacy` へ退避し、新 runtime は resume に使わない。
+- 検証：pnpm typecheck; pnpm test

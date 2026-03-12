@@ -11,6 +11,9 @@
 | BOT.01.01 | サーバー内の投稿内容を取得する。 |
 | BOT.01.02 | 投稿内容から URL または質問を抽出する。 |
 | BOT.01.03 | 抽出結果に応じて知見整理または応答を実行する。 |
+| BOT.01.04 | bot runtime は、LLM が DB 読み出しや追加 Discord facts 取得の手順を実装読解なしで使える local skill / script contract を提供し、Codex session は返信先ではなく session identity で管理する。 |
+| BOT.01.05 | System は意味解釈や検索語決定を持ちすぎず、LLM が save intent、retrieval strategy、query wording を主導できるようにする。 |
+| BOT.01.06 | System は Codex session を place 単位の文字列キーではなく、workload/binding/authority/version を含む session identity で管理し、runtime contract が変わった旧 session を resume しない。 |
 
 ### 【停止中からの再開】
 
@@ -29,21 +32,26 @@
 | ING.01 | サーバー内の投稿に含まれる公開 Web ページの URL から内容を取得する。 |
 | 理由 [要約] | 「良かったサイトのリンクとかを貼ってくれる」「公開 Web ページ全般」 |
 | ING.01.01 | URL 先のページ内容を取得する。 |
-| ING.01.02 | 取得したページ内容から要約を生成する。 |
+| ING.01.02 | 取得したページ内容から共有本文を生成する。 |
+| ING.01.02a | 非日本語の公開記事は、日本語で読める共有本文を生成する。 |
 | ING.01.03 | 要約に検索用タグを付与する。 |
 | ING.01.04 | URL、要約、タグを後から参照できる形で保持する。 |
+| ING.01.04a | 利用者が自然文で明示的に保存を依頼した場合、貼り付け URL がなくても外部公開情報を取得して保持できるようにする。 |
+| ING.01.04b | 自然文による明示保存は、保存元の会話場所に関係なく同一 guild の `server_public` 知見として保持する。 |
 
-### 【スレッド応答】
+### 【知見活用】
 
 | ID | 要求文 |
 |---|---|
-| THR.01 | URL を含む元投稿ごとに作成したスレッド内で、参加者からの質問に応答する。 |
-| 理由 [引用] | 「元投稿からスレッド立てて」「そのスレッド内で返信とか質問あったら答える感じ」 |
-| THR.01.01 | 元投稿に対応するスレッドを作成する。 |
-| THR.01.02 | スレッド内の質問内容を取得する。 |
-| THR.01.03 | 元の URL 内容と蓄積済み知見を参照して回答を生成する。 |
-| THR.01.04 | 必要に応じて外部情報を参照して回答を補強する。 |
-| THR.01.05 | 生成した回答をスレッド内に返す。 |
+| THR.01 | bot は knowledge thread に限らず、現在の会話場所から見える蓄積知見を参照して参加者の質問に応答する。 |
+| 理由 [要約] | 「Threadでなくても共有知見は普通の雑談や質問とかでもデータを引っ張ってくれて良い」 |
+| THR.01.01 | URL 知見共有では、元投稿に対応するスレッドを作成する。 |
+| THR.01.02 | 会話場所ごとの質問内容を取得する。 |
+| THR.01.03 | 現在の会話場所から見える蓄積済み知見と、必要に応じて元の URL 内容を参照して回答を生成する。 |
+| THR.01.04 | 既存知見で不足する場合に限り、外部公開情報を参照して回答を補強する。 |
+| THR.01.05 | 生成した回答を会話場所に応じて返す。 |
+| THR.01.05a | スレッド内の人間による follow-up は無言で終了させず、same thread に可視応答を返す。 |
+| THR.01.05b | 通常 chat や admin_control の root 会話でも、見えている知見が関連する場合は same place で知見を使った応答を返す。 |
 
 ### 【雑談利用】
 
@@ -54,6 +62,8 @@
 | CHAT.01.01 | 雑談用チャンネル内の発話内容を取得する。 |
 | CHAT.01.02 | 発話内容に応じた応答を生成する。 |
 | CHAT.01.03 | 生成した応答をチャンネル内に返す。 |
+| CHAT.01.04 | 雑談用チャンネルでは、URL を含む投稿もまず通常会話として扱い、自動で知見共有 thread の作成や知見保存を行わない。 |
+| CHAT.01.05 | 雑談用チャンネルでも、見えている蓄積知見は通常会話の補助情報として参照してよい。 |
 
 ### 【機密区分】
 
@@ -94,10 +104,12 @@
 | 理由 [引用] | 「管理者は一時的に制約を解除して試すことができてほしい」 |
 | AUTH.03.01 | 管理者限定の Discord bot command による制約緩和要求を識別する。 |
 | AUTH.03.02 | 制約緩和 command は Discord の Administrator 権限保持者だけが実行できるようにする。 |
-| AUTH.03.03 | 制約緩和の適用範囲を、起動元の admin_control place 単位に限定して扱う。 |
+| AUTH.03.03 | 制約緩和の適用範囲を、configured `admin_control` root channel から command で開いた専用 thread 単位に限定して扱う。 |
 | AUTH.03.04 | 制約緩和が有効でない通常運用の Codex は read-only sandbox で動作する。 |
-| AUTH.03.05 | 制約緩和中の自己改造セッションに限り、Codex を workspace-write sandbox で動作させる。 |
-| AUTH.03.06 | 管理者が終了 command を明示実行できるようにし、終了後に通常の read-only 制約状態へ戻す。 |
+| AUTH.03.05 | 制約緩和中の専用 thread では、override を開始した同一管理者の会話全体を workspace-write sandbox で動作させる。 |
+| AUTH.03.05a | 制約緩和中の専用 thread では、override を開始した同一管理者に渡す Harness capability を `allow_external_fetch`, `allow_knowledge_write`, `allow_moderation` の全てで true とする。Discord thread 作成は system の reply-routing で扱い、LLM capability には含めない。 |
+| AUTH.03.06 | 管理者が専用 thread 内で終了 command を明示実行できるようにし、終了時は thread と workspace-write Codex の両方を閉じて通常の read-only 制約状態へ戻す。 |
+| AUTH.03.07 | 制約緩和用 thread と対応する workspace-write Codex session は、session identity の version が一致する間だけ、bot 停止、再起動、container 再作成後も dedicated override thread 単位で再利用できるようにする。 |
 
 ### 【コンテナ運用】
 
@@ -217,3 +229,4 @@
 
 - Discord の権限仕様、チャンネル可視性、スレッド可視性、履歴取得範囲に照らして、`同等以下の公開範囲でのみ再利用する` 制御がどこまで実装しやすいかは確認が必要。
 - bot 停止中の投稿を起動後に過去ログから取りこぼしなく再取得できる条件は、Discord API の取得方法と履歴保持前提の確認が必要。
+

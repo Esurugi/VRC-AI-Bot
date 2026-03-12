@@ -28,9 +28,12 @@ test("buildHarnessRequest defaults to root channel context", () => {
   });
 
   assert.equal(request.available_context.thread_context.kind, "root_channel");
+  assert.equal(request.override_context.active, false);
+  assert.equal(request.override_context.same_actor, false);
   assert.equal(request.available_context.thread_context.source_message_id, null);
   assert.equal(request.available_context.thread_context.reply_thread_id, null);
   assert.deepEqual(request.available_context.thread_context.known_source_urls, []);
+  assert.equal(request.available_context.discord_runtime_facts_path, null);
   assert.deepEqual(request.available_context.fetchable_public_urls, []);
   assert.deepEqual(request.available_context.blocked_urls, []);
 });
@@ -65,7 +68,8 @@ test("buildHarnessRequest includes knowledge thread facts and URL fetch boundary
       rootChannelId: "channel-1"
     },
     allowExternalFetch: true,
-    allowKnowledgeWrite: true
+    allowKnowledgeWrite: true,
+    discordRuntimeFactsPath: ".tmp/discord-runtime/message-2.json"
   });
 
   assert.equal(request.place.thread_id, "thread-1");
@@ -76,10 +80,113 @@ test("buildHarnessRequest includes knowledge thread facts and URL fetch boundary
     reply_thread_id: "thread-1",
     root_channel_id: "channel-1"
   });
+  assert.equal(
+    request.available_context.discord_runtime_facts_path,
+    ".tmp/discord-runtime/message-2.json"
+  );
   assert.deepEqual(request.available_context.fetchable_public_urls, [
     "https://example.com"
   ]);
   assert.deepEqual(request.available_context.blocked_urls, [
     "https://localhost/test"
   ]);
+});
+
+test("buildHarnessRequest includes override context flags", () => {
+  const request = buildHarnessRequest({
+    actorRole: "admin",
+    scope: "conversation_only",
+    watchLocation: {
+      guildId: "guild-1",
+      channelId: "channel-1",
+      mode: "admin_control",
+      defaultScope: "server_public"
+    },
+    envelope: {
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId: "message-3",
+      authorId: "admin-1",
+      placeType: "admin_control_channel",
+      rawPlaceType: "GuildText",
+      content: "自分を改造して",
+      urls: [],
+      receivedAt: "2026-03-10T00:00:02.000Z"
+    },
+    taskKind: "route_message",
+    overrideContext: {
+      active: true,
+      sameActor: true,
+      startedBy: "admin-1",
+      startedAt: "2026-03-10T00:00:00.000Z",
+      flags: {
+        allowPlaywrightHeaded: true,
+        allowPlaywrightPersistent: false,
+        allowPromptInjectionTest: true,
+        suspendViolationCounterForCurrentThread: false,
+        allowExternalFetchInPrivateContextWithoutPrivateTerms: false
+      }
+    }
+  });
+
+  assert.deepEqual(request.override_context, {
+    active: true,
+    same_actor: true,
+    started_by: "admin-1",
+    started_at: "2026-03-10T00:00:00.000Z",
+    flags: {
+      allow_playwright_headed: true,
+      allow_playwright_persistent: false,
+      allow_prompt_injection_test: true,
+      suspend_violation_counter_for_current_thread: false,
+      allow_external_fetch_in_private_context_without_private_terms: false
+    }
+  });
+});
+
+test("buildHarnessRequest can carry all capabilities as true for active override thread", () => {
+  const request = buildHarnessRequest({
+    actorRole: "admin",
+    scope: "conversation_only",
+    watchLocation: {
+      guildId: "guild-1",
+      channelId: "channel-1",
+      mode: "admin_control",
+      defaultScope: "server_public"
+    },
+    envelope: {
+      guildId: "guild-1",
+      channelId: "thread-1",
+      messageId: "message-4",
+      authorId: "admin-1",
+      placeType: "public_thread",
+      rawPlaceType: "PublicThread",
+      content: "この thread の capability は？",
+      urls: [],
+      receivedAt: "2026-03-10T00:00:03.000Z"
+    },
+    taskKind: "route_message",
+    allowExternalFetch: true,
+    allowKnowledgeWrite: true,
+    allowModeration: true,
+    overrideContext: {
+      active: true,
+      sameActor: true,
+      startedBy: "admin-1",
+      startedAt: "2026-03-10T00:00:00.000Z",
+      flags: {
+        allowPlaywrightHeaded: false,
+        allowPlaywrightPersistent: false,
+        allowPromptInjectionTest: false,
+        suspendViolationCounterForCurrentThread: false,
+        allowExternalFetchInPrivateContextWithoutPrivateTerms: false
+      }
+    }
+  });
+
+  assert.deepEqual(request.capabilities, {
+    allow_external_fetch: true,
+    allow_knowledge_write: true,
+    allow_moderation: true
+  });
 });

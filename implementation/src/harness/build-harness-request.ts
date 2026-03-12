@@ -6,6 +6,7 @@ import type {
   Scope,
   WatchLocationConfig
 } from "../domain/types.js";
+import type { OverrideContext } from "../override/types.js";
 import { isAllowedPublicHttpUrl } from "../playwright/url-policy.js";
 import type {
   HarnessRequest,
@@ -26,10 +27,11 @@ export function buildHarnessRequest(input: {
     replyThreadId: string | null;
     rootChannelId: string;
   };
-  allowThreadCreate?: boolean;
   allowExternalFetch?: boolean;
   allowKnowledgeWrite?: boolean;
   allowModeration?: boolean;
+  overrideContext?: OverrideContext;
+  discordRuntimeFactsPath?: string | null;
 }): HarnessRequest {
   const {
     actorRole,
@@ -44,10 +46,23 @@ export function buildHarnessRequest(input: {
       replyThreadId: null,
       rootChannelId: watchLocation.channelId
     },
-    allowThreadCreate = false,
     allowExternalFetch = false,
     allowKnowledgeWrite = false,
-    allowModeration = false
+    allowModeration = false,
+    overrideContext = {
+      active: false,
+      sameActor: false,
+      startedBy: null,
+      startedAt: null,
+      flags: {
+        allowPlaywrightHeaded: false,
+        allowPlaywrightPersistent: false,
+        allowPromptInjectionTest: false,
+        suspendViolationCounterForCurrentThread: false,
+        allowExternalFetchInPrivateContextWithoutPrivateTerms: false
+      }
+    },
+    discordRuntimeFactsPath = null
   } = input;
   const fetchablePublicUrls: string[] = [];
   const blockedUrls: string[] = [];
@@ -86,10 +101,24 @@ export function buildHarnessRequest(input: {
       created_at: envelope.receivedAt
     },
     capabilities: {
-      allow_thread_create: allowThreadCreate,
       allow_external_fetch: allowExternalFetch,
       allow_knowledge_write: allowKnowledgeWrite,
       allow_moderation: allowModeration
+    },
+    override_context: {
+      active: overrideContext.active,
+      same_actor: overrideContext.sameActor,
+      started_by: overrideContext.startedBy,
+      started_at: overrideContext.startedAt,
+      flags: {
+        allow_playwright_headed: overrideContext.flags.allowPlaywrightHeaded,
+        allow_playwright_persistent: overrideContext.flags.allowPlaywrightPersistent,
+        allow_prompt_injection_test: overrideContext.flags.allowPromptInjectionTest,
+        suspend_violation_counter_for_current_thread:
+          overrideContext.flags.suspendViolationCounterForCurrentThread,
+        allow_external_fetch_in_private_context_without_private_terms:
+          overrideContext.flags.allowExternalFetchInPrivateContextWithoutPrivateTerms
+      }
     },
     available_context: {
       thread_context: {
@@ -99,6 +128,7 @@ export function buildHarnessRequest(input: {
         reply_thread_id: threadContext.replyThreadId,
         root_channel_id: threadContext.rootChannelId
       },
+      discord_runtime_facts_path: discordRuntimeFactsPath,
       fetchable_public_urls: fetchablePublicUrls,
       blocked_urls: blockedUrls
     },

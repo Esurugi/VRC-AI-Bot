@@ -3,7 +3,21 @@ import { dirname, resolve } from "node:path";
 
 import Database from "better-sqlite3";
 
-import type { VisibleCandidate, WatchLocationConfig } from "../domain/types.js";
+import type {
+  CodexSandboxMode,
+  Scope,
+  VisibleCandidate,
+  WatchLocationConfig
+} from "../domain/types.js";
+import type {
+  SessionBindingKind,
+  SessionLifecyclePolicy,
+  SessionWorkloadKind
+} from "../codex/session-policy.js";
+import type {
+  OverrideFlags,
+  OverrideSessionRecord
+} from "../override/types.js";
 
 type WatchLocationRow = {
   guild_id: string;
@@ -18,13 +32,22 @@ type ChannelCursorRow = {
   updated_at: string;
 };
 
-type CodexSessionRow = {
-  place_id: string;
+export type CodexSessionBindingRow = {
+  session_identity: string;
+  workload_kind: SessionWorkloadKind;
+  binding_kind: SessionBindingKind;
+  binding_id: string;
+  actor_id: string | null;
+  sandbox_mode: CodexSandboxMode;
+  model_profile: string;
+  runtime_contract_version: string;
+  lifecycle_policy: SessionLifecyclePolicy;
   codex_thread_id: string;
+  created_at: string;
   updated_at: string;
 };
 
-type KnowledgeRecordRow = {
+export type KnowledgeRecordRow = {
   record_id: string;
   canonical_url: string;
   domain: string;
@@ -32,16 +55,24 @@ type KnowledgeRecordRow = {
   summary: string;
   tags_json: string;
   scope: WatchLocationConfig["defaultScope"];
+  visibility_key: string;
   content_hash: string;
   created_at: string;
 };
 
-type KnowledgeArtifactRow = {
+export type KnowledgeArtifactRow = {
   record_id: string;
   final_url: string;
   snapshot_path: string;
   screenshot_path: string | null;
   network_log_path: string | null;
+};
+
+export type KnowledgeSourceTextRow = {
+  record_id: string;
+  normalized_text: string;
+  source_kind: string;
+  captured_at: string;
 };
 
 type SourceLinkRow = {
@@ -82,14 +113,30 @@ type AppRuntimeLockRow = {
   updated_at: string;
 };
 
+type OverrideSessionRow = {
+  session_id: string;
+  guild_id: string;
+  actor_id: string;
+  granted_by: string;
+  scope_place_id: string;
+  flags_json: string;
+  sandbox_mode: "workspace-write";
+  started_at: string;
+  ended_at: string | null;
+  ended_by: string | null;
+  cleanup_reason: string | null;
+};
+
 export class SqliteStore {
   readonly db: Database.Database;
   readonly watchLocations: WatchLocationRepository;
   readonly channelCursors: ChannelCursorRepository;
-  readonly codexSessions: CodexSessionRepository;
+  readonly codexSessions: CodexSessionBindingRepository;
   readonly knowledgeRecords: KnowledgeRecordRepository;
   readonly knowledgeArtifacts: KnowledgeArtifactRepository;
+  readonly knowledgeSourceTexts: KnowledgeSourceTextRepository;
   readonly sourceLinks: SourceLinkRepository;
+  readonly overrideSessions: OverrideSessionRepository;
   readonly messageProcessing: MessageProcessingRepository;
   readonly runtimeLock: AppRuntimeLockRepository;
 
@@ -100,10 +147,12 @@ export class SqliteStore {
     this.db.pragma("foreign_keys = ON");
     this.watchLocations = new WatchLocationRepository(this.db);
     this.channelCursors = new ChannelCursorRepository(this.db);
-    this.codexSessions = new CodexSessionRepository(this.db);
+    this.codexSessions = new CodexSessionBindingRepository(this.db);
     this.knowledgeRecords = new KnowledgeRecordRepository(this.db);
     this.knowledgeArtifacts = new KnowledgeArtifactRepository(this.db);
+    this.knowledgeSourceTexts = new KnowledgeSourceTextRepository(this.db);
     this.sourceLinks = new SourceLinkRepository(this.db);
+    this.overrideSessions = new OverrideSessionRepository(this.db);
     this.messageProcessing = new MessageProcessingRepository(this.db);
     this.runtimeLock = new AppRuntimeLockRepository(this.db);
   }
@@ -233,29 +282,92 @@ export class ChannelCursorRepository {
   }
 }
 
-export class CodexSessionRepository {
+export class CodexSessionBindingRepository {
   constructor(private readonly db: Database.Database) {}
 
-  get(placeId: string): CodexSessionRow | null {
+  get(sessionIdentity: string): CodexSessionBindingRow | null {
     return (
       (this.db
         .prepare(
-          "SELECT place_id, codex_thread_id, updated_at FROM codex_session WHERE place_id = ?"
+          `
+            SELECT
+              session_identity,
+              workload_kind,
+              binding_kind,
+              binding_id,
+              actor_id,
+              sandbox_mode,
+              model_profile,
+              runtime_contract_version,
+              lifecycle_policy,
+              codex_thread_id,
+              created_at,
+              updated_at
+            FROM codex_session_binding
+            WHERE session_identity = ?
+          `
         )
-        .get(placeId) as CodexSessionRow | undefined) ?? null
+        .get(sessionIdentity) as CodexSessionBindingRow | undefined) ?? null
     );
   }
 
-  upsert(placeId: string, threadId: string): void {
+  upsert(input: {
+    sessionIdentity: string;
+    workloadKind: SessionWorkloadKind;
+    bindingKind: SessionBindingKind;
+    bindingId: string;
+    actorId: string | null;
+    sandboxMode: CodexSandboxMode;
+    modelProfile: string;
+    runtimeContractVersion: string;
+    lifecyclePolicy: SessionLifecyclePolicy;
+    codexThreadId: string;
+  }): void {
     this.db
       .prepare(`
-        INSERT INTO codex_session (place_id, codex_thread_id)
-        VALUES (?, ?)
-        ON CONFLICT(place_id) DO UPDATE SET
+        INSERT INTO codex_session_binding (
+          session_identity,
+          workload_kind,
+          binding_kind,
+          binding_id,
+          actor_id,
+          sandbox_mode,
+          model_profile,
+          runtime_contract_version,
+          lifecycle_policy,
+          codex_thread_id
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(session_identity) DO UPDATE SET
+          workload_kind = excluded.workload_kind,
+          binding_kind = excluded.binding_kind,
+          binding_id = excluded.binding_id,
+          actor_id = excluded.actor_id,
+          sandbox_mode = excluded.sandbox_mode,
+          model_profile = excluded.model_profile,
+          runtime_contract_version = excluded.runtime_contract_version,
+          lifecycle_policy = excluded.lifecycle_policy,
           codex_thread_id = excluded.codex_thread_id,
           updated_at = CURRENT_TIMESTAMP
       `)
-      .run(placeId, threadId);
+      .run(
+        input.sessionIdentity,
+        input.workloadKind,
+        input.bindingKind,
+        input.bindingId,
+        input.actorId,
+        input.sandboxMode,
+        input.modelProfile,
+        input.runtimeContractVersion,
+        input.lifecyclePolicy,
+        input.codexThreadId
+      );
+  }
+
+  delete(sessionIdentity: string): void {
+    this.db
+      .prepare("DELETE FROM codex_session_binding WHERE session_identity = ?")
+      .run(sessionIdentity);
   }
 }
 
@@ -265,7 +377,8 @@ export class KnowledgeRecordRepository {
   findByDedup(
     canonicalUrl: string,
     contentHash: string,
-    scope: WatchLocationConfig["defaultScope"]
+    scope: WatchLocationConfig["defaultScope"],
+    visibilityKey: string
   ): KnowledgeRecordRow | null {
     return (
       (this.db
@@ -279,13 +392,19 @@ export class KnowledgeRecordRepository {
               summary,
               tags_json,
               scope,
+              visibility_key,
               content_hash,
               created_at
             FROM knowledge_record
-            WHERE canonical_url = ? AND content_hash = ? AND scope = ?
+            WHERE canonical_url = ? AND content_hash = ? AND scope = ? AND visibility_key = ?
           `
         )
-        .get(canonicalUrl, contentHash, scope) as KnowledgeRecordRow | undefined) ??
+        .get(
+          canonicalUrl,
+          contentHash,
+          scope,
+          visibilityKey
+        ) as KnowledgeRecordRow | undefined) ??
       null
     );
   }
@@ -298,6 +417,7 @@ export class KnowledgeRecordRepository {
     summary: string;
     tags: string[];
     scope: WatchLocationConfig["defaultScope"];
+    visibilityKey: string;
     contentHash: string;
     createdAt: string;
   }): void {
@@ -312,9 +432,10 @@ export class KnowledgeRecordRepository {
             summary,
             tags_json,
             scope,
+            visibility_key,
             content_hash,
             created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `)
         .run(
           input.recordId,
@@ -324,6 +445,7 @@ export class KnowledgeRecordRepository {
           input.summary,
           JSON.stringify(input.tags),
           input.scope,
+          input.visibilityKey,
           input.contentHash,
           input.createdAt
         );
@@ -331,14 +453,16 @@ export class KnowledgeRecordRepository {
       this.db
         .prepare(`
           INSERT INTO knowledge_record_fts (
+            record_id,
             canonical_url,
             domain,
             title,
             summary,
             tags
-          ) VALUES (?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?)
         `)
         .run(
+          input.recordId,
           input.canonicalUrl,
           input.domain,
           input.title,
@@ -362,6 +486,7 @@ export class KnowledgeRecordRepository {
             summary,
             tags_json,
             scope,
+            visibility_key,
             content_hash,
             created_at
           FROM knowledge_record
@@ -369,6 +494,77 @@ export class KnowledgeRecordRepository {
         `)
         .get(recordId) as KnowledgeRecordRow | undefined) ?? null
     );
+  }
+
+  findVisibleByCanonicalUrl(
+    canonicalUrl: string,
+    allowedScopes: Scope[],
+    allowedVisibilityKeys: string[]
+  ): VisibleCandidate[] {
+    if (allowedScopes.length === 0 || allowedVisibilityKeys.length === 0) {
+      return [];
+    }
+
+    return this.db
+      .prepare(`
+        SELECT
+          record_id,
+          canonical_url,
+          title,
+          summary,
+          tags_json,
+          scope,
+          created_at
+        FROM knowledge_record
+        WHERE canonical_url = ?
+          AND scope IN (${buildInClause(allowedScopes.length)})
+          AND visibility_key IN (${buildInClause(allowedVisibilityKeys.length)})
+        ORDER BY created_at DESC
+      `)
+      .all(
+        canonicalUrl,
+        ...allowedScopes,
+        ...allowedVisibilityKeys
+      )
+      .map((row) => mapVisibleCandidate(row as ThreadKnowledgeContextRow));
+  }
+
+  searchVisibleByTerms(input: {
+    matchQuery: string;
+    allowedScopes: Scope[];
+    allowedVisibilityKeys: string[];
+    limit: number;
+  }): VisibleCandidate[] {
+    if (input.allowedScopes.length === 0 || input.allowedVisibilityKeys.length === 0) {
+      return [];
+    }
+
+    return this.db
+      .prepare(`
+        SELECT
+          kr.record_id,
+          kr.canonical_url,
+          kr.title,
+          kr.summary,
+          kr.tags_json,
+          kr.scope,
+          kr.created_at
+        FROM knowledge_record_fts
+        INNER JOIN knowledge_record kr
+          ON kr.record_id = knowledge_record_fts.record_id
+        WHERE knowledge_record_fts MATCH ?
+          AND kr.scope IN (${buildInClause(input.allowedScopes.length)})
+          AND kr.visibility_key IN (${buildInClause(input.allowedVisibilityKeys.length)})
+        ORDER BY bm25(knowledge_record_fts), kr.created_at DESC
+        LIMIT ?
+      `)
+      .all(
+        input.matchQuery,
+        ...input.allowedScopes,
+        ...input.allowedVisibilityKeys,
+        input.limit
+      )
+      .map((row) => mapVisibleCandidate(row as ThreadKnowledgeContextRow));
   }
 }
 
@@ -420,6 +616,53 @@ export class KnowledgeArtifactRepository {
           WHERE record_id = ?
         `)
         .get(recordId) as KnowledgeArtifactRow | undefined) ?? null
+    );
+  }
+}
+
+export class KnowledgeSourceTextRepository {
+  constructor(private readonly db: Database.Database) {}
+
+  upsert(input: {
+    recordId: string;
+    normalizedText: string;
+    sourceKind: string;
+    capturedAt: string;
+  }): void {
+    this.db
+      .prepare(`
+        INSERT INTO knowledge_source_text (
+          record_id,
+          normalized_text,
+          source_kind,
+          captured_at
+        ) VALUES (?, ?, ?, ?)
+        ON CONFLICT(record_id) DO UPDATE SET
+          normalized_text = excluded.normalized_text,
+          source_kind = excluded.source_kind,
+          captured_at = excluded.captured_at
+      `)
+      .run(
+        input.recordId,
+        input.normalizedText,
+        input.sourceKind,
+        input.capturedAt
+      );
+  }
+
+  get(recordId: string): KnowledgeSourceTextRow | null {
+    return (
+      (this.db
+        .prepare(`
+          SELECT
+            record_id,
+            normalized_text,
+            source_kind,
+            captured_at
+          FROM knowledge_source_text
+          WHERE record_id = ?
+        `)
+        .get(recordId) as KnowledgeSourceTextRow | undefined) ?? null
     );
   }
 }
@@ -506,18 +749,181 @@ export class SourceLinkRepository {
       }
       seen.add(row.record_id);
       context.push({
-        sourceId: row.record_id,
         sourceMessageId: row.source_message_id,
-        title: row.title,
-        summary: row.summary,
-        tags: JSON.parse(row.tags_json) as string[],
-        scope: row.scope,
-        recency: row.created_at,
-        canonicalUrl: row.canonical_url
+        ...mapVisibleCandidate(row)
       });
     }
 
     return context;
+  }
+}
+
+function buildInClause(size: number): string {
+  return Array.from({ length: size }, () => "?").join(", ");
+}
+
+function mapVisibleCandidate(row: ThreadKnowledgeContextRow): VisibleCandidate {
+  return {
+    sourceId: row.record_id,
+    title: row.title,
+    summary: row.summary,
+    tags: JSON.parse(row.tags_json) as string[],
+    scope: row.scope,
+    recency: row.created_at,
+    canonicalUrl: row.canonical_url
+  };
+}
+
+export class OverrideSessionRepository {
+  constructor(private readonly db: Database.Database) {}
+
+  getActive(
+    guildId: string,
+    scopePlaceId: string,
+    actorId: string
+  ): OverrideSessionRecord | null {
+    const row = this.db
+      .prepare(
+        `
+          SELECT
+            session_id,
+            guild_id,
+            actor_id,
+            granted_by,
+            scope_place_id,
+            flags_json,
+            sandbox_mode,
+            started_at,
+            ended_at,
+            ended_by,
+            cleanup_reason
+          FROM override_session
+          WHERE guild_id = ? AND scope_place_id = ? AND actor_id = ? AND ended_at IS NULL
+          ORDER BY started_at DESC
+          LIMIT 1
+        `
+      )
+      .get(guildId, scopePlaceId, actorId) as OverrideSessionRow | undefined;
+
+    return row ? mapOverrideSessionRow(row) : null;
+  }
+
+  start(input: {
+    sessionId: string;
+    guildId: string;
+    actorId: string;
+    grantedBy: string;
+    scopePlaceId: string;
+    flags: OverrideFlags;
+    sandboxMode: "workspace-write";
+    startedAt: string;
+  }): OverrideSessionRecord {
+    const closeExisting = this.db.prepare(
+      `
+        UPDATE override_session
+        SET
+          ended_at = ?,
+          ended_by = ?,
+          cleanup_reason = 'replaced'
+        WHERE guild_id = ? AND scope_place_id = ? AND actor_id = ? AND ended_at IS NULL
+      `
+    );
+    const insert = this.db.prepare(
+      `
+        INSERT INTO override_session (
+          session_id,
+          guild_id,
+          actor_id,
+          granted_by,
+          scope_place_id,
+          flags_json,
+          sandbox_mode,
+          started_at,
+          ended_at,
+          ended_by,
+          cleanup_reason
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL)
+      `
+    );
+
+    const transaction = this.db.transaction(() => {
+      closeExisting.run(
+        input.startedAt,
+        input.grantedBy,
+        input.guildId,
+        input.scopePlaceId,
+        input.actorId
+      );
+      insert.run(
+        input.sessionId,
+        input.guildId,
+        input.actorId,
+        input.grantedBy,
+        input.scopePlaceId,
+        JSON.stringify(input.flags),
+        input.sandboxMode,
+        input.startedAt
+      );
+    });
+
+    transaction();
+    const created = this.getActive(input.guildId, input.scopePlaceId, input.actorId);
+    if (!created) {
+      throw new Error("override session insert failed");
+    }
+    return created;
+  }
+
+  endActive(input: {
+    guildId: string;
+    scopePlaceId: string;
+    actorId: string;
+    endedAt: string;
+    endedBy: string;
+    cleanupReason: string | null;
+  }): boolean {
+    const result = this.db
+      .prepare(
+        `
+          UPDATE override_session
+          SET
+            ended_at = ?,
+            ended_by = ?,
+            cleanup_reason = ?
+          WHERE guild_id = ? AND scope_place_id = ? AND actor_id = ? AND ended_at IS NULL
+        `
+      )
+      .run(
+        input.endedAt,
+        input.endedBy,
+        input.cleanupReason,
+        input.guildId,
+        input.scopePlaceId,
+        input.actorId
+      );
+
+    return result.changes > 0;
+  }
+
+  failClosedAllActive(input: {
+    endedAt: string;
+    endedBy: string;
+    cleanupReason: string;
+  }): number {
+    const result = this.db
+      .prepare(
+        `
+          UPDATE override_session
+          SET
+            ended_at = ?,
+            ended_by = ?,
+            cleanup_reason = ?
+          WHERE ended_at IS NULL
+        `
+      )
+      .run(input.endedAt, input.endedBy, input.cleanupReason);
+
+    return result.changes;
   }
 }
 
@@ -674,6 +1080,7 @@ export class AppRuntimeLockRepository {
 
       if (
         existing.instance_id !== instanceId &&
+        existing.owner_pid !== ownerPid &&
         existing.lease_expires_at > nowIso &&
         isProcessAlive(existing.owner_pid)
       ) {
@@ -747,3 +1154,23 @@ function isProcessAlive(pid: number): boolean {
     return false;
   }
 }
+
+function mapOverrideSessionRow(row: OverrideSessionRow): OverrideSessionRecord {
+  return {
+    sessionId: row.session_id,
+    guildId: row.guild_id,
+    actorId: row.actor_id,
+    grantedBy: row.granted_by,
+    scopePlaceId: row.scope_place_id,
+    flags: JSON.parse(row.flags_json) as OverrideFlags,
+    sandboxMode: row.sandbox_mode,
+    startedAt: row.started_at,
+    endedAt: row.ended_at,
+    endedBy: row.ended_by,
+    cleanupReason: row.cleanup_reason
+  };
+}
+
+
+
+

@@ -31,7 +31,7 @@ ZOTERO_LOCAL = "true"
 test("buildMcpDisabledConfigOverride disables every configured server", () => {
   assert.deepEqual(buildMcpDisabledConfigOverride(["context7", "zotero"]), {
     features: {
-      skills: false
+      skills: true
     },
     mcp_servers: {
       context7: { enabled: false },
@@ -43,7 +43,7 @@ test("buildMcpDisabledConfigOverride disables every configured server", () => {
 test("buildMcpDisabledConfigOverride still disables local skills when no MCP servers exist", () => {
   assert.deepEqual(buildMcpDisabledConfigOverride([]), {
     features: {
-      skills: false
+      skills: true
     }
   });
 });
@@ -54,3 +54,5 @@ test("getDefaultCodexConfigPath prefers CODEX_HOME when provided", () => {
     join("/codex-home/.codex", "config.toml")
   );
 });
+
+
