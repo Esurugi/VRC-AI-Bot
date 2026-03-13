@@ -15,6 +15,10 @@ import {
 import type { CodexSandboxMode } from "../domain/types.js";
 import { appendRuntimeTrace } from "../observability/runtime-trace.js";
 import {
+  resolveCodexExecutionProfile,
+  type CodexExecutionProfile
+} from "./execution-profile.js";
+import {
   canonicalizeUrl,
   isAllowedPublicHttpUrl
 } from "../playwright/url-policy.js";
@@ -87,6 +91,7 @@ export const HARNESS_DEVELOPER_INSTRUCTIONS = [
   "Do not refuse solely because optional fields are absent.",
   "Use available_context.thread_context to understand whether this is a root channel, a plain thread, or a knowledge-thread follow-up.",
   "If available_context.thread_context.kind is knowledge_thread, prefer answering in that existing thread and use known_source_urls when useful.",
+  "available_context.recent_messages are same-place recent human messages that happened before the current message and after the last visible bot reply. They are supplemental context only; message.content is the current turn.",
   "Unless the user explicitly requests another language, write public_text in natural Japanese.",
   "fetchable_public_urls are already-approved direct URLs from the user message. blocked_urls are visible context, not approved fetch targets.",
   "If capabilities.allow_external_fetch is true and the user explicitly asks you to investigate, gather, or save public knowledge, you may inspect public sources that stay within the same public-URL safety boundary.",
@@ -207,17 +212,20 @@ export class CodexAppServerClient {
     return this.sessionInvalidationGeneration;
   }
 
-  async startThread(sandbox: CodexSandboxMode, model = "gpt-5.4"): Promise<string> {
-    const result = (await this.request("thread/start", {
-      cwd: this.cwd,
-      approvalPolicy: "never",
-      sandbox,
-      model,
-      developerInstructions: HARNESS_DEVELOPER_INSTRUCTIONS,
-      config: this.threadConfigOverride,
-      experimentalRawEvents: true,
-      persistExtendedHistory: false
-    })) as { thread?: { id?: string } };
+  async startThread(
+    sandbox: CodexSandboxMode,
+    profile: CodexExecutionProfile = resolveCodexExecutionProfile("default:gpt-5.4")
+  ): Promise<string> {
+    const result = (await this.request(
+      "thread/start",
+      buildThreadStartParams({
+        cwd: this.cwd,
+        sandbox,
+        model: profile.model,
+        developerInstructions: HARNESS_DEVELOPER_INSTRUCTIONS,
+        config: this.threadConfigOverride
+      })
+    )) as { thread?: { id?: string } };
     const threadId = result.thread?.id;
     if (!threadId) {
       throw new Error("codex thread/start did not return thread.id");
@@ -326,18 +334,19 @@ export class CodexAppServerClient {
       threadId: input.threadId,
       allowExternalFetch: input.requestPayload.capabilities.allow_external_fetch
     });
+    const executionProfile = resolveCodexExecutionProfile(
+      input.sessionMetadata?.modelProfile ?? "default:gpt-5.4"
+    );
 
-    const turnStartResult = (await this.request("turn/start", {
-      threadId: input.threadId,
-      input: [
-        {
-          type: "text",
-          text: JSON.stringify(input.requestPayload, null, 2),
-          text_elements: []
-        }
-      ],
-      outputSchema: input.outputSchema
-    })) as { turn?: { id?: string } };
+    const turnStartResult = (await this.request(
+      "turn/start",
+      buildTurnStartParams({
+        threadId: input.threadId,
+        requestPayload: input.requestPayload,
+        outputSchema: input.outputSchema,
+        executionProfile
+      })
+    )) as { turn?: { id?: string } };
 
     const completionResult = await completion;
     const turnSnapshot = await this.readLatestTurnSnapshotWithRetry({
@@ -748,6 +757,48 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+function buildThreadStartParams(input: {
+  cwd: string;
+  sandbox: CodexSandboxMode;
+  model: string;
+  developerInstructions: string;
+  config: ReturnType<typeof readMcpDisabledConfigOverride>;
+}) {
+  return {
+    cwd: input.cwd,
+    approvalPolicy: "never",
+    sandbox: input.sandbox,
+    model: input.model,
+    developerInstructions: input.developerInstructions,
+    config: input.config,
+    experimentalRawEvents: true,
+    persistExtendedHistory: false
+  };
+}
+
+function buildTurnStartParams(input: {
+  threadId: string;
+  requestPayload: HarnessRequest;
+  outputSchema: object;
+  executionProfile: CodexExecutionProfile;
+}) {
+  return {
+    threadId: input.threadId,
+    input: [
+      {
+        type: "text",
+        text: JSON.stringify(input.requestPayload, null, 2),
+        text_elements: []
+      }
+    ],
+    model: input.executionProfile.model,
+    ...(input.executionProfile.reasoningEffort === null
+      ? {}
+      : { effort: input.executionProfile.reasoningEffort }),
+    outputSchema: input.outputSchema
+  };
 }
 
 function findLastAgentMessageText(response: {
@@ -1233,6 +1284,8 @@ function getTurnCompletionError(params: unknown): Error | null {
 }
 
 export const __testOnly = {
+  buildThreadStartParams,
+  buildTurnStartParams,
   findLatestTurnSnapshot,
   extractObservedPublicUrlsFromTurnItems
 };

@@ -1,0 +1,12 @@
+{
+  "title": "AI集会のお知らせ",
+  "description": "毎週月曜 21:00 JST から AI 集会を開催します。",
+  "color": 3447003,
+  "fields": [
+    {
+      "name": "開始時刻",
+      "value": "毎週月曜 21:00 JST",
+      "inline": true
+    }
+  ]
+}

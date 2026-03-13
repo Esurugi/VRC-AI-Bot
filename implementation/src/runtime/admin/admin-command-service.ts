@@ -1,0 +1,392 @@
+import { randomUUID } from "node:crypto";
+import {
+  ApplicationCommandDataResolvable,
+  ChannelType,
+  PermissionFlagsBits,
+  PermissionsBitField,
+  SlashCommandBuilder,
+  ThreadAutoArchiveDuration,
+  type Channel,
+  type ChatInputCommandInteraction,
+  type Client,
+  type NewsChannel,
+  type TextChannel
+} from "discord.js";
+import type { Logger } from "pino";
+
+import { SessionManager } from "../../codex/session-manager.js";
+import { SessionPolicyResolver } from "../../codex/session-policy.js";
+import type { AppConfig, WatchLocationConfig } from "../../domain/types.js";
+import { DEFAULT_OVERRIDE_FLAGS, type OverrideFlags } from "../../override/types.js";
+import { SqliteStore } from "../../storage/database.js";
+import { AdminOverrideBootstrapService } from "./admin-override-bootstrap-service.js";
+
+export class AdminCommandService {
+  constructor(
+    private readonly client: Client,
+    private readonly config: AppConfig,
+    private readonly store: SqliteStore,
+    private readonly sessionManager: SessionManager,
+    private readonly sessionPolicyResolver: SessionPolicyResolver,
+    private readonly adminOverrideBootstrapService: AdminOverrideBootstrapService,
+    private readonly logger: Logger
+  ) {}
+
+  async registerCommands(): Promise<void> {
+    const guildIds = [...new Set(this.config.watchLocations.map((location) => location.guildId))];
+    const commands = buildOverrideCommandDefinitions();
+
+    for (const guildId of guildIds) {
+      try {
+        const guild = await this.client.guilds.fetch(guildId);
+        const existingCommands = await guild.commands.fetch();
+        await guild.commands.set(
+          mergeOverrideCommandDefinitions([...existingCommands.values()], commands)
+        );
+      } catch (error) {
+        this.logger.warn(
+          {
+            guildId,
+            error: error instanceof Error ? error.message : String(error)
+          },
+          "failed to register admin commands"
+        );
+      }
+    }
+  }
+
+  async handle(interaction: ChatInputCommandInteraction): Promise<boolean> {
+    if (
+      interaction.commandName !== "override-start" &&
+      interaction.commandName !== "override-end"
+    ) {
+      return false;
+    }
+
+    if (!interaction.inCachedGuild()) {
+      await replyToInteraction(interaction, "guild 内でのみ使える command です。");
+      return true;
+    }
+
+    const watchLocation = resolveCommandWatchLocation(
+      interaction.channel,
+      this.config.watchLocations
+    );
+    if (!watchLocation || watchLocation.mode !== "admin_control") {
+      await replyToInteraction(
+        interaction,
+        "この command は configured `admin_control` root channel またはそこから開いた override thread でのみ使えます。"
+      );
+      return true;
+    }
+
+    const actorRole = resolveInteractionActorRole(
+      interaction,
+      this.config.discordOwnerUserIds
+    );
+    if (actorRole === "user") {
+      await replyToInteraction(
+        interaction,
+        "Administrator 権限を持つ owner/admin だけがこの command を使えます。"
+      );
+      return true;
+    }
+
+    if (interaction.commandName === "override-start") {
+      if (!interaction.channel || interaction.channel.isThread()) {
+        await replyToInteraction(
+          interaction,
+          "この command は configured `admin_control` root channel でのみ使えます。実行すると dedicated override thread を開きます。"
+        );
+        return true;
+      }
+
+      if (!isBaseWatchChannel(interaction.channel)) {
+        await replyToInteraction(
+          interaction,
+          "override thread を開けるのは text/announcement の admin_control root channel だけです。"
+        );
+        return true;
+      }
+
+      const startedAt = new Date().toISOString();
+      const flags = readOverrideFlags(interaction);
+      const initialPrompt = interaction.options.getString("prompt")?.trim() ?? "";
+      const overrideThread = await interaction.channel.threads.create({
+        name: buildOverrideThreadName(interaction),
+        autoArchiveDuration: ThreadAutoArchiveDuration.OneWeek,
+        reason: `override-start by ${interaction.user.id}`
+      });
+      this.store.overrideSessions.start({
+        sessionId: randomUUID(),
+        guildId: interaction.guildId,
+        actorId: interaction.user.id,
+        grantedBy: interaction.user.id,
+        scopePlaceId: overrideThread.id,
+        flags,
+        sandboxMode: "workspace-write",
+        startedAt
+      });
+      await overrideThread.send({
+        content:
+          `override thread を開きました。sandbox=workspace-write flags=${summarizeOverrideFlags(flags)}\n` +
+          "この thread では、override を開始した管理者本人の会話全体が workspace-write context です。\n" +
+          "終了するときはこの thread で `/override-end` を実行してください。",
+        allowedMentions: { parse: [] }
+      });
+      await replyToInteraction(
+        interaction,
+        `override thread を開きました。thread=<#${overrideThread.id}> sandbox=workspace-write flags=${summarizeOverrideFlags(flags)}`
+      );
+      if (initialPrompt.length > 0) {
+        await this.adminOverrideBootstrapService.bootstrapPrompt({
+          thread: overrideThread,
+          watchLocation,
+          actorId: interaction.user.id,
+          actorRole,
+          prompt: initialPrompt,
+          requestId: `override-bootstrap:${interaction.id}`
+        });
+      }
+      return true;
+    }
+
+    if (!interaction.channel?.isThread()) {
+      await replyToInteraction(
+        interaction,
+        "この command は dedicated override thread 内でのみ使えます。"
+      );
+      return true;
+    }
+
+    const scopePlaceId = interaction.channelId;
+    const active = this.store.overrideSessions.getActive(
+      interaction.guildId,
+      scopePlaceId,
+      interaction.user.id
+    );
+    if (!active) {
+      await replyToInteraction(
+        interaction,
+        "この thread に終了対象の active override はありません。override を開いた管理者本人が同じ thread で実行してください。"
+      );
+      return true;
+    }
+
+    const archivedWriteSession = await this.sessionManager.archiveSession(
+      this.sessionPolicyResolver.resolveAdminOverrideThread({
+        threadId: scopePlaceId,
+        actorId: interaction.user.id
+      })
+    );
+
+    const ended = this.store.overrideSessions.endActive({
+      guildId: interaction.guildId,
+      scopePlaceId,
+      actorId: interaction.user.id,
+      endedAt: new Date().toISOString(),
+      endedBy: interaction.user.id,
+      cleanupReason: null
+    });
+    if (!ended) {
+      await replyToInteraction(
+        interaction,
+        "この thread に終了対象の active override はありません。"
+      );
+      return true;
+    }
+
+    await replyToInteraction(
+      interaction,
+      `override を終了しました。thread=${scopePlaceId} sandbox=read-only この thread を archive します。`
+    );
+    if (!archivedWriteSession.archived) {
+      this.logger.debug(
+        {
+          threadId: scopePlaceId,
+          actorId: interaction.user.id
+        },
+        "override ended without a persisted workspace-write session binding"
+      );
+    }
+    await interaction.channel.setArchived(true, `override-end by ${interaction.user.id}`);
+    return true;
+  }
+}
+
+export function mergeOverrideCommandDefinitions(
+  existingCommands: Array<{
+    name: string;
+    toJSON(): unknown;
+  }>,
+  desiredCommands: ApplicationCommandDataResolvable[]
+): ApplicationCommandDataResolvable[] {
+  const desiredNames = new Set(
+    desiredCommands.map((command) => {
+      const resolved = command as { name?: string };
+      if (!resolved.name) {
+        throw new Error("override command definition is missing a name");
+      }
+      return resolved.name;
+    })
+  );
+
+  return [
+    ...existingCommands
+      .filter((command) => !desiredNames.has(command.name))
+      .map((command) => command.toJSON() as ApplicationCommandDataResolvable),
+    ...desiredCommands
+  ];
+}
+
+export function buildOverrideCommandDefinitions(): ApplicationCommandDataResolvable[] {
+  return [
+    new SlashCommandBuilder()
+      .setName("override-start")
+      .setDescription("Open a dedicated override thread for workspace-write self-modification")
+      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+      .addStringOption((option) =>
+        option
+          .setName("prompt")
+          .setDescription("Optional hidden initial prompt to run in the new override thread")
+          .setRequired(false)
+      )
+      .addBooleanOption((option) =>
+        option
+          .setName("allow_playwright_headed")
+          .setDescription("Allow headed Playwright for this override")
+          .setRequired(false)
+      )
+      .addBooleanOption((option) =>
+        option
+          .setName("allow_playwright_persistent")
+          .setDescription("Allow persistent Playwright profile for this override")
+          .setRequired(false)
+      )
+      .addBooleanOption((option) =>
+        option
+          .setName("allow_prompt_injection_test")
+          .setDescription("Allow prompt-injection testing for this override")
+          .setRequired(false)
+      )
+      .addBooleanOption((option) =>
+        option
+          .setName("suspend_violation_counter")
+          .setDescription("Suspend violation counter in this place during override")
+          .setRequired(false)
+      )
+      .addBooleanOption((option) =>
+        option
+          .setName("allow_private_external_fetch")
+          .setDescription("Allow external fetch in private context without private terms")
+          .setRequired(false)
+      )
+      .toJSON(),
+    new SlashCommandBuilder()
+      .setName("override-end")
+      .setDescription("Close this override thread and return it to read-only mode")
+      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+      .toJSON()
+  ];
+}
+
+function resolveInteractionActorRole(
+  interaction: ChatInputCommandInteraction,
+  ownerUserIds: string[]
+): "owner" | "admin" | "user" {
+  if (ownerUserIds.includes(interaction.user.id)) {
+    return "owner";
+  }
+
+  if (interaction.memberPermissions?.has(PermissionsBitField.Flags.Administrator)) {
+    return "admin";
+  }
+
+  return "user";
+}
+
+function resolveCommandWatchLocation(
+  channel: Channel | null,
+  watchLocations: WatchLocationConfig[]
+): WatchLocationConfig | null {
+  if (!channel) {
+    return null;
+  }
+
+  const direct = watchLocations.find((location) => location.channelId === channel.id);
+  if (direct) {
+    return direct;
+  }
+
+  if (channel.isThread()) {
+    return (
+      watchLocations.find((location) => location.channelId === channel.parentId) ?? null
+    );
+  }
+
+  return null;
+}
+
+function buildOverrideThreadName(interaction: ChatInputCommandInteraction): string {
+  const stamp = new Date().toISOString().slice(11, 19).replace(/:/g, "");
+  return `override-${interaction.user.username}-${stamp}`.slice(0, 100);
+}
+
+function readOverrideFlags(interaction: ChatInputCommandInteraction): OverrideFlags {
+  return {
+    allowPlaywrightHeaded:
+      interaction.options.getBoolean("allow_playwright_headed") ??
+      DEFAULT_OVERRIDE_FLAGS.allowPlaywrightHeaded,
+    allowPlaywrightPersistent:
+      interaction.options.getBoolean("allow_playwright_persistent") ??
+      DEFAULT_OVERRIDE_FLAGS.allowPlaywrightPersistent,
+    allowPromptInjectionTest:
+      interaction.options.getBoolean("allow_prompt_injection_test") ??
+      DEFAULT_OVERRIDE_FLAGS.allowPromptInjectionTest,
+    suspendViolationCounterForCurrentThread:
+      interaction.options.getBoolean("suspend_violation_counter") ??
+      DEFAULT_OVERRIDE_FLAGS.suspendViolationCounterForCurrentThread,
+    allowExternalFetchInPrivateContextWithoutPrivateTerms:
+      interaction.options.getBoolean("allow_private_external_fetch") ??
+      DEFAULT_OVERRIDE_FLAGS.allowExternalFetchInPrivateContextWithoutPrivateTerms
+  };
+}
+
+function summarizeOverrideFlags(flags: OverrideFlags): string {
+  const enabled = Object.entries(flags)
+    .filter(([, value]) => value)
+    .map(([key]) => key);
+
+  return enabled.length > 0 ? enabled.join(",") : "none";
+}
+
+async function replyToInteraction(
+  interaction: ChatInputCommandInteraction,
+  content: string
+): Promise<void> {
+  if (interaction.replied || interaction.deferred) {
+    await interaction.followUp({
+      content,
+      allowedMentions: { parse: [] }
+    });
+    return;
+  }
+
+  await interaction.reply({
+    content,
+    allowedMentions: { parse: [] }
+  });
+}
+
+function isBaseWatchChannel(
+  channel: Channel | null
+): channel is TextChannel | NewsChannel {
+  if (!channel) {
+    return false;
+  }
+
+  return (
+    channel.type === ChannelType.GuildText ||
+    channel.type === ChannelType.GuildAnnouncement
+  );
+}

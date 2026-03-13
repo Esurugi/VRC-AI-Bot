@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type {
   ActorRole,
   MessageEnvelope,
+  RecentChatMessageFact,
   Scope,
   WatchLocationConfig
 } from "../domain/types.js";
@@ -20,6 +21,7 @@ export function buildHarnessRequest(input: {
   scope: Scope;
   watchLocation: WatchLocationConfig;
   envelope: MessageEnvelope;
+  effectiveContentOverride?: string | null;
   taskKind: HarnessTaskKind;
   taskPhase?: HarnessTaskPhase;
   threadContext?: {
@@ -34,6 +36,7 @@ export function buildHarnessRequest(input: {
   allowModeration?: boolean;
   overrideContext?: OverrideContext;
   discordRuntimeFactsPath?: string | null;
+  recentMessages?: RecentChatMessageFact[];
   retryContext?:
     | {
         kind: "output_safety";
@@ -53,6 +56,7 @@ export function buildHarnessRequest(input: {
     scope,
     watchLocation,
     envelope,
+    effectiveContentOverride = null,
     taskKind,
     taskPhase = "answer",
     threadContext = {
@@ -79,6 +83,7 @@ export function buildHarnessRequest(input: {
       }
     },
     discordRuntimeFactsPath = null,
+    recentMessages = [],
     retryContext = null
   } = input;
   const fetchablePublicUrls: string[] = [];
@@ -113,7 +118,7 @@ export function buildHarnessRequest(input: {
     },
     message: {
       id: envelope.messageId,
-      content: envelope.content,
+      content: effectiveContentOverride ?? envelope.content,
       urls: envelope.urls,
       created_at: envelope.receivedAt
     },
@@ -147,7 +152,8 @@ export function buildHarnessRequest(input: {
       },
       discord_runtime_facts_path: discordRuntimeFactsPath,
       fetchable_public_urls: fetchablePublicUrls,
-      blocked_urls: blockedUrls
+      blocked_urls: blockedUrls,
+      recent_messages: recentMessages
     },
     task: {
       kind: taskKind,

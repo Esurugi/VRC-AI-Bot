@@ -1,10 +1,8 @@
 import type { Logger } from "pino";
 
 import type { CodexAppServerClient } from "./app-server-client.js";
-import {
-  DEFAULT_CODEX_MODEL,
-  type ResolvedSessionIdentity
-} from "./session-policy.js";
+import { resolveCodexExecutionProfile } from "./execution-profile.js";
+import { type ResolvedSessionIdentity } from "./session-policy.js";
 import { appendRuntimeTrace } from "../observability/runtime-trace.js";
 import type { SqliteStore } from "../storage/database.js";
 
@@ -197,9 +195,10 @@ export class SessionManager {
   private async startFreshSession(
     identity: ResolvedSessionIdentity
   ): Promise<{ threadId: string; startedFresh: boolean }> {
+    const executionProfile = resolveCodexExecutionProfile(identity.modelProfile);
     const threadId = await this.codexClient.startThread(
       identity.sandboxMode,
-      resolveCodexModel(identity.modelProfile)
+      executionProfile
     );
     this.bindSession(identity, threadId);
     appendRuntimeTrace("codex-app-server", "session_started", {
@@ -214,12 +213,4 @@ export class SessionManager {
       startedFresh: true
     };
   }
-}
-
-function resolveCodexModel(modelProfile: string): string {
-  if (modelProfile === "default:gpt-5.4") {
-    return DEFAULT_CODEX_MODEL;
-  }
-
-  return DEFAULT_CODEX_MODEL;
 }

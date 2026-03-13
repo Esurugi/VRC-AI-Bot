@@ -11,7 +11,8 @@ export type Scope = (typeof SCOPE_VALUES)[number];
 export const WATCH_MODE_VALUES = [
   "url_watch",
   "chat",
-  "admin_control"
+  "admin_control",
+  "forum_longform"
 ] as const;
 export type WatchMode = (typeof WATCH_MODE_VALUES)[number];
 
@@ -21,7 +22,8 @@ export const PLACE_TYPE_VALUES = [
   "public_thread",
   "private_thread",
   "chat_channel",
-  "admin_control_channel"
+  "admin_control_channel",
+  "forum_post_thread"
 ] as const;
 export type PlaceType = (typeof PLACE_TYPE_VALUES)[number];
 
@@ -47,6 +49,23 @@ export type AppConfig = {
   codexAppServerCommand: string;
   codexHomePath: string | null;
   watchLocations: WatchLocationConfig[];
+  chatRuntimeControls?: ChatRuntimeControlsConfig | null;
+  weeklyMeetupAnnouncement: WeeklyMeetupAnnouncementConfig | null;
+};
+
+export type ChatRuntimeControlsConfig = {
+  enabled: boolean;
+  enabledChannelIds: string[];
+};
+
+export type WeeklyMeetupAnnouncementConfig = {
+  guildId: string;
+  channelId: string;
+  timezone: "Asia/Tokyo";
+  announceWeekday: "monday";
+  announceTime: "18:00";
+  eventTime: "21:00";
+  embedTemplatePath: string;
 };
 
 export type MessageEnvelope = {
@@ -59,6 +78,13 @@ export type MessageEnvelope = {
   content: string;
   urls: string[];
   receivedAt: string;
+};
+
+export type RecentChatMessageFact = {
+  message_id: string;
+  author_id: string;
+  content: string;
+  created_at: string;
 };
 
 export type VisibleCandidate = {

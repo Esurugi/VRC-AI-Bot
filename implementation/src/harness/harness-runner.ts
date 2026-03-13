@@ -10,6 +10,7 @@ import type { CodexAppServerClient } from "../codex/app-server-client.js";
 import type {
   ActorRole,
   MessageEnvelope,
+  RecentChatMessageFact,
   Scope,
   WatchLocationConfig
 } from "../domain/types.js";
@@ -36,6 +37,8 @@ export type HarnessMessageContext = {
   actorRole: ActorRole;
   scope: Scope;
   discordRuntimeFactsPath?: string | null;
+  effectiveContentOverride?: string | null;
+  recentMessages?: RecentChatMessageFact[];
 };
 
 type KnowledgeThreadEntry = {
@@ -101,6 +104,7 @@ export class HarnessRunner {
       scope: normalizedInput.scope,
       watchLocation: normalizedInput.watchLocation,
       envelope: normalizedInput.envelope,
+      effectiveContentOverride: normalizedInput.effectiveContentOverride ?? null,
       taskKind: "route_message",
       taskPhase: "intent",
       overrideContext,
@@ -108,7 +112,8 @@ export class HarnessRunner {
       allowExternalFetch: false,
       allowKnowledgeWrite: false,
       allowModeration: normalizedInput.actorRole !== "user",
-      discordRuntimeFactsPath: normalizedInput.discordRuntimeFactsPath ?? null
+      discordRuntimeFactsPath: normalizedInput.discordRuntimeFactsPath ?? null,
+      recentMessages: normalizedInput.recentMessages ?? []
     });
     const fetchablePublicUrlCount =
       intentRequest.available_context.fetchable_public_urls.length;
@@ -171,6 +176,7 @@ export class HarnessRunner {
       scope: normalizedInput.scope,
       watchLocation: normalizedInput.watchLocation,
       envelope: normalizedInput.envelope,
+      effectiveContentOverride: normalizedInput.effectiveContentOverride ?? null,
       taskKind: "route_message",
       taskPhase: "answer",
       overrideContext,
@@ -178,7 +184,8 @@ export class HarnessRunner {
       allowExternalFetch: grantedCapabilities.allow_external_fetch,
       allowKnowledgeWrite: grantedCapabilities.allow_knowledge_write,
       allowModeration: grantedCapabilities.allow_moderation,
-      discordRuntimeFactsPath: normalizedInput.discordRuntimeFactsPath ?? null
+      discordRuntimeFactsPath: normalizedInput.discordRuntimeFactsPath ?? null,
+      recentMessages: normalizedInput.recentMessages ?? []
     });
     const normalizedResponse = await this.runAnswerFlow({
       input: normalizedInput,
@@ -253,6 +260,7 @@ export class HarnessRunner {
         scope: input.input.scope,
         watchLocation: input.input.watchLocation,
         envelope: input.input.envelope,
+        effectiveContentOverride: input.input.effectiveContentOverride ?? null,
         taskKind: input.request.task.kind,
         taskPhase: "retry",
         retryContext: {
@@ -284,7 +292,8 @@ export class HarnessRunner {
           }
         },
         discordRuntimeFactsPath:
-          input.request.available_context.discord_runtime_facts_path
+          input.request.available_context.discord_runtime_facts_path,
+        recentMessages: input.request.available_context.recent_messages
       });
       const knowledgeRetryTurn = await this.codexClient.runHarnessRequest(
         input.session.threadId,
@@ -331,6 +340,7 @@ export class HarnessRunner {
       scope: input.input.scope,
       watchLocation: input.input.watchLocation,
       envelope: input.input.envelope,
+      effectiveContentOverride: input.input.effectiveContentOverride ?? null,
       taskKind: input.request.task.kind,
       taskPhase: "retry",
       retryContext: {
@@ -365,7 +375,8 @@ export class HarnessRunner {
         }
       },
       discordRuntimeFactsPath:
-        input.request.available_context.discord_runtime_facts_path
+        input.request.available_context.discord_runtime_facts_path,
+      recentMessages: input.request.available_context.recent_messages
     });
     const secondTurn = await this.codexClient.runHarnessRequest(
       input.session.threadId,
@@ -553,12 +564,12 @@ function buildOverrideRequiredResponse(input: HarnessMessageContext): HarnessRes
       ? input.envelope.placeType.endsWith("thread")
         ? "この要求を実行するには、この override thread を開いた管理者が active override を維持している必要があります。"
         : "この要求を実行するには、configured `admin_control` root channel で `/override-start` を実行して dedicated override thread を開いてください。"
-      : "この要求は admin_control root channel で `/override-start` を実行した管理者だけが、開かれた dedicated override thread 内で扱えます。";
+      : "この要求は admin_control root channel で `/override-start` を実行した管理者だけが、開かれた dedicated override thread 内で扱えます。必要なら `/override-start prompt:\"...\"` で最初の依頼も同時に投入できます。";
 
   return {
     outcome: "chat_reply",
     repo_write_intent: false,
-    public_text: `${locationHint} 終了時は override thread 内で \`/override-end\` を使って thread と write session を閉じてください。`,
+    public_text: `${locationHint} 必要なら \`/override-start prompt:\"...\"\` で最初の依頼も同時に渡せます。終了時は override thread 内で \`/override-end\` を使って thread と write session を閉じてください。`,
     reply_mode: "same_place",
     target_thread_id: null,
     selected_source_ids: [],

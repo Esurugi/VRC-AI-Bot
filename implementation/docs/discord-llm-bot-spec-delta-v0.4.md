@@ -120,6 +120,40 @@
 | CHAT.01-02-03a | `chat` mode の root 投稿でも、visible knowledge が関連する場合は通常会話の補助情報として参照してよい。 |
 | CHAT.01-02-04 | `url_watch` mode は root 投稿に URL がある場合だけ処理対象とする。ただし thread 投稿は URL がなくても処理対象に含める。 |
 
+### 【雑談デフォルトモード】
+
+| ID | 要求文 |
+|---|---|
+| CHAT.02-01 | `chat` mode の通常チャンネルでは、system は `bot mention`、`bot への reply`、`?`、`？` のいずれかを満たす発話を常時応答対象として扱う。 |
+| CHAT.02-02 | `CHAT.02-01` に該当しない発話だけを通常発話として数え、同一 channel/thread の通常発話が 5、10、15... 件目に達したときだけ応答対象とする。 |
+| CHAT.02-03 | 常時応答対象の発話は毎回応答するが、通常発話カウンタへ加算せず、既存カウンタもリセットしない。 |
+| CHAT.02-04 | 通常発話カウンタは actual channel/thread id ごとに独立し、root channel と thread は別カウンタとして DB に永続保持する。 |
+| CHAT.02-05 | `forum_longform` mode 配下の thread には `CHAT.02-02` の間引きを適用しない。 |
+
+### 【高思考長文対話】
+
+| ID | 要求文 |
+|---|---|
+| FOR.01-01 | watch location は `forum_longform` mode を持ち、運用者は bot が扱う既存の forum 親 channel を設定で指定できる。 |
+| FOR.01-02 | Discord Forum は親 channel 自体には投稿できず post が thread として扱われるため、system は設定された forum 親 channel 配下の各 post thread を `place_type=forum_post_thread` の会話場所として扱う。 |
+| FOR.01-03 | forum post thread ごとの session identity は `workload_kind=forum_longform`、`binding_kind=thread`、`lifecycle_policy=thread_lifetime`、`sandbox_mode=read-only`、`model_profile=forum:gpt-5.4:high` を正本とする。 |
+| FOR.01-04 | forum longform session の全 turn は OpenAI reasoning effort `high` で処理する。 |
+| FOR.01-05 | forum thread の最初の利用者投稿だけは、repo-local skill `designing-prompts` を使う別の `codex exec` 変換セッションで hidden preprocessing し、得られた完全 prompt を App Server 側 forum session の初回入力として使う。 |
+| FOR.01-06 | hidden preprocessing の出力は利用者へ表示せず、forum thread の 2 通目以降は通常の App Server turn を継続する。 |
+| FOR.01-07 | forum thread の非 bot かつ non-empty 投稿は毎回応答対象に入り、`CHAT.02` の間引き対象にしない。 |
+| FOR.01-08 | forum thread の default scope は `conversation_only` とし、通常会話を自動で shared knowledge 化しない。自然文の明示保存要求がある場合だけ既存 `knowledge_ingest` 規則を使う。 |
+
+### 【週次イベント告知】
+
+| ID | 要求文 |
+|---|---|
+| EVT.01-01 | system は単一 guild 固定の in-process scheduler として、毎週月曜 18:00 JST に当日 21:00 開始の AI 集会告知 embed を対象 channel へ 1 回投稿する。 |
+| EVT.01-02 | 月曜 18:00 JST を過ぎて bot が起動した場合でも、同じ月曜の 21:00 JST より前で、その週の告知が未配信なら 1 回だけ catch-up 投稿する。 |
+| EVT.01-03 | 告知本文は file-configurable embed template から組み立て、運用者がコード変更なしで差し替えられるようにする。 |
+| EVT.01-04 | 告知先が `GUILD_ANNOUNCEMENT` でも、bot は embed 投稿だけを行い、自動 publish / crosspost を行わない。 |
+| EVT.01-05 | 告知の重複防止は `event_key + occurrence_date` 単位の delivery 記録で行い、成功時にその週の告知を delivered とする。 |
+| EVT.01-06 | 設定は `weekly_meetup_announcement` として保持し、少なくとも `guild_id`、`channel_id`、`timezone=Asia/Tokyo`、`announce_weekday=monday`、`announce_time=18:00`、`event_time=21:00`、`embed_template_path` を持つ。 |
+
 ### 【機密区分】
 
 | ID | 要求文 |

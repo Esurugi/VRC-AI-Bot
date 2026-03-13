@@ -236,3 +236,20 @@
 - 捨てた理由：前者は transient failure の自動回復余地を失い、Harness が明示した user-facing failure まで infra retry に巻き込んでしまう。後者は再起動後に retry が継続せず、cursor と duplicate 判定も `pending_retry` を区別できない。
 - 影響範囲：System-owned runtime failure は固定 public category へ分類し、transient failure だけを `5分 -> 30分 -> 2時間` の最大 3 回で再試行する。retry 中の message は `message_processing = pending_retry` に留まり、success または終端 failure まで completed にならない。Harness `outcome = failure` は semantic な終端結果として same place / same thread に返し、retry scheduler へ載せない。
 - 検証：pnpm typecheck; pnpm test
+## 2026-03-13: forum 長文対話、雑談間引き、週次告知の仕様を追加
+
+- 事項：追加要求として、設定済み forum 親 channel 配下の post thread を高思考の長文対話場所として扱う `forum_longform`、雑談用デフォルトモードの 5 件間引き応答、毎週月曜 18:00 JST の AI 集会告知を正史仕様へ反映する方針を採用した。
+- 背景：ユーザーから、high thinking を普段使えない参加者向けの長文対話場所、全発言反応だと使いにくい雑談モードの間引き、毎週の AI 集会告知が求められた。要求整理では、forum 初回入力変換は利用者に見せない、雑談の間引きは 5 回に 1 回、明示呼び出しではカウントをリセットしない、告知は JST 固定で当日 catch-up を許す、announcement channel でも auto publish はしない、という前提が確認された。
+- 理由：Discord Forum は `GUILD_FORUM` 親 channel 直下では会話せず post が thread として扱われるため、会話場所は親 channel ではなく各 post thread として扱うのが自然だった。長文対話は session policy に `workload_kind=forum_longform` と `model_profile=forum:gpt-5.4:high` を追加し、初回だけ hidden preprocessing と別 `codex exec` 変換を挟む構成が、利用者へ完全 prompt を露出させずに要件を満たす。雑談の常時反応条件は `mention`、`reply to bot`、`?`、`？` の deterministic rule に固定し、意味解釈を System に戻さない。週次告知はローカル PC 常駐前提に合わせ、外部 scheduler を増やさず in-process scheduler と delivery 記録で足りる。
+- 代替案：forum channel 自体を bot が新規作成する案。forum 初回入力をそのまま App Server に渡す案。雑談の疑問文判定を意味ベースで Harness に寄せる案。告知先が announcement channel の場合に auto publish まで行う案。
+- 影響範囲：要件文書には `FOR.01`、`CHAT.02`、`EVT.01` の具体化を追加し、仕様差分には `forum_longform` watch mode、`forum_post_thread` place type、週次告知設定 `weekly_meetup_announcement`、`chat_channel_counter` と `scheduled_delivery` の DB state を追加する。実装タスク表では `T10` を雑談間引き込みへ広げ、`T10a Forum Longform` と `T10b Weekly Meetup Announcement` を追加する。
+- 関連：Discord Forum/Threads 仕様は `GUILD_FORUM` が thread-only channel であること、親 channel ではなく post thread を会話単位に扱うことを前提にする。OpenAI reasoning は `reasoning.effort = high` を正本にする。
+
+---
+- 日時：2026-03-13T22:40:00+09:00
+- 事項：`.codex` 会話履歴から抽出した境界逸脱と再発防止知見を、repo 固有の反省文ではなく汎用 `Agents Harness Boundary Patterns` reference として implementation 配下に追加する方針を採用した。
+- 背景：実装とレビューの往復で、System が意味解釈や query shaping を持ち始める、facts と control plane が混ざる、source authority が弱い自己申告で成立してしまう、stale session を place 単位で再利用する、repo-local operational contract が不足して Harness が実装依存になる、といった失敗が繰り返し表面化した。これらはこの repo 固有の不具合ではなく、今後の Agents Harness 混在設計でも再発しやすい抽象パターンだった。
+- 理由：境界原則は AGENTS に短く残っていたが、次の実装で再利用できる失敗パターンと代替パターンは別の Harness-facing reference として持つ方が有効だった。人間向けの経緯説明ではなく、LLM が直接読む operational memory として `Do / Avoid / Prefer / Smell` 形式に落とすことで、次の設計判断にそのまま使える。
+- 代替案：repo 固有の postmortem 文書として追加する案。AGENTS.md へ長文で追記する案。
+- 捨てた理由：前者は将来の Agents Harness 設計へ持ち回りにくく、後者は canonical rule と失敗パターン集が同居して AGENTS の役割を濁す。
+- 影響範囲：`implementation/references/agents-harness-boundary-patterns.md` を追加し、`implementation/AGENTS.md` から導線を付ける。内容は `System は境界・権限・副作用・永続化・可視性だけを堅く持つ`、`Harness(LLM) は意味理解・探索方針・知見利用・応答生成の主役であるべき`、`System で仕組みを入れるのではなく、System の使い方を Harness で残す` を canonical phrasing として保持する。

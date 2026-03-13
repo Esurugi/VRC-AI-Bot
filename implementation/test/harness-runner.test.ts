@@ -23,6 +23,7 @@ import {
   type HarnessTurnSessionMetadata,
   type TurnObservations
 } from "../src/codex/app-server-client.js";
+import type { CodexExecutionProfile } from "../src/codex/execution-profile.js";
 import { SqliteStore } from "../src/storage/database.js";
 
 test("resolveScopedPlaceId uses thread id inside threads", () => {
@@ -95,7 +96,13 @@ test("HarnessRunner uses two-phase turns and keeps plain chat capabilities narro
     assert.equal(result.session.threadId, "thread-1");
     assert.equal(result.session.startedFresh, true);
     assert.deepEqual(fixture.codexClient.startCalls, [
-      { sandbox: "read-only", model: "gpt-5.4" }
+      {
+        sandbox: "read-only",
+        profile: {
+          model: "gpt-5.4",
+          reasoningEffort: null
+        }
+      }
     ]);
     assert.equal(fixture.codexClient.intentCalls.length, 1);
     assert.equal(fixture.codexClient.answerCalls.length, 1);
@@ -120,6 +127,28 @@ test("HarnessRunner uses two-phase turns and keeps plain chat capabilities narro
       fixture.codexClient.answerCalls[0]?.request.available_context
         .discord_runtime_facts_path,
       ".tmp/discord-runtime/message-1.json"
+    );
+    assert.deepEqual(
+      fixture.codexClient.intentCalls[0]?.request.available_context.recent_messages,
+      [
+        {
+          message_id: "message-0",
+          author_id: "user-2",
+          content: "直前の文脈",
+          created_at: "2026-03-10T00:00:00.000Z"
+        }
+      ]
+    );
+    assert.deepEqual(
+      fixture.codexClient.answerCalls[0]?.request.available_context.recent_messages,
+      [
+        {
+          message_id: "message-0",
+          author_id: "user-2",
+          content: "直前の文脈",
+          created_at: "2026-03-10T00:00:00.000Z"
+        }
+      ]
     );
   } finally {
     fixture.close();
@@ -184,7 +213,13 @@ test("HarnessRunner grants full capabilities on answer turn inside active overri
     assert.equal(result.session.identity.sandboxMode, "workspace-write");
     assert.equal(result.session.identity.actorId, "admin-1");
     assert.deepEqual(fixture.codexClient.startCalls, [
-      { sandbox: "workspace-write", model: "gpt-5.4" }
+      {
+        sandbox: "workspace-write",
+        profile: {
+          model: "gpt-5.4",
+          reasoningEffort: null
+        }
+      }
     ]);
     assert.deepEqual(fixture.codexClient.intentCalls[0]?.request.capabilities, {
       allow_external_fetch: false,
@@ -710,6 +745,14 @@ function createHarnessInput(
       urls: [],
       receivedAt: "2026-03-10T00:00:00.000Z"
     },
+    recentMessages: [
+      {
+        message_id: "message-0",
+        author_id: "user-2",
+        content: "直前の文脈",
+        created_at: "2026-03-10T00:00:00.000Z"
+      }
+    ],
     ...overrides
   };
 }
@@ -771,7 +814,10 @@ function createIntentResponse(
 }
 
 class FakeCodexClient {
-  readonly startCalls: Array<{ sandbox: CodexSandboxMode; model: string }> = [];
+  readonly startCalls: Array<{
+    sandbox: CodexSandboxMode;
+    profile: CodexExecutionProfile;
+  }> = [];
   readonly resumeCalls: Array<{ threadId: string; sandbox: CodexSandboxMode }> = [];
   readonly archiveCalls: string[] = [];
   readonly unsubscribeCalls: string[] = [];
@@ -803,9 +849,9 @@ class FakeCodexClient {
 
   async startThread(
     sandbox: CodexSandboxMode,
-    model = "gpt-5.4"
+    profile: CodexExecutionProfile
   ): Promise<string> {
-    this.startCalls.push({ sandbox, model });
+    this.startCalls.push({ sandbox, profile });
     this.threadCount += 1;
     return `thread-${this.threadCount}`;
   }

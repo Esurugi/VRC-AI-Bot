@@ -6,6 +6,7 @@ import test from "node:test";
 
 import pino from "pino";
 
+import type { CodexExecutionProfile } from "../src/codex/execution-profile.js";
 import type { CodexSandboxMode } from "../src/domain/types.js";
 import { SessionManager } from "../src/codex/session-manager.js";
 import { SessionPolicyResolver } from "../src/codex/session-policy.js";
@@ -89,7 +90,10 @@ test("SessionManager ignores legacy table rows and starts a fresh session", asyn
     assert.deepEqual(fixture.codexClient.startCalls, [
       {
         sandbox: "read-only",
-        model: "gpt-5.4"
+        profile: {
+          model: "gpt-5.4",
+          reasoningEffort: null
+        }
       }
     ]);
     assert.equal(
@@ -150,7 +154,10 @@ test("SessionManager invalidates reusable sessions after skills change and start
     assert.deepEqual(fixture.codexClient.startCalls, [
       {
         sandbox: "read-only",
-        model: "gpt-5.4"
+        profile: {
+          model: "gpt-5.4",
+          reasoningEffort: null
+        }
       }
     ]);
     assert.equal(
@@ -201,6 +208,52 @@ test("SessionManager archives override session and removes binding", async () =>
   }
 });
 
+test("SessionManager starts forum sessions with high reasoning profile", async () => {
+  const fixture = createFixture();
+  const identity = fixture.resolver.resolveForMessage({
+    envelope: {
+      guildId: "guild-1",
+      channelId: "forum-thread-1",
+      messageId: "message-4",
+      authorId: "user-1",
+      placeType: "forum_post_thread",
+      rawPlaceType: "PublicThread",
+      content: "長文で相談したい",
+      urls: [],
+      receivedAt: "2026-03-10T00:00:00.000Z"
+    },
+    watchLocation: {
+      guildId: "guild-1",
+      channelId: "forum-parent-1",
+      mode: "forum_longform",
+      defaultScope: "conversation_only"
+    },
+    actorRole: "user",
+    scope: "conversation_only",
+    workspaceWriteActive: false
+  });
+
+  try {
+    const result = await fixture.manager.getOrStartSession(identity);
+
+    assert.deepEqual(result, {
+      threadId: "thread-1",
+      startedFresh: true
+    });
+    assert.deepEqual(fixture.codexClient.startCalls, [
+      {
+        sandbox: "read-only",
+        profile: {
+          model: "gpt-5.4",
+          reasoningEffort: "high"
+        }
+      }
+    ]);
+  } finally {
+    fixture.close();
+  }
+});
+
 function createFixture() {
   const tempDir = mkdtempSync(join(tmpdir(), "vrc-ai-bot-session-"));
   const dbPath = join(tempDir, "bot.sqlite");
@@ -227,7 +280,10 @@ function createFixture() {
 }
 
 class FakeCodexClient {
-  readonly startCalls: Array<{ sandbox: CodexSandboxMode; model: string }> = [];
+  readonly startCalls: Array<{
+    sandbox: CodexSandboxMode;
+    profile: CodexExecutionProfile;
+  }> = [];
   readonly resumeCalls: Array<{ threadId: string; sandbox: CodexSandboxMode }> = [];
   readonly archiveCalls: string[] = [];
   readonly unsubscribeCalls: string[] = [];
@@ -236,9 +292,9 @@ class FakeCodexClient {
 
   async startThread(
     sandbox: CodexSandboxMode,
-    model = "gpt-5.4"
+    profile: CodexExecutionProfile
   ): Promise<string> {
-    this.startCalls.push({ sandbox, model });
+    this.startCalls.push({ sandbox, profile });
     this.threadCount += 1;
     return `thread-${this.threadCount}`;
   }

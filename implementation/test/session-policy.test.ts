@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   DEFAULT_CODEX_MODEL_PROFILE,
+  FORUM_LONGFORM_CODEX_MODEL_PROFILE,
   RUNTIME_CONTRACT_VERSION,
   SessionPolicyResolver,
   buildMessageOriginBindingId,
@@ -36,7 +37,7 @@ test("SessionPolicyResolver resolves root chat to reusable place conversation id
 
   assert.deepEqual(resolved, {
     sessionIdentity:
-      "workload=conversation|binding_kind=place|binding_id=channel-1:chat|actor_id=-|sandbox=read-only|model=default:gpt-5.4|contract=2026-03-12.session-policy.v1|lifecycle=reusable",
+      `workload=conversation|binding_kind=place|binding_id=channel-1:chat|actor_id=-|sandbox=read-only|model=default:gpt-5.4|contract=${RUNTIME_CONTRACT_VERSION}|lifecycle=reusable`,
     workloadKind: "conversation",
     bindingKind: "place",
     bindingId: buildPlaceBindingId("channel-1", "chat"),
@@ -111,6 +112,39 @@ test("SessionPolicyResolver resolves thread follow-up to reusable conversation t
   assert.equal(resolved.bindingKind, "thread");
   assert.equal(resolved.bindingId, "thread-1");
   assert.equal(resolved.lifecyclePolicy, "reusable");
+});
+
+test("SessionPolicyResolver resolves forum thread to thread-lifetime high-reasoning identity", () => {
+  const resolver = new SessionPolicyResolver();
+  const resolved = resolver.resolveForMessage({
+    envelope: {
+      guildId: "guild-1",
+      channelId: "forum-thread-1",
+      messageId: "message-4",
+      authorId: "user-1",
+      placeType: "forum_post_thread",
+      rawPlaceType: "PublicThread",
+      content: "長文で相談したいです",
+      urls: [],
+      receivedAt: "2026-03-10T00:00:00.000Z"
+    },
+    watchLocation: {
+      guildId: "guild-1",
+      channelId: "forum-parent-1",
+      mode: "forum_longform",
+      defaultScope: "conversation_only"
+    },
+    actorRole: "user",
+    scope: "conversation_only",
+    workspaceWriteActive: false
+  });
+
+  assert.equal(resolved.workloadKind, "forum_longform");
+  assert.equal(resolved.bindingKind, "thread");
+  assert.equal(resolved.bindingId, "forum-thread-1");
+  assert.equal(resolved.sandboxMode, "read-only");
+  assert.equal(resolved.modelProfile, FORUM_LONGFORM_CODEX_MODEL_PROFILE);
+  assert.equal(resolved.lifecyclePolicy, "thread_lifetime");
 });
 
 test("SessionPolicyResolver resolves active override thread to explicit-close workspace-write identity", () => {

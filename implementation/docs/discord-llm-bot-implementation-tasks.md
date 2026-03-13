@@ -20,7 +20,7 @@
 - Discord の通常投稿を主入口にする。一般利用者向け slash command は持たないが、管理者限定の override/application command は持てる。
 - 対象場所は `GUILD_TEXT`、`GUILD_ANNOUNCEMENT`、bot が作成した知見 thread、雑談チャンネル、管理者制御チャンネル。
 - 管理者限定 command は guild 内でのみ扱い、configured `admin_control` channel またはその thread でだけ有効とする。
-- v1 では Forum、Media、child thread、DM、voice/stage は対象外。
+- v1 では Media、child thread、DM、voice/stage は対象外とする。ただし、設定済み forum 親 channel 配下の post thread は `forum_longform` として対象に含める。
 - URL 取得の必須基盤は `@playwright/cli` を `npx playwright-cli` で呼ぶ方式だけに限定する。
 - bot は Docker コンテナ内で動作し、Codex App Server に stdio 接続する。
 - bot と Codex CLI/App Server は同一コンテナ内で動作する。
@@ -170,7 +170,9 @@
 | 8 | T07 | URL知見化 | T01, T03, T05, T06 | public thread 作成、要約、タグ、保存、dedupe を実装する | ING.01, THR.01-01, THR.01-02, MEM.01-03 |
 | 9 | T08 | Retrieval | T01, T04, T07 | 2 段階 retrieval と source hydration を実装する | MEM.01-02, MEM.01-05 |
 | 10 | T09 | Knowledge-Assisted Conversation | T05, T07, T08 | 全 place での知見参照会話と明示保存依頼を実装する | THR.01-03, THR.01-05, ING.01-02 |
-| 11 | T10 | Chat | T05, T07 | chat channel 応答と URL 混在時の ingest 優先分岐を実装する | CHAT.01 |
+| 11 | T10 | Chat / Sparse Response | T05, T07 | chat channel 応答、常時反応条件、通常発話 5 件間引きを実装する | CHAT.01, CHAT.02 |
+| 11a | T10a | Forum Longform | T02, T05, T10 | forum_longform watch location、high reasoning session、hidden first-turn preprocessing を実装する | FOR.01 |
+| 11b | T10b | Weekly Meetup Announcement | T02 | 週次告知 scheduler、delivery dedupe、configurable embed を実装する | EVT.01 |
 | 12 | T11 | 出力安全境界 | T04, T08, T09, T10 | scope guard、再生成、公開再確認ルールを実装する | SEC.01-03, SEC.01-05 |
 | 13 | T12 | 制裁 | T01, T03, T04 | violation counter、timeout、kick、soft-block を実装する | AUTH.02 |
 | 14 | T13 | Override | T01, T03, T04, T05, T06, T12 | 管理者限定 command、override、終了 command、監査ログ、cleanup を実装する | AUTH.03 |
@@ -233,7 +235,7 @@
 - 目的: bot がどこを監視し、どの channel/thread がどの mode かを起動時に安全に確定できるようにする。
 - 入力契約:
 - 必須 env: Discord token、application/client ID、owner user IDs、Codex App Server 接続情報、DB path
-- watch location は mode ごとに `url_watch`, `chat`, `admin_control`
+- watch location は mode ごとに `url_watch`, `chat`, `admin_control`, `forum_longform`
 - 出力契約:
 - 起動時 validation
 - `watch_location` seed または config loader
@@ -444,7 +446,7 @@
 - 非対象:
 - soft-block や sanction
 
-### T10: chat channel 応答
+### T10: chat channel 応答 / 雑談間引き
 
 - 対象要求 ID: `CHAT.01-01`, `CHAT.01-02`, `CHAT.01-03`
 - 目的: 雑談チャンネルでだけ inline 会話を継続し、URL が混在しても自動知見化へは切り替えない。
@@ -458,6 +460,9 @@
 - 実装内容:
 - chat mode の message を T05 へ流し、URL があっても inline 応答または ignore に留める。
 - visible knowledge の参照自体は T09 に委ね、T10 は chat の UX と reply style に責務を絞る。
+- 常時応答条件は system fact として `bot mention`、`reply to bot`、`?`、`？` のみを deterministic に扱う。
+- 通常発話カウンタは actual channel/thread id ごとに DB 保持し、5、10、15... 件目だけ応答対象とする。
+- 常時応答対象の発話は毎回応答するが、通常発話カウンタを増やさず、リセットもしない。
 - persona は「親しみやすいが落ち着いた秘書」を守る。
 - 変更境界:
 - compaction は次タスクへ回す。ここでは通常会話継続まで。
@@ -466,6 +471,57 @@
 - 雑談 / URL / URL+質問 の 3 ケースで、いずれも chat として自然に扱える。
 - 非対象:
 - 長会話 compaction
+
+### T10a: forum longform
+
+- 対象要求 ID: `FOR.01`
+- 目的: 設定済み forum 親 channel 配下の post thread を、長文対話専用の高思考 session として扱えるようにする。
+- 入力契約:
+- forum 親 channel 自体は会話場所にせず、配下 post thread だけを `place_type=forum_post_thread` として扱う。
+- forum session identity は `workload_kind=forum_longform`、`binding_kind=thread`、`lifecycle_policy=thread_lifetime`、`sandbox_mode=read-only`、`model_profile=forum:gpt-5.4:high` を正本にする。
+- forum thread の default scope は `conversation_only` とし、通常会話を自動 knowledge ingest にしない。
+- 出力契約:
+- forum thread ごとの高思考 session 継続
+- hidden first-turn preprocessing
+- `effectiveContentOverride` による初回 input 差し替え
+- 実装内容:
+- `runtime/forum/forum-thread-service` で forum 親配下 thread だけを対象にし、親 forum channel 自体は無視する。
+- forum thread の non-empty human message は毎回 enqueue し、`CHAT.02` の sparse ロジックを bypass する。
+- `runtime/forum/forum-first-turn-preprocessor` を実装し、対応する `forum_longform` session binding が未作成のときだけ starter message 本文を取得して hidden preprocessing する。
+- hidden preprocessing は repo-local `.agents/skills/designing-prompts` を唯一の依存として dedicated system adapter から `codex exec` を呼び、stdout から完成 prompt を受け取る。
+- `runtime/message/message-processing-service` は `resolveHarnessMessage()` 前に forum preprocess を走らせ、必要な場合だけ `effectiveContentOverride` を Harness へ渡す。
+- `harness/build-harness-request` は facts-only を保ったまま、override があるときだけ `message.content` を差し替える。
+- `codex/session-manager` / `codex/app-server-client` は `forum:gpt-5.4:high` を model と reasoning effort の execution profile として解決し、forum turn を `high` で開始する。
+- 完了条件:
+- forum 設定 channel 配下 thread の最初の会話開始だけ hidden preprocessing が 1 回走る。
+- bot 再起動後でも forum session binding が残っていれば preprocessing を再実行しない。
+- forum thread の通常会話は毎回応答し、5 件間引きの対象にならない。
+- 非対象:
+- forum 通常会話の自動 shared knowledge 化
+
+### T10b: weekly meetup announcement
+
+- 対象要求 ID: `EVT.01`
+- 目的: 毎週月曜 18:00 JST に、同日 21:00 開始の AI 集会告知 embed を対象 channel へ 1 回だけ投稿できるようにする。
+- 入力契約:
+- scheduler は JST=`Asia/Tokyo` 固定とし、月曜 18:00 以降 21:00 前までの間だけ当週告知を送れる。
+- delivery dedupe は `scheduled_delivery(event_key, occurrence_date)` を使い、成功時だけ delivered にする。
+- 告知先は `GuildText` または `GuildAnnouncement` だけを許可し、auto publish / crosspost は行わない。
+- 出力契約:
+- 起動時 poll
+- 1 分ごとの定期 poll
+- file-configurable embed template による単一 embed 投稿
+- 実装内容:
+- `runtime/scheduling/weekly-meetup-announcement-service` を実装し、bot 起動時 poll と 1 分ごとの poll から共通利用する。
+- `weekly_meetup_announcement.embed_template_path` から Discord API Embed 相当の単一 JSON object を読み、system が `EmbedBuilder.from(...)` 相当で送信する。
+- 月曜 18:00 を過ぎて 21:00 前に起動した場合は、その週の告知が未配信なら 1 回だけ catch-up する。
+- template 読み込み失敗や channel 不正は public へ出さず log のみに残す。
+- 完了条件:
+- 月曜 18:00 JST に bot が起動中なら告知 embed が 1 回投稿される。
+- 月曜 18:00 JST を過ぎてから 21:00 JST より前に起動した場合、その週の告知が未配信なら 1 回だけ補完投稿される。
+- 同じ週の告知は再起動しても二重投稿されない。
+- 非対象:
+- announcement channel の auto publish
 
 ### T11: scope guard、再生成、公開再確認
 
@@ -640,6 +696,3 @@
 - 次の 1 セッションで `T02` と `T03` を終える。
 - その後は `T04` から `T06` を adapter/境界ごとに分割する。
 - end-to-end で最初に通すべき縦切りは `T07 -> T08 -> T09`。`T09` では thread 限定ではなく、全 place の知見参照会話を最初に通す。
-
-
-

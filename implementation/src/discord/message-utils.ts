@@ -58,7 +58,7 @@ export function resolvePlaceType(
   mode: WatchLocationConfig["mode"]
 ): PlaceType {
   if (channel.isThread()) {
-    return resolveThreadPlaceType(channel);
+    return resolveThreadPlaceType(channel, mode);
   }
 
   if (channel.type === ChannelType.GuildAnnouncement) {
@@ -95,14 +95,14 @@ export function buildMessageEnvelope(
   };
 }
 
-export function shouldProcessMessage(
-  envelope: MessageEnvelope,
-  watchLocation: WatchLocationConfig
-): boolean {
-  return true;
-}
+function resolveThreadPlaceType(
+  channel: ThreadChannel,
+  mode: WatchLocationConfig["mode"]
+): PlaceType {
+  if (mode === "forum_longform") {
+    return "forum_post_thread";
+  }
 
-function resolveThreadPlaceType(channel: ThreadChannel): PlaceType {
   if (channel.type === ChannelType.PrivateThread) {
     return "private_thread";
   }

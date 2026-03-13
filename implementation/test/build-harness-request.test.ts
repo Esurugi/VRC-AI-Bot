@@ -33,6 +33,7 @@ test("buildHarnessRequest defaults to answer phase and facts-only available_cont
   assert.equal(request.available_context.discord_runtime_facts_path, null);
   assert.deepEqual(request.available_context.fetchable_public_urls, []);
   assert.deepEqual(request.available_context.blocked_urls, []);
+  assert.deepEqual(request.available_context.recent_messages, []);
 });
 
 test("buildHarnessRequest includes knowledge thread facts and URL fetch boundary", () => {
@@ -88,6 +89,49 @@ test("buildHarnessRequest includes knowledge thread facts and URL fetch boundary
   ]);
   assert.deepEqual(request.available_context.blocked_urls, [
     "https://localhost/test"
+  ]);
+  assert.deepEqual(request.available_context.recent_messages, []);
+});
+
+test("buildHarnessRequest includes recent chat history as facts-only context", () => {
+  const request = buildHarnessRequest({
+    actorRole: "user",
+    scope: "channel_family",
+    watchLocation: {
+      guildId: "guild-1",
+      channelId: "channel-1",
+      mode: "chat",
+      defaultScope: "channel_family"
+    },
+    envelope: {
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId: "message-7",
+      authorId: "user-1",
+      placeType: "chat_channel",
+      rawPlaceType: "GuildText",
+      content: "5件目の発話",
+      urls: [],
+      receivedAt: "2026-03-10T00:00:07.000Z"
+    },
+    recentMessages: [
+      {
+        message_id: "message-3",
+        author_id: "user-2",
+        content: "前の文脈",
+        created_at: "2026-03-10T00:00:03.000Z"
+      }
+    ],
+    taskKind: "route_message"
+  });
+
+  assert.deepEqual(request.available_context.recent_messages, [
+    {
+      message_id: "message-3",
+      author_id: "user-2",
+      content: "前の文脈",
+      created_at: "2026-03-10T00:00:03.000Z"
+    }
   ]);
 });
 
@@ -149,6 +193,35 @@ test("buildHarnessRequest includes override context flags and capabilities", () 
       allow_external_fetch_in_private_context_without_private_terms: false
     }
   });
+});
+
+test("buildHarnessRequest uses effectiveContentOverride only for message.content", () => {
+  const request = buildHarnessRequest({
+    actorRole: "user",
+    scope: "conversation_only",
+    watchLocation: {
+      guildId: "guild-1",
+      channelId: "forum-parent-1",
+      mode: "forum_longform",
+      defaultScope: "conversation_only"
+    },
+    envelope: {
+      guildId: "guild-1",
+      channelId: "forum-thread-1",
+      messageId: "message-4",
+      authorId: "user-1",
+      placeType: "forum_post_thread",
+      rawPlaceType: "PublicThread",
+      content: "生の starter text",
+      urls: ["https://example.com/source"],
+      receivedAt: "2026-03-10T00:00:04.000Z"
+    },
+    effectiveContentOverride: "整形済みの hidden prompt",
+    taskKind: "route_message"
+  });
+
+  assert.equal(request.message.content, "整形済みの hidden prompt");
+  assert.deepEqual(request.message.urls, ["https://example.com/source"]);
 });
 
 test("buildHarnessRequest encodes retry_context in task control plane", () => {

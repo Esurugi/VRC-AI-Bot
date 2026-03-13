@@ -25,6 +25,7 @@ test("buildOverrideCommandDefinitions registers admin-only override commands", (
   assert.deepEqual(
     startCommand.options?.map((option) => option.name),
     [
+      "prompt",
       "allow_playwright_headed",
       "allow_playwright_persistent",
       "allow_prompt_injection_test",

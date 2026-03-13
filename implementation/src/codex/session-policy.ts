@@ -8,12 +8,14 @@ import type {
 
 export const DEFAULT_CODEX_MODEL_PROFILE = "default:gpt-5.4";
 export const DEFAULT_CODEX_MODEL = "gpt-5.4";
-export const RUNTIME_CONTRACT_VERSION = "2026-03-12.session-policy.v1";
+export const FORUM_LONGFORM_CODEX_MODEL_PROFILE = "forum:gpt-5.4:high";
+export const RUNTIME_CONTRACT_VERSION = "2026-03-13.session-policy.v2";
 
 export const SESSION_WORKLOAD_KIND_VALUES = [
   "conversation",
   "knowledge_ingest",
-  "admin_override"
+  "admin_override",
+  "forum_longform"
 ] as const;
 export type SessionWorkloadKind = (typeof SESSION_WORKLOAD_KIND_VALUES)[number];
 
@@ -26,7 +28,8 @@ export type SessionBindingKind = (typeof SESSION_BINDING_KIND_VALUES)[number];
 
 export const SESSION_LIFECYCLE_POLICY_VALUES = [
   "reusable",
-  "explicit_close"
+  "explicit_close",
+  "thread_lifetime"
 ] as const;
 export type SessionLifecyclePolicy =
   (typeof SESSION_LIFECYCLE_POLICY_VALUES)[number];
@@ -60,6 +63,21 @@ export class SessionPolicyResolver {
       return this.resolveAdminOverrideThread({
         threadId: input.envelope.channelId,
         actorId: input.envelope.authorId
+      });
+    }
+
+    if (
+      input.watchLocation.mode === "forum_longform" &&
+      input.envelope.placeType.endsWith("thread")
+    ) {
+      return this.buildIdentity({
+        workloadKind: "forum_longform",
+        bindingKind: "thread",
+        bindingId: input.envelope.channelId,
+        actorId: null,
+        sandboxMode: "read-only",
+        lifecyclePolicy: "thread_lifetime",
+        modelProfile: FORUM_LONGFORM_CODEX_MODEL_PROFILE
       });
     }
 

@@ -1,9 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { ChannelType } from "discord.js";
 
 import {
-  resolveWatchLocation,
-  shouldProcessMessage
+  resolvePlaceType,
+  resolveWatchLocation
 } from "../src/discord/message-utils.js";
 
 test("resolveWatchLocation inherits parent watch location for thread messages", () => {
@@ -34,52 +35,26 @@ test("resolveWatchLocation inherits parent watch location for thread messages", 
   });
 });
 
-test("shouldProcessMessage no longer pre-drops non-empty url_watch root messages", () => {
-  assert.equal(
-    shouldProcessMessage(
-      {
-        guildId: "guild-1",
-        channelId: "channel-1",
-        messageId: "message-1",
-        authorId: "user-1",
-        placeType: "guild_text",
-        rawPlaceType: "GuildText",
-        content: "もっと詳しく",
-        urls: [],
-        receivedAt: new Date().toISOString()
-      },
-      {
-        guildId: "guild-1",
-        channelId: "channel-1",
-        mode: "url_watch",
-        defaultScope: "server_public"
-      }
-    ),
-    true
+test("resolvePlaceType returns forum_post_thread for forum_longform watch threads", () => {
+  const placeType = resolvePlaceType(
+    {
+      type: ChannelType.PublicThread,
+      isThread: () => true
+    } as never,
+    "forum_longform"
   );
+
+  assert.equal(placeType, "forum_post_thread");
 });
 
-test("shouldProcessMessage keeps blocked-only URL posts for LLM interpretation", () => {
-  assert.equal(
-    shouldProcessMessage(
-      {
-        guildId: "guild-1",
-        channelId: "channel-1",
-        messageId: "message-4",
-        authorId: "user-1",
-        placeType: "guild_text",
-        rawPlaceType: "GuildText",
-        content: "http://localhost:3000/private",
-        urls: ["http://localhost:3000/private"],
-        receivedAt: new Date().toISOString()
-      },
-      {
-        guildId: "guild-1",
-        channelId: "channel-1",
-        mode: "url_watch",
-        defaultScope: "server_public"
-      }
-    ),
-    true
+test("resolvePlaceType keeps public_thread for non-forum watch threads", () => {
+  const placeType = resolvePlaceType(
+    {
+      type: ChannelType.PublicThread,
+      isThread: () => true
+    } as never,
+    "url_watch"
   );
+
+  assert.equal(placeType, "public_thread");
 });

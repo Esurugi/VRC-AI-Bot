@@ -9,6 +9,7 @@ import {
   findAdminControlWatchLocation
 } from "../src/app/bot-app.js";
 import { buildSanctionStateChangeReply } from "../src/app/replies.js";
+import { RUNTIME_CONTRACT_VERSION } from "../src/codex/session-policy.js";
 import type { AppConfig, MessageEnvelope, WatchLocationConfig } from "../src/domain/types.js";
 
 test("findAdminControlWatchLocation resolves the guild-specific admin control location", () => {
@@ -158,7 +159,7 @@ test("BotApplication forwards moderation signal and suspension state after respo
         actorId: null,
         sandboxMode: "read-only",
         modelProfile: "default:gpt-5.4",
-        runtimeContractVersion: "2026-03-12.session-policy.v1",
+        runtimeContractVersion: RUNTIME_CONTRACT_VERSION,
         lifecyclePolicy: "reusable"
       }
     },
@@ -214,7 +215,8 @@ function createTestApplication(overrides?: {
         mode: "admin_control",
         defaultScope: "conversation_only"
       }
-    ]
+    ],
+    weeklyMeetupAnnouncement: null
   };
 
   const app = new BotApplication(config, {

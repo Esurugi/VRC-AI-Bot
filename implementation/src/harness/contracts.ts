@@ -123,6 +123,12 @@ export type HarnessRequest = {
     discord_runtime_facts_path: string | null;
     fetchable_public_urls: string[];
     blocked_urls: string[];
+    recent_messages: Array<{
+      message_id: string;
+      author_id: string;
+      content: string;
+      created_at: string;
+    }>;
   };
   task: {
     kind: HarnessTaskKind;
