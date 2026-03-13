@@ -1,0 +1,9 @@
+{
+  "guildId": "756088878749712434",
+  "channelId": "1480608987618607165",
+  "timezone": "Asia/Tokyo",
+  "announceWeekday": "monday",
+  "announceTime": "18:00",
+  "eventTime": "21:00",
+  "embedTemplatePath": "./weekly-meetup-embed.template.json"
+}

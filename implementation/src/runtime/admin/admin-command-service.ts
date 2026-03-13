@@ -16,10 +16,12 @@ import type { Logger } from "pino";
 
 import { SessionManager } from "../../codex/session-manager.js";
 import { SessionPolicyResolver } from "../../codex/session-policy.js";
+import { resolvePlaceType } from "../../discord/message-utils.js";
 import type { AppConfig, WatchLocationConfig } from "../../domain/types.js";
 import { DEFAULT_OVERRIDE_FLAGS, type OverrideFlags } from "../../override/types.js";
 import { SqliteStore } from "../../storage/database.js";
 import { AdminOverrideBootstrapService } from "./admin-override-bootstrap-service.js";
+import { OverrideBootstrapPromptContextService } from "./override-bootstrap-prompt-context-service.js";
 
 export class AdminCommandService {
   constructor(
@@ -29,6 +31,7 @@ export class AdminCommandService {
     private readonly sessionManager: SessionManager,
     private readonly sessionPolicyResolver: SessionPolicyResolver,
     private readonly adminOverrideBootstrapService: AdminOverrideBootstrapService,
+    private readonly overrideBootstrapPromptContextService: OverrideBootstrapPromptContextService,
     private readonly logger: Logger
   ) {}
 
@@ -72,10 +75,10 @@ export class AdminCommandService {
       interaction.channel,
       this.config.watchLocations
     );
-    if (!watchLocation || watchLocation.mode !== "admin_control") {
+    if (!watchLocation) {
       await replyToInteraction(
         interaction,
-        "この command は configured `admin_control` root channel またはそこから開いた override thread でのみ使えます。"
+        "この command は configured な会話 place でのみ使えます。"
       );
       return true;
     }
@@ -93,18 +96,31 @@ export class AdminCommandService {
     }
 
     if (interaction.commandName === "override-start") {
-      if (!interaction.channel || interaction.channel.isThread()) {
+      if (!isConversationCapableOverrideStartPlace(interaction.channel, watchLocation)) {
         await replyToInteraction(
           interaction,
-          "この command は configured `admin_control` root channel でのみ使えます。実行すると dedicated override thread を開きます。"
+          "この command は configured `chat` / `admin_control` / `forum_longform` の会話 place でのみ使えます。forum_longform では post thread 内で実行してください。"
         );
         return true;
       }
 
-      if (!isBaseWatchChannel(interaction.channel)) {
+      const adminWatchLocation = findAdminControlWatchLocation(
+        this.config.watchLocations,
+        interaction.guildId
+      );
+      if (!adminWatchLocation) {
         await replyToInteraction(
           interaction,
-          "override thread を開けるのは text/announcement の admin_control root channel だけです。"
+          "この guild には override thread 作成先の configured `admin_control` root channel がありません。"
+        );
+        return true;
+      }
+
+      const adminRootChannel = await this.client.channels.fetch(adminWatchLocation.channelId);
+      if (!isBaseWatchChannel(adminRootChannel)) {
+        await replyToInteraction(
+          interaction,
+          "override thread の作成先は text/announcement の `admin_control` root channel である必要があります。"
         );
         return true;
       }
@@ -112,7 +128,15 @@ export class AdminCommandService {
       const startedAt = new Date().toISOString();
       const flags = readOverrideFlags(interaction);
       const initialPrompt = interaction.options.getString("prompt")?.trim() ?? "";
-      const overrideThread = await interaction.channel.threads.create({
+      const effectiveContentOverride =
+        initialPrompt.length > 0 && interaction.channel
+          ? await this.overrideBootstrapPromptContextService.buildEffectivePrompt({
+              prompt: initialPrompt,
+              origin: buildCommandOriginContext(interaction, watchLocation),
+              historyChannel: interaction.channel
+            })
+          : null;
+      const overrideThread = await adminRootChannel.threads.create({
         name: buildOverrideThreadName(interaction),
         autoArchiveDuration: ThreadAutoArchiveDuration.OneWeek,
         reason: `override-start by ${interaction.user.id}`
@@ -127,24 +151,29 @@ export class AdminCommandService {
         sandboxMode: "workspace-write",
         startedAt
       });
-      await overrideThread.send({
-        content:
-          `override thread を開きました。sandbox=workspace-write flags=${summarizeOverrideFlags(flags)}\n` +
-          "この thread では、override を開始した管理者本人の会話全体が workspace-write context です。\n" +
-          "終了するときはこの thread で `/override-end` を実行してください。",
-        allowedMentions: { parse: [] }
-      });
+      if (initialPrompt.length === 0) {
+        await overrideThread.send({
+          content:
+            `override thread を開きました。sandbox=workspace-write flags=${summarizeOverrideFlags(flags)}\n` +
+            "この thread では、override を開始した管理者本人の会話全体が workspace-write context です。\n" +
+            "終了するときはこの thread で `/override-end` を実行してください。",
+          allowedMentions: { parse: [] }
+        });
+      }
       await replyToInteraction(
         interaction,
-        `override thread を開きました。thread=<#${overrideThread.id}> sandbox=workspace-write flags=${summarizeOverrideFlags(flags)}`
+        initialPrompt.length > 0
+          ? `override thread を開きました。thread=<#${overrideThread.id}> sandbox=workspace-write flags=${summarizeOverrideFlags(flags)} 最初の依頼を hidden bootstrap として投入します。`
+          : `override thread を開きました。thread=<#${overrideThread.id}> sandbox=workspace-write flags=${summarizeOverrideFlags(flags)}`
       );
       if (initialPrompt.length > 0) {
         await this.adminOverrideBootstrapService.bootstrapPrompt({
           thread: overrideThread,
-          watchLocation,
+          watchLocation: adminWatchLocation,
           actorId: interaction.user.id,
           actorRole,
           prompt: initialPrompt,
+          effectiveContentOverride,
           requestId: `override-bootstrap:${interaction.id}`
         });
       }
@@ -290,6 +319,17 @@ export function buildOverrideCommandDefinitions(): ApplicationCommandDataResolva
   ];
 }
 
+function findAdminControlWatchLocation(
+  watchLocations: WatchLocationConfig[],
+  guildId: string
+): WatchLocationConfig | null {
+  return (
+    watchLocations.find(
+      (location) => location.guildId === guildId && location.mode === "admin_control"
+    ) ?? null
+  );
+}
+
 function resolveInteractionActorRole(
   interaction: ChatInputCommandInteraction,
   ownerUserIds: string[]
@@ -325,6 +365,46 @@ function resolveCommandWatchLocation(
   }
 
   return null;
+}
+
+function isConversationCapableOverrideStartPlace(
+  channel: Channel | null,
+  watchLocation: WatchLocationConfig
+): boolean {
+  if (!channel || watchLocation.mode === "url_watch") {
+    return false;
+  }
+
+  if (watchLocation.mode === "forum_longform") {
+    return channel.isThread();
+  }
+
+  return true;
+}
+
+function buildCommandOriginContext(
+  interaction: ChatInputCommandInteraction,
+  watchLocation: WatchLocationConfig
+): {
+  guildId: string;
+  channelId: string;
+  rootChannelId: string;
+  threadId: string | null;
+  mode: WatchLocationConfig["mode"];
+  placeType: ReturnType<typeof resolvePlaceType>;
+} {
+  if (!interaction.channel || !interaction.inCachedGuild()) {
+    throw new Error("override command origin context requires a cached guild channel");
+  }
+
+  return {
+    guildId: interaction.guildId,
+    channelId: interaction.channelId,
+    rootChannelId: watchLocation.channelId,
+    threadId: interaction.channel.isThread() ? interaction.channelId : null,
+    mode: watchLocation.mode,
+    placeType: resolvePlaceType(interaction.channel, watchLocation.mode)
+  };
 }
 
 function buildOverrideThreadName(interaction: ChatInputCommandInteraction): string {

@@ -19,7 +19,7 @@
 
 - Discord の通常投稿を主入口にする。一般利用者向け slash command は持たないが、管理者限定の override/application command は持てる。
 - 対象場所は `GUILD_TEXT`、`GUILD_ANNOUNCEMENT`、bot が作成した知見 thread、雑談チャンネル、管理者制御チャンネル。
-- 管理者限定 command は guild 内でのみ扱い、configured `admin_control` channel またはその thread でだけ有効とする。
+- 管理者限定 command は guild 内でのみ扱う。`/override-start` は configured `chat`, `admin_control`, `forum_longform` の会話可能な place で受理し、作成先の dedicated override thread は configured `admin_control` root channel 配下へ集約する。
 - v1 では Media、child thread、DM、voice/stage は対象外とする。ただし、設定済み forum 親 channel 配下の post thread は `forum_longform` として対象に含める。
 - URL 取得の必須基盤は `@playwright/cli` を `npx playwright-cli` で呼ぶ方式だけに限定する。
 - bot は Docker コンテナ内で動作し、Codex App Server に stdio 接続する。
@@ -587,7 +587,7 @@
 - 目的: 管理者限定 application command を入口に、override thread 限定の一時緩和と versioned session identity を安全に扱う。
 - 入力契約:
 - 入口は guild の管理者限定 application command
-- 開始 command は管理者制御 root channel のみ、終了 command は bot が開いた dedicated override thread のみ
+- 開始 command は configured `chat`, `admin_control`, `forum_longform` の会話可能な place で受理し、`forum_longform` は post thread 内に限定する。終了 command は bot が開いた dedicated override thread のみ
 - 許可 flag は `allow_playwright_headed`, `allow_playwright_persistent`, `allow_prompt_injection_test`, `suspend_violation_counter_for_current_thread`, `allow_external_fetch_in_private_context_without_private_terms`
 - override は dedicated override thread からの明示終了 command が来るまで active
 - 通常 sandbox は `read-only`、active override thread では開始者本人の turn 全体を `workspace-write`
@@ -605,6 +605,7 @@
 - 管理者限定 application command を登録し、Discord 側の default permissions と runtime の role 再判定を二重で適用する。
 - owner/admin の command だけを制御命令として受理する。
 - 開始 command では configured `admin_control` root channel 配下に dedicated override thread を作り、その thread ID を override scope とする。
+- 開始 command の `prompt` は command 実行元 place の直前履歴を hidden bootstrap input に束ね、照応を解決した初回依頼として created override thread へ投入できるようにする。
 - override を dedicated override thread 単位に限定し、bot 全体へ波及させない。
 - active override thread では開始者本人の turn を常に Codex `workspace-write` sandbox に載せ、同時に Harness capability のうち `allow_external_fetch`, `allow_knowledge_write`, `allow_moderation` を true にする。Discord thread 作成は system 側の reply-routing で扱い、通常場所と非該当 actor の turn は `read-only` に保つ。
 - 明示終了 command で active override を閉じ、対応する Codex write thread を archive し、Discord thread も archive する。
@@ -613,7 +614,7 @@
 - 変更境界:
 - moderation のしきい値計算は持たない。
 - 完了条件:
-- 制御チャンネル root の管理者限定 command だけが override thread を開始でき、終了 command はその thread 内でだけ実行できる。
+- 会話可能な configured place からの管理者限定 command が override thread を開始でき、終了 command はその thread 内でだけ実行できる。
 - 通常 message からは repo 書込み可能な sandbox へ切り替わらない。
 - 終了 command 実行後に thread と write session の両方が閉じ、再起動後も未終了 thread は再利用できる。
 - 非対象:

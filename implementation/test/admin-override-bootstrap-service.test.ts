@@ -100,6 +100,7 @@ test("AdminOverrideBootstrapService routes hidden prompt and dispatches only the
     actorId: "admin-1",
     actorRole: "admin",
     prompt: "この機能の実装計画を立てて",
+    effectiveContentOverride: "履歴を踏まえて、この機能の実装計画を立てて",
     requestId: "override-bootstrap:1"
   });
 
@@ -110,11 +111,16 @@ test("AdminOverrideBootstrapService routes hidden prompt and dispatches only the
       envelope: {
         content: string;
       };
+      effectiveContentOverride: string | null;
     };
   };
   assert.equal(
     dispatchInput.messageContext.envelope.content,
     "この機能の実装計画を立てて"
+  );
+  assert.equal(
+    dispatchInput.messageContext.effectiveContentOverride,
+    "履歴を踏まえて、この機能の実装計画を立てて"
   );
   assert.deepEqual(thread.sent, []);
 });
@@ -177,6 +183,7 @@ test("AdminOverrideBootstrapService reports bootstrap failures in the created th
     actorId: "admin-1",
     actorRole: "admin",
     prompt: "失敗させる",
+    effectiveContentOverride: "履歴を踏まえた hidden prompt",
     requestId: "override-bootstrap:2"
   });
 

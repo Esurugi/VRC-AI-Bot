@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { HarnessRequest } from "../src/harness/contracts.js";
-import { __testOnly } from "../src/codex/app-server-client.js";
+import {
+  HARNESS_DEVELOPER_INSTRUCTIONS,
+  __testOnly
+} from "../src/codex/app-server-client.js";
 
 const REPO_CWD = "D:/project/VRC-AI-Bot";
 const PUBLIC_URL = "https://openai.com/index/harness-engineering/";
@@ -54,6 +57,74 @@ test("extractObservedPublicUrlsFromTurnItems accepts only authoritative public-s
   assert.deepEqual(observedUrls, [PUBLIC_URL]);
 });
 
+test("extractObservedPublicUrlsFromTurnItems accepts public URLs opened by web search items", () => {
+  const observedUrls = __testOnly.extractObservedPublicUrlsFromTurnItems(
+    [
+      {
+        type: "webSearch",
+        id: "search-1",
+        query: "latest harness engineering",
+        action: {
+          type: "openPage",
+          url: "https://openai.com/index/harness-engineering/"
+        }
+      },
+      {
+        type: "webSearch",
+        id: "search-2",
+        query: "ignored",
+        action: {
+          type: "findInPage",
+          url: "https://example.com/path#fragment",
+          pattern: "foo"
+        }
+      }
+    ],
+    true,
+    REPO_CWD
+  );
+
+  assert.deepEqual(observedUrls, [
+    "https://example.com/path",
+    PUBLIC_URL
+  ]);
+});
+
+test("extractObservedPublicUrlsFromNotificationParams accepts web search items from item/completed notifications", () => {
+  const observedUrls = __testOnly.extractObservedPublicUrlsFromNotificationParams(
+    {
+      item: {
+        type: "webSearch",
+        id: "search-1",
+        query: "latest harness engineering",
+        action: {
+          type: "openPage",
+          url: "https://openai.com/index/harness-engineering/"
+        }
+      },
+      threadId: "thread-1",
+      turnId: "turn-1"
+    },
+    true,
+    REPO_CWD
+  );
+
+  assert.deepEqual(observedUrls, [PUBLIC_URL]);
+});
+
+test("extractObservedPublicUrlsFromNotificationParams returns empty when notification does not carry an item", () => {
+  const observedUrls = __testOnly.extractObservedPublicUrlsFromNotificationParams(
+    {
+      threadId: "thread-1",
+      turnId: "turn-1"
+    },
+    true,
+    REPO_CWD
+  );
+
+  assert.deepEqual(observedUrls, []);
+});
+
 test("extractObservedPublicUrlsFromTurnItems does not reconfirm when external fetch is disabled", () => {
   const observedUrls = __testOnly.extractObservedPublicUrlsFromTurnItems(
     [createFetchCommandExecution()],
@@ -96,6 +167,65 @@ test("buildTurnStartParams omits effort for default profile", () => {
 
   assert.equal(params.model, "gpt-5.4");
   assert.equal("effort" in params, false);
+});
+
+test("buildTurnSteerParams uses expectedTurnId and text input", () => {
+  const params = __testOnly.buildTurnSteerParams({
+    threadId: "thread-1",
+    turnId: "turn-1",
+    prompt: "Narrow focus."
+  });
+
+  assert.deepEqual(params, {
+    threadId: "thread-1",
+    expectedTurnId: "turn-1",
+    input: [
+      {
+        type: "text",
+        text: "Narrow focus.",
+        text_elements: []
+      }
+    ]
+  });
+});
+
+test("extractWebSearchActionTypeFromNotificationParams returns search action types", () => {
+  assert.equal(
+    __testOnly.extractWebSearchActionTypeFromNotificationParams({
+      item: {
+        type: "webSearch",
+        action: {
+          type: "search",
+          query: "latest harness engineering"
+        }
+      }
+    }),
+    "search"
+  );
+  assert.equal(
+    __testOnly.extractWebSearchActionTypeFromNotificationParams({
+      item: {
+        type: "webSearch",
+        action: {
+          type: "openPage",
+          url: PUBLIC_URL
+        }
+      }
+    }),
+    "openPage"
+  );
+});
+
+test("HARNESS_DEVELOPER_INSTRUCTIONS keeps forum_loop guidance minimal while allowing fresh public research on retry", () => {
+  assert.match(
+    HARNESS_DEVELOPER_INSTRUCTIONS,
+    /output_safety and place\.mode is forum_longform .* fresh public research now/i
+  );
+  assert.match(
+    HARNESS_DEVELOPER_INSTRUCTIONS,
+    /forum_loop, treat it as hidden control-plane metadata/i
+  );
+  assert.doesNotMatch(HARNESS_DEVELOPER_INSTRUCTIONS, /exploration_work/i);
 });
 
 function createAgentMessage(text: string) {

@@ -33,6 +33,7 @@ export class AdminOverrideBootstrapService {
     actorId: string;
     actorRole: Extract<ActorRole, "owner" | "admin">;
     prompt: string;
+    effectiveContentOverride?: string | null;
     requestId: string;
   }): Promise<void> {
     const envelope = {
@@ -50,7 +51,8 @@ export class AdminOverrideBootstrapService {
       envelope,
       watchLocation: input.watchLocation,
       actorRole: input.actorRole,
-      scope: "conversation_only" as const
+      scope: "conversation_only" as const,
+      effectiveContentOverride: input.effectiveContentOverride ?? null
     };
 
     let routed: Awaited<ReturnType<HarnessRunner["routeMessage"]>>;

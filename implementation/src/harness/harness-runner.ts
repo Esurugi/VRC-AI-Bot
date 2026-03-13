@@ -7,6 +7,7 @@ import {
   type ResolvedSessionIdentity
 } from "../codex/session-policy.js";
 import type { CodexAppServerClient } from "../codex/app-server-client.js";
+import type { TurnObservations } from "../codex/app-server-client.js";
 import type {
   ActorRole,
   MessageEnvelope,
@@ -29,6 +30,12 @@ import type {
   HarnessResponse,
   ThreadContextKind
 } from "./contracts.js";
+import {
+  createInitialForumLoopState,
+  runForumExplorationLoop,
+  runForumFinalizeTurn,
+  type ForumLoopTraceContext
+} from "./forum-exploration-loop.js";
 import { OutputSafetyGuard } from "./output-safety-guard.js";
 
 export type HarnessMessageContext = {
@@ -239,11 +246,17 @@ export class HarnessRunner {
       scope: entry.scope,
       canonicalUrl: entry.canonicalUrl
     }));
-    const firstTurn = await this.codexClient.runHarnessRequest(
-      input.session.threadId,
-      input.request,
-      toSessionMetadata(input.session)
-    );
+    const firstTurn =
+      input.input.watchLocation.mode === "forum_longform"
+        ? await this.runForumExplorationLoop(input)
+        : {
+            ...(await this.codexClient.runHarnessRequest(
+              input.session.threadId,
+              input.request,
+              toSessionMetadata(input.session)
+            )),
+            loopState: null
+          };
     let response = normalizeProductResponse(
       input.input,
       input.threadContext,
@@ -343,13 +356,10 @@ export class HarnessRunner {
       effectiveContentOverride: input.input.effectiveContentOverride ?? null,
       taskKind: input.request.task.kind,
       taskPhase: "retry",
-      retryContext: {
-        kind: "output_safety",
-        retryCount: 1,
-        reason: firstEvaluation.reason ?? "unsafe source boundary",
-        allowedSources: firstEvaluation.allowedSources,
-        disallowedSources: firstEvaluation.disallowedSources
-      },
+      retryContext: buildOutputSafetyRetryContext(
+        input.request,
+        firstEvaluation
+      ),
       threadContext: input.threadContext,
       allowExternalFetch: input.request.capabilities.allow_external_fetch,
       allowKnowledgeWrite: input.request.capabilities.allow_knowledge_write,
@@ -378,11 +388,20 @@ export class HarnessRunner {
         input.request.available_context.discord_runtime_facts_path,
       recentMessages: input.request.available_context.recent_messages
     });
-    const secondTurn = await this.codexClient.runHarnessRequest(
-      input.session.threadId,
-      retryRequest,
-      toSessionMetadata(input.session)
-    );
+    const secondTurn =
+      input.input.watchLocation.mode === "forum_longform"
+        ? await this.runForumFinalizeTurn({
+            request: retryRequest,
+            state: firstTurn.loopState ?? createInitialForumLoopState(),
+            threadId: input.session.threadId,
+            session: input.session,
+            retryKind: "output_safety_retry"
+          })
+        : await this.codexClient.runHarnessRequest(
+            input.session.threadId,
+            retryRequest,
+            toSessionMetadata(input.session)
+          );
     const secondPass = normalizeProductResponse(
       input.input,
       input.threadContext,
@@ -412,6 +431,68 @@ export class HarnessRunner {
     }
 
     return buildOutputSafetyRefusal(input.input, secondEvaluation.reason);
+  }
+
+  private async runForumExplorationLoop(input: {
+    input: HarnessMessageContext;
+    threadContext: ResolvedThreadContext;
+    request: HarnessRequest;
+    session: HarnessResolvedSession;
+    fetchablePublicUrlCount: number;
+  }): Promise<{
+    response: HarnessResponse;
+    observations: { observed_public_urls: string[] };
+    loopState: ReturnType<typeof createInitialForumLoopState> | null;
+  }> {
+    return runForumExplorationLoop({
+      logger: this.logger,
+      codexClient: this.codexClient,
+      request: input.request,
+      threadId: input.session.threadId,
+      sessionMetadata: toSessionMetadata(input.session),
+      trace: this.buildForumLoopTraceContext(
+        input.input.envelope.messageId,
+        input.session
+      )
+    });
+  }
+
+  private async runForumFinalizeTurn(input: {
+    request: HarnessRequest;
+    state: ReturnType<typeof createInitialForumLoopState>;
+    threadId: string;
+    session: HarnessResolvedSession;
+    retryKind?: "initial" | "output_safety_retry";
+  }): Promise<{
+    response: HarnessResponse;
+    observations: TurnObservations;
+  }> {
+    return runForumFinalizeTurn({
+      codexClient: this.codexClient,
+      request: input.request,
+      state: input.state,
+      threadId: input.threadId,
+      sessionMetadata: toSessionMetadata(input.session),
+      trace: this.buildForumLoopTraceContext(
+        input.request.message.id,
+        input.session
+      ),
+      ...(input.retryKind === undefined ? {} : { retryKind: input.retryKind })
+    });
+  }
+
+  private buildForumLoopTraceContext(
+    messageId: string,
+    session: HarnessResolvedSession
+  ): ForumLoopTraceContext {
+    return {
+      messageId,
+      threadId: session.threadId,
+      sessionIdentity: session.identity.sessionIdentity,
+      workloadKind: session.identity.workloadKind,
+      modelProfile: session.identity.modelProfile,
+      runtimeContractVersion: session.identity.runtimeContractVersion
+    };
   }
 
   private traceOutputSafetyDecision(
@@ -563,8 +644,8 @@ function buildOverrideRequiredResponse(input: HarnessMessageContext): HarnessRes
     input.watchLocation.mode === "admin_control"
       ? input.envelope.placeType.endsWith("thread")
         ? "この要求を実行するには、この override thread を開いた管理者が active override を維持している必要があります。"
-        : "この要求を実行するには、configured `admin_control` root channel で `/override-start` を実行して dedicated override thread を開いてください。"
-      : "この要求は admin_control root channel で `/override-start` を実行した管理者だけが、開かれた dedicated override thread 内で扱えます。必要なら `/override-start prompt:\"...\"` で最初の依頼も同時に投入できます。";
+        : "この要求を実行するには、今いる configured な会話 place で `/override-start` を実行して dedicated override thread を開いてください。作成先は configured `admin_control` root channel 配下です。"
+      : "この要求は active override thread 内でだけ扱えます。今いる configured な会話 place で `/override-start` を実行すると、configured `admin_control` root channel 配下に dedicated override thread を開けます。必要なら `/override-start prompt:\"...\"` で最初の依頼も同時に投入できます。";
 
   return {
     outcome: "chat_reply",
@@ -603,6 +684,29 @@ function buildOutputSafetyRefusal(
           : `output safety refusal: ${reason}`
     },
     sensitivity_raise: input.scope === "conversation_only" ? "conversation_only" : "none"
+  };
+}
+
+function buildOutputSafetyRetryContext(
+  request: HarnessRequest,
+  evaluation: ReturnType<OutputSafetyGuard["evaluate"]>
+): NonNullable<Parameters<typeof buildHarnessRequest>[0]["retryContext"]> {
+  if (request.place.mode === "forum_longform") {
+    return {
+      kind: "output_safety",
+      retryCount: 1,
+      reason: evaluation.reason ?? "unsafe source boundary",
+      allowedSources: [],
+      disallowedSources: evaluation.disallowedSources
+    };
+  }
+
+  return {
+    kind: "output_safety",
+    retryCount: 1,
+    reason: evaluation.reason ?? "unsafe source boundary",
+    allowedSources: evaluation.allowedSources,
+    disallowedSources: evaluation.disallowedSources
   };
 }
 

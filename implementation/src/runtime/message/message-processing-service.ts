@@ -13,7 +13,10 @@ import { writeDiscordRuntimeSnapshot } from "../../discord/runtime-facts.js";
 import type { AppConfig } from "../../domain/types.js";
 import { HarnessRunner } from "../../harness/harness-runner.js";
 import { RecentChatHistoryService } from "../chat/recent-chat-history-service.js";
-import { ForumFirstTurnPreprocessor } from "../forum/forum-first-turn-preprocessor.js";
+import {
+  ForumFirstTurnPreprocessor,
+  type ForumFirstTurnPreparation
+} from "../forum/forum-first-turn-preprocessor.js";
 import { SqliteStore, type RetryJobRow } from "../../storage/database.js";
 import {
   buildRetrySchedulerEnvelope,
@@ -74,8 +77,18 @@ export class MessageProcessingService {
     try {
       let routed: RoutedHarnessMessage | null;
       let replyTarget = buildSamePlaceReplyTarget(item);
+      let forumBootstrap: ForumFirstTurnPreparation;
       try {
-        routed = await this.resolveHarnessMessage(item);
+        forumBootstrap =
+          await this.forumFirstTurnPreprocessor.resolveEffectiveContentOverride({
+            message: item.message,
+            envelope: item.envelope,
+            watchLocation: item.watchLocation,
+            actorRole: item.actorRole,
+            scope: item.scope
+          });
+        await this.sendForumBootstrapNoticeIfNeeded(item, forumBootstrap);
+        routed = await this.resolveHarnessMessage(item, forumBootstrap);
       } catch (error) {
         await this.handleRuntimeFailure(item, {
           stage: "fetch_or_resolve",
@@ -116,16 +129,19 @@ export class MessageProcessingService {
     }
   }
 
-  async resolveHarnessMessage(item: QueuedMessage): Promise<RoutedHarnessMessage | null> {
-    const forumBootstrap = await this.forumFirstTurnPreprocessor.resolveEffectiveContentOverride(
-      {
+  async resolveHarnessMessage(
+    item: QueuedMessage,
+    forumBootstrap?: ForumFirstTurnPreparation
+  ): Promise<RoutedHarnessMessage | null> {
+    const resolvedForumBootstrap =
+      forumBootstrap ??
+      (await this.forumFirstTurnPreprocessor.resolveEffectiveContentOverride({
         message: item.message,
         envelope: item.envelope,
         watchLocation: item.watchLocation,
         actorRole: item.actorRole,
         scope: item.scope
-      }
-    );
+      }));
     const runtimeFacts = writeDiscordRuntimeSnapshot({
       message: item.message,
       watchLocation: item.watchLocation,
@@ -143,9 +159,34 @@ export class MessageProcessingService {
       actorRole: item.actorRole,
       scope: item.scope,
       discordRuntimeFactsPath: runtimeFacts.snapshotPath,
-      effectiveContentOverride: forumBootstrap.preparedPrompt,
+      effectiveContentOverride: resolvedForumBootstrap.preparedPrompt,
       recentMessages
     });
+  }
+
+  private async sendForumBootstrapNoticeIfNeeded(
+    item: QueuedMessage,
+    forumBootstrap: ForumFirstTurnPreparation
+  ): Promise<void> {
+    if (item.source !== "live" || !forumBootstrap.progressNotice) {
+      return;
+    }
+
+    try {
+      await this.replyDispatchService.sendFollowupInSamePlace(
+        item,
+        forumBootstrap.progressNotice
+      );
+    } catch (error) {
+      this.logger.warn(
+        {
+          error: error instanceof Error ? error.message : String(error),
+          messageId: item.envelope.messageId,
+          channelId: item.envelope.channelId
+        },
+        "failed to send forum bootstrap notice"
+      );
+    }
   }
 
   private async runSoftBlockPreflight(item: QueuedMessage): Promise<boolean> {

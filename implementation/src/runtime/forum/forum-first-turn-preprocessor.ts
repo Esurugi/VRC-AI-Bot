@@ -8,6 +8,7 @@ import type { SqliteStore } from "../../storage/database.js";
 
 export type ForumFirstTurnPreparation = {
   preparedPrompt: string | null;
+  progressNotice: string | null;
   wasPreprocessed: boolean;
 };
 
@@ -23,22 +24,23 @@ export class ForumFirstTurnPreprocessor {
     thread: Pick<ThreadChannel, "id">,
     starterMessage: string
   ): Promise<ForumFirstTurnPreparation> {
-    const preparedPrompt = (
-      await this.executor.prepareForumFirstTurnPrompt({
-        threadId: thread.id,
-        starterMessage
-      })
-    ).trim();
+    const result = await this.executor.prepareForumFirstTurnPrompt({
+      threadId: thread.id,
+      starterMessage
+    });
+    const preparedPrompt = result.preparedPrompt.trim();
 
     if (!preparedPrompt) {
       return {
         preparedPrompt: null,
+        progressNotice: null,
         wasPreprocessed: false
       };
     }
 
     return {
       preparedPrompt,
+      progressNotice: result.progressNotice?.trim() ? result.progressNotice.trim() : null,
       wasPreprocessed: true
     };
   }
@@ -50,27 +52,10 @@ export class ForumFirstTurnPreprocessor {
     actorRole: ActorRole;
     scope: Scope;
   }): Promise<ForumFirstTurnPreparation> {
-    if (
-      input.watchLocation.mode !== "forum_longform" ||
-      input.envelope.placeType !== "forum_post_thread" ||
-      !input.message.channel.isThread()
-    ) {
+    if (!(await this.needsPreparation(input))) {
       return {
         preparedPrompt: null,
-        wasPreprocessed: false
-      };
-    }
-
-    const sessionIdentity = this.sessionPolicyResolver.resolveForMessage({
-      envelope: input.envelope,
-      watchLocation: input.watchLocation,
-      actorRole: input.actorRole,
-      scope: input.scope,
-      workspaceWriteActive: false
-    });
-    if (this.store.codexSessions.get(sessionIdentity.sessionIdentity)) {
-      return {
-        preparedPrompt: null,
+        progressNotice: null,
         wasPreprocessed: false
       };
     }
@@ -79,6 +64,7 @@ export class ForumFirstTurnPreprocessor {
     if (!starterMessage?.trim()) {
       return {
         preparedPrompt: null,
+        progressNotice: null,
         wasPreprocessed: false
       };
     }
@@ -96,9 +82,36 @@ export class ForumFirstTurnPreprocessor {
       );
       return {
         preparedPrompt: null,
+        progressNotice: null,
         wasPreprocessed: false
       };
     }
+  }
+
+  async needsPreparation(input: {
+    message: Message<true>;
+    envelope: MessageEnvelope;
+    watchLocation: WatchLocationConfig;
+    actorRole: ActorRole;
+    scope: Scope;
+  }): Promise<boolean> {
+    if (
+      input.watchLocation.mode !== "forum_longform" ||
+      input.envelope.placeType !== "forum_post_thread" ||
+      !input.message.channel.isThread()
+    ) {
+      return false;
+    }
+
+    const sessionIdentity = this.sessionPolicyResolver.resolveForMessage({
+      envelope: input.envelope,
+      watchLocation: input.watchLocation,
+      actorRole: input.actorRole,
+      scope: input.scope,
+      workspaceWriteActive: false
+    });
+
+    return !this.store.codexSessions.get(sessionIdentity.sessionIdentity);
   }
 
   private async fetchStarterMessage(message: Message<true>): Promise<string | null> {

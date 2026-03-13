@@ -60,12 +60,15 @@ type TurnCompletion = {
   resolve: (result: {
     lastAgentMessage: string | null;
     turnId: string | null;
+    observedPublicUrls: string[];
   }) => void;
   reject: (error: Error) => void;
   threadId: string;
   allowExternalFetch: boolean;
   turnId: string | null;
   lastAgentMessage: string | null;
+  observedPublicUrls: Set<string>;
+  control: ActiveTurnControlState;
 };
 
 export type HarnessTurnSessionMetadata = {
@@ -79,11 +82,32 @@ export type TurnObservations = {
   observed_public_urls: string[];
 };
 
+export type TurnControlPolicy = {
+  idleSteer?: {
+    afterMs: number;
+    prompt: string;
+  };
+  broadeningSearchSteer?: {
+    searchActionThreshold: number;
+    prompt: string;
+  };
+};
+
+type ActiveTurnControlState = {
+  policy: TurnControlPolicy | null;
+  lastActivityAt: number;
+  searchActionCount: number;
+  openPageActionCount: number;
+  findInPageActionCount: number;
+  idleSteerIssued: boolean;
+  broadeningSearchSteerIssued: boolean;
+};
+
 export const HARNESS_DEVELOPER_INSTRUCTIONS = [
   "You are the harness core for a Discord assistant running inside a local repository.",
   "Repository harness artifacts are defined by the repository-root AGENTS.md. Treat it as the canonical runtime harness document.",
   "Implementation details live under implementation/. Treat that layer as code and repository mechanics, not as the canonical runtime policy layer.",
-  "Return exactly one JSON object that matches the provided output schema.",
+  "If outputSchema is provided, return exactly one JSON object that matches it. If outputSchema is not provided, return a brief plain-text internal work note for the current phase.",
   "The system layer owns Discord side effects, safety boundaries, reply targets, idempotency, sandboxing, and persistence integrity.",
   "You own interpretation, retrieval strategy, save intent, summarization, wording, and deciding whether the message is a chat reply, knowledge ingest, admin diagnostics, ignore, or failure.",
   "Treat place, capabilities, task, override_context, and available_context as authoritative system facts.",
@@ -94,11 +118,17 @@ export const HARNESS_DEVELOPER_INSTRUCTIONS = [
   "available_context.recent_messages are same-place recent human messages that happened before the current message and after the last visible bot reply. They are supplemental context only; message.content is the current turn.",
   "Unless the user explicitly requests another language, write public_text in natural Japanese.",
   "fetchable_public_urls are already-approved direct URLs from the user message. blocked_urls are visible context, not approved fetch targets.",
-  "If capabilities.allow_external_fetch is true and the user explicitly asks you to investigate, gather, or save public knowledge, you may inspect public sources that stay within the same public-URL safety boundary.",
+  "If capabilities.allow_external_fetch is true, you may inspect public sources that stay within the same public-URL safety boundary.",
+  "If task.phase is intent and place.mode is forum_longform, request requested_external_fetch=public_research unless the user explicitly forbids external lookup.",
+  "If place.mode is forum_longform and task.phase is answer or retry, always perform public research before the substantive answer unless the user explicitly forbids browsing. Base the answer on that research plus your reasoning.",
+  "If place.mode is forum_longform and you rely on searched public sources, add inline numeric citations such as [1], [2] in public_text at the supported statements.",
+  "If place.mode is forum_longform, keep sources_used as the cited public URLs in first-citation order so System can emit a separate reference message.",
   "task.phase tells you whether this turn is intent-only, answer generation, or retry generation.",
+  "If the input includes forum_loop, treat it as hidden control-plane metadata. Follow its kind and embedded instructions exactly, and never expose forum_loop metadata in the final user-facing answer.",
   "On task.phase=intent, decide requested capabilities and return moderation_signal based on the user's dangerous or prohibited control request. For normal requests, set moderation_signal.violation_category to none.",
   "task.retry_context is control-plane metadata, not user input. Follow it exactly when present.",
-  "If task.retry_context.kind is output_safety, use only task.retry_context.allowed_sources as grounding. Do not rely on task.retry_context.disallowed_sources.",
+  "If task.retry_context.kind is output_safety and place.mode is forum_longform and capabilities.allow_external_fetch is true, you may perform fresh public research now. Exclude blocked, private, and non-public sources, then answer from public grounding plus your reasoning.",
+  "If task.retry_context.kind is output_safety and the previous exception does not apply, use only task.retry_context.allowed_sources as grounding. Do not rely on task.retry_context.disallowed_sources.",
   "If task.retry_context.kind is output_safety and no safe answer can be given from the allowed public grounding, return a brief failure-style public_text rather than staying silent.",
   "If task.retry_context.kind is knowledge_followup_non_silent, this is a forced same-thread retry because your prior answer produced no visible reply. Produce a visible Japanese reply in the same thread without going silent.",
   "If you need repository-local Discord runtime facts beyond the request payload, use the repo skill discord-harness and its read-only scripts. Do not browse Discord docs or grep the codebase for current-turn runtime facts.",
@@ -260,6 +290,29 @@ export class CodexAppServerClient {
     });
   }
 
+  async startCompaction(threadId: string): Promise<void> {
+    await this.compactThread(threadId);
+  }
+
+  async interruptTurn(threadId: string, turnId: string): Promise<void> {
+    await this.request("turn/interrupt", {
+      threadId,
+      turnId
+    });
+  }
+
+  async steerTurn(
+    threadId: string,
+    turnId: string,
+    prompt: string
+  ): Promise<void> {
+    await this.request("turn/steer", buildTurnSteerParams({
+      threadId,
+      turnId,
+      prompt
+    }));
+  }
+
   async runHarnessRequest(
     threadId: string,
     requestPayload: HarnessRequest,
@@ -290,6 +343,70 @@ export class CodexAppServerClient {
       parser: (value) => harnessIntentResponseSchema.parse(value)
     });
     return result.response;
+  }
+
+  async runJsonTurn<T>(input: {
+    threadId: string;
+    inputPayload: unknown;
+    allowExternalFetch: boolean;
+    outputSchema: object;
+    parser: (value: unknown) => T;
+    sessionMetadata?: HarnessTurnSessionMetadata;
+    timeoutMs?: number;
+    controlPolicy?: TurnControlPolicy | null;
+  }): Promise<{
+    response: T;
+    observations: TurnObservations;
+  }> {
+    const result = await this.runStructuredJsonTurn<T>({
+      threadId: input.threadId,
+      inputPayload: input.inputPayload,
+      allowExternalFetch: input.allowExternalFetch,
+      outputSchema: input.outputSchema,
+      parser: input.parser,
+      ...(input.sessionMetadata === undefined
+        ? {}
+        : { sessionMetadata: input.sessionMetadata }),
+      ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
+      ...(input.controlPolicy === undefined
+        ? {}
+        : { controlPolicy: input.controlPolicy })
+    });
+
+    return {
+      response: result.response,
+      observations: result.observations
+    };
+  }
+
+  async runTextTurn(input: {
+    threadId: string;
+    inputPayload: unknown;
+    allowExternalFetch: boolean;
+    sessionMetadata?: HarnessTurnSessionMetadata;
+    timeoutMs?: number;
+    controlPolicy?: TurnControlPolicy | null;
+  }): Promise<{
+    response: string | null;
+    observations: TurnObservations;
+  }> {
+    const result = await this.runTurnAndReadMessage({
+      threadId: input.threadId,
+      inputPayload: input.inputPayload,
+      allowExternalFetch: input.allowExternalFetch,
+      ...(input.sessionMetadata === undefined
+        ? {}
+        : { sessionMetadata: input.sessionMetadata }),
+      ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
+      ...(input.controlPolicy === undefined
+        ? {}
+        : { controlPolicy: input.controlPolicy })
+    });
+
+    return {
+      response: result.lastAgentMessage,
+      observations: result.observations
+    };
   }
 
   private async runStructuredHarnessTurn<T>(input: {
@@ -330,38 +447,16 @@ export class CodexAppServerClient {
       modelProfile: input.sessionMetadata?.modelProfile,
       runtimeContractVersion: input.sessionMetadata?.runtimeContractVersion
     });
-    const completion = this.waitForTurnCompletion({
+    const result = await this.runStructuredJsonTurn<T>({
       threadId: input.threadId,
-      allowExternalFetch: input.requestPayload.capabilities.allow_external_fetch
+      inputPayload: input.requestPayload,
+      allowExternalFetch: input.requestPayload.capabilities.allow_external_fetch,
+      outputSchema: input.outputSchema,
+      parser: input.parser,
+      ...(input.sessionMetadata === undefined
+        ? {}
+        : { sessionMetadata: input.sessionMetadata })
     });
-    const executionProfile = resolveCodexExecutionProfile(
-      input.sessionMetadata?.modelProfile ?? "default:gpt-5.4"
-    );
-
-    const turnStartResult = (await this.request(
-      "turn/start",
-      buildTurnStartParams({
-        threadId: input.threadId,
-        requestPayload: input.requestPayload,
-        outputSchema: input.outputSchema,
-        executionProfile
-      })
-    )) as { turn?: { id?: string } };
-
-    const completionResult = await completion;
-    const turnSnapshot = await this.readLatestTurnSnapshotWithRetry({
-      threadId: input.threadId,
-      turnId: completionResult.turnId ?? turnStartResult.turn?.id ?? null,
-      allowExternalFetch: input.requestPayload.capabilities.allow_external_fetch
-    });
-    const lastAgentText =
-      turnSnapshot.lastAgentMessage ?? completionResult.lastAgentMessage;
-    if (!lastAgentText) {
-      throw new Error("codex thread/read did not contain an agent message");
-    }
-
-    const parsed = JSON.parse(lastAgentText) as unknown;
-    const response = input.parser(parsed);
     this.logger.debug(
       {
         threadId: input.threadId,
@@ -372,9 +467,9 @@ export class CodexAppServerClient {
     appendRuntimeTrace("codex-app-server", "harness_turn_completed", {
       threadId: input.threadId,
       requestId: input.requestPayload.request_id,
-      response,
+      response: result.response,
       observations: {
-        observed_public_urls: sortStrings(turnSnapshot.observedPublicUrls)
+        observed_public_urls: result.observations.observed_public_urls
       },
       sessionIdentity: input.sessionMetadata?.sessionIdentity,
       workloadKind: input.sessionMetadata?.workloadKind,
@@ -382,20 +477,127 @@ export class CodexAppServerClient {
       runtimeContractVersion: input.sessionMetadata?.runtimeContractVersion
     });
     return {
-      response,
+      response: result.response,
+      observations: result.observations
+    };
+  }
+
+  private async runStructuredJsonTurn<T>(input: {
+    threadId: string;
+    inputPayload: unknown;
+    allowExternalFetch: boolean;
+    outputSchema: object;
+    parser: (value: unknown) => T;
+    sessionMetadata?: HarnessTurnSessionMetadata;
+    timeoutMs?: number;
+    controlPolicy?: TurnControlPolicy | null;
+  }): Promise<{
+    response: T;
+    observations: TurnObservations;
+  }> {
+    const turnResult = await this.runTurnAndReadMessage({
+      threadId: input.threadId,
+      inputPayload: input.inputPayload,
+      allowExternalFetch: input.allowExternalFetch,
+      ...(input.outputSchema === undefined ? {} : { outputSchema: input.outputSchema }),
+      ...(input.sessionMetadata === undefined
+        ? {}
+        : { sessionMetadata: input.sessionMetadata }),
+      ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
+      ...(input.controlPolicy === undefined
+        ? {}
+        : { controlPolicy: input.controlPolicy })
+    });
+    if (!turnResult.lastAgentMessage) {
+      throw new Error("codex thread/read did not contain an agent message");
+    }
+
+    const parsed = JSON.parse(turnResult.lastAgentMessage) as unknown;
+    return {
+      response: input.parser(parsed),
+      observations: turnResult.observations
+    };
+  }
+
+  private async runTurnAndReadMessage(input: {
+    threadId: string;
+    inputPayload: unknown;
+    allowExternalFetch: boolean;
+    outputSchema?: object;
+    sessionMetadata?: HarnessTurnSessionMetadata;
+    timeoutMs?: number;
+    controlPolicy?: TurnControlPolicy | null;
+  }): Promise<{
+    lastAgentMessage: string | null;
+    observations: TurnObservations;
+    turnId: string | null;
+  }> {
+    const completionHandle = this.waitForTurnCompletion({
+      threadId: input.threadId,
+      allowExternalFetch: input.allowExternalFetch,
+      controlPolicy: input.controlPolicy ?? null
+    });
+    const executionProfile = resolveCodexExecutionProfile(
+      input.sessionMetadata?.modelProfile ?? "default:gpt-5.4"
+    );
+
+    const turnStartResult = (await this.request(
+      "turn/start",
+      buildTurnStartParams({
+        threadId: input.threadId,
+        requestPayload: input.inputPayload,
+        ...(input.outputSchema === undefined ? {} : { outputSchema: input.outputSchema }),
+        executionProfile
+      })
+    )) as { turn?: { id?: string } };
+    const turnId = turnStartResult.turn?.id ?? null;
+
+    const completionResult =
+      input.timeoutMs === undefined
+        ? await completionHandle.promise
+        : await this.waitForTurnCompletionWithTimeout({
+            threadId: input.threadId,
+            turnId,
+            timeoutMs: input.timeoutMs,
+            completion: completionHandle
+          });
+    const turnSnapshot = await this.readLatestTurnSnapshotWithRetry({
+      threadId: input.threadId,
+      turnId: completionResult.turnId ?? turnId,
+      allowExternalFetch: input.allowExternalFetch,
+      observedPublicUrls: completionResult.observedPublicUrls
+    });
+
+    return {
+      lastAgentMessage:
+        turnSnapshot.lastAgentMessage ?? completionResult.lastAgentMessage,
       observations: {
         observed_public_urls: sortStrings(turnSnapshot.observedPublicUrls)
-      }
+      },
+      turnId: completionResult.turnId ?? turnId
     };
   }
 
   private waitForTurnCompletion(input: {
     threadId: string;
     allowExternalFetch: boolean;
-  }): Promise<{ lastAgentMessage: string | null; turnId: string | null }> {
-    return new Promise((resolve, reject) => {
+    controlPolicy: TurnControlPolicy | null;
+  }): {
+    promise: Promise<{
+      lastAgentMessage: string | null;
+      turnId: string | null;
+      observedPublicUrls: string[];
+    }>;
+    completion: TurnCompletion;
+  } {
+    let completion!: TurnCompletion;
+    const promise = new Promise<{
+      lastAgentMessage: string | null;
+      turnId: string | null;
+      observedPublicUrls: string[];
+    }>((resolve, reject) => {
       const queue = this.pendingTurnCompletions.get(input.threadId) ?? [];
-      queue.push({
+      completion = {
         resolve,
         reject: (error) => {
           reject(error);
@@ -403,16 +605,33 @@ export class CodexAppServerClient {
         threadId: input.threadId,
         allowExternalFetch: input.allowExternalFetch,
         turnId: null,
-        lastAgentMessage: null
-      });
+        lastAgentMessage: null,
+        observedPublicUrls: new Set<string>(),
+        control: {
+          policy: input.controlPolicy,
+          lastActivityAt: Date.now(),
+          searchActionCount: 0,
+          openPageActionCount: 0,
+          findInPageActionCount: 0,
+          idleSteerIssued: false,
+          broadeningSearchSteerIssued: false
+        }
+      };
+      queue.push(completion);
       this.pendingTurnCompletions.set(input.threadId, queue);
     });
+
+    return {
+      promise,
+      completion
+    };
   }
 
   private async readLatestTurnSnapshotWithRetry(input: {
     threadId: string;
     turnId: string | null;
     allowExternalFetch: boolean;
+    observedPublicUrls: string[];
   }): Promise<{
     lastAgentMessage: string | null;
     observedPublicUrls: string[];
@@ -435,7 +654,13 @@ export class CodexAppServerClient {
         input.allowExternalFetch
       );
       if (snapshot.lastAgentMessage) {
-        return snapshot;
+        return {
+          lastAgentMessage: snapshot.lastAgentMessage,
+          observedPublicUrls: sortStrings([
+            ...snapshot.observedPublicUrls,
+            ...input.observedPublicUrls
+          ])
+        };
       }
 
       if (attempt < 4) {
@@ -445,8 +670,66 @@ export class CodexAppServerClient {
 
     return {
       lastAgentMessage: null,
-      observedPublicUrls: []
+      observedPublicUrls: sortStrings(input.observedPublicUrls)
     };
+  }
+
+  private async waitForTurnCompletionWithTimeout(input: {
+    threadId: string;
+    turnId: string | null;
+    timeoutMs: number;
+    completion: {
+      promise: Promise<{
+        lastAgentMessage: string | null;
+        turnId: string | null;
+        observedPublicUrls: string[];
+      }>;
+      completion: TurnCompletion;
+    };
+  }): Promise<{
+    lastAgentMessage: string | null;
+    turnId: string | null;
+    observedPublicUrls: string[];
+  }> {
+    const startedAt = Date.now();
+    const tracked = trackPromise(input.completion.promise);
+    try {
+      while (tracked.state.status === "pending") {
+        const elapsedMs = Date.now() - startedAt;
+        if (elapsedMs >= input.timeoutMs) {
+          throw new Error(`codex turn timed out after ${input.timeoutMs}ms`);
+        }
+
+        await this.maybeIssueTurnSteer(input.completion.completion);
+        await delay(Math.min(1_000, input.timeoutMs - elapsedMs));
+      }
+
+      if (tracked.state.status === "rejected") {
+        throw tracked.state.error;
+      }
+
+      return tracked.state.value;
+    } catch (error) {
+      const activeTurnId = input.turnId ?? input.completion.completion.turnId;
+      if (activeTurnId) {
+        try {
+          await this.interruptTurn(input.threadId, activeTurnId);
+        } catch (interruptError) {
+          this.logger.debug(
+            {
+              error:
+                interruptError instanceof Error
+                  ? interruptError.message
+                  : String(interruptError),
+              threadId: input.threadId,
+              turnId: activeTurnId
+            },
+            "failed to interrupt timed-out codex turn"
+          );
+        }
+      }
+      throw error;
+    }
   }
 
   private request(method: string, params?: unknown): Promise<unknown> {
@@ -556,8 +839,23 @@ export class CodexAppServerClient {
       }
 
       completion.turnId = turnId;
+      completion.control.lastActivityAt = Date.now();
       this.activeTurnCompletions.set(turnId, completion);
       return;
+    }
+
+    if (
+      method === "item/started" ||
+      method === "item/completed" ||
+      method === "codex/event/item_completed" ||
+      method === "item/reasoning/summaryTextDelta" ||
+      method === "codex/event/reasoning_summary_delta" ||
+      method === "codex/event/agent_message"
+    ) {
+      const completion = this.findTurnCompletion(params);
+      if (completion) {
+        this.recordTurnActivity(completion, params);
+      }
     }
 
     if (method === "codex/event/task_complete") {
@@ -594,13 +892,12 @@ export class CodexAppServerClient {
 
     if (method === "item/completed") {
       const threadId = getNotificationThreadId(params);
-      const lastAgentMessage = getCompletedAgentMessageText(params);
-      if (!threadId || lastAgentMessage === null) {
-        return;
-      }
-
       const completion = this.findTurnCompletion(params);
-      if (!completion) {
+      if (completion) {
+        this.recordObservedPublicUrlsForCompletion(completion, params);
+      }
+      const lastAgentMessage = getCompletedAgentMessageText(params);
+      if (!threadId || lastAgentMessage === null || !completion) {
         return;
       }
 
@@ -610,13 +907,12 @@ export class CodexAppServerClient {
 
     if (method === "codex/event/item_completed") {
       const threadId = getNotificationThreadId(params);
-      const lastAgentMessage = getLegacyCompletedAgentMessageText(params);
-      if (!threadId || lastAgentMessage === null) {
-        return;
-      }
-
       const completion = this.findTurnCompletion(params);
-      if (!completion) {
+      if (completion) {
+        this.recordObservedPublicUrlsForCompletion(completion, params);
+      }
+      const lastAgentMessage = getLegacyCompletedAgentMessageText(params);
+      if (!threadId || lastAgentMessage === null || !completion) {
         return;
       }
 
@@ -637,7 +933,8 @@ export class CodexAppServerClient {
       }
       completion.resolve({
         lastAgentMessage: completion.lastAgentMessage,
-        turnId: completion.turnId
+        turnId: completion.turnId,
+        observedPublicUrls: sortStrings(completion.observedPublicUrls)
       });
       return;
     }
@@ -729,6 +1026,117 @@ export class CodexAppServerClient {
 
     return this.shiftPendingTurnCompletion(threadId);
   }
+
+  private recordObservedPublicUrlsForCompletion(
+    completion: TurnCompletion,
+    params: unknown
+  ): void {
+    const observedUrls = extractObservedPublicUrlsFromNotificationParams(
+      params,
+      completion.allowExternalFetch,
+      this.cwd
+    );
+    for (const url of observedUrls) {
+      completion.observedPublicUrls.add(url);
+    }
+  }
+
+  private recordTurnActivity(
+    completion: TurnCompletion,
+    params: unknown
+  ): void {
+    completion.control.lastActivityAt = Date.now();
+    const actionType = extractWebSearchActionTypeFromNotificationParams(params);
+    if (!actionType) {
+      return;
+    }
+
+    if (actionType === "search") {
+      completion.control.searchActionCount += 1;
+      return;
+    }
+
+    if (actionType === "openPage") {
+      completion.control.openPageActionCount += 1;
+      return;
+    }
+
+    completion.control.findInPageActionCount += 1;
+  }
+
+  private async maybeIssueTurnSteer(completion: TurnCompletion): Promise<void> {
+    const policy = completion.control.policy;
+    if (!policy || !completion.turnId) {
+      return;
+    }
+
+    const now = Date.now();
+    if (
+      !completion.control.idleSteerIssued &&
+      policy.idleSteer &&
+      now - completion.control.lastActivityAt >= policy.idleSteer.afterMs
+    ) {
+      await this.issueTurnSteer(completion, "idle", policy.idleSteer.prompt);
+      completion.control.idleSteerIssued = true;
+      completion.control.lastActivityAt = now;
+      return;
+    }
+
+    if (
+      !completion.control.broadeningSearchSteerIssued &&
+      policy.broadeningSearchSteer &&
+      completion.control.searchActionCount >=
+        policy.broadeningSearchSteer.searchActionThreshold &&
+      completion.control.openPageActionCount === 0 &&
+      completion.control.findInPageActionCount === 0
+    ) {
+      await this.issueTurnSteer(
+        completion,
+        "broadening_search",
+        policy.broadeningSearchSteer.prompt
+      );
+      completion.control.broadeningSearchSteerIssued = true;
+      completion.control.lastActivityAt = now;
+    }
+  }
+
+  private async issueTurnSteer(
+    completion: TurnCompletion,
+    reason: "idle" | "broadening_search",
+    prompt: string
+  ): Promise<void> {
+    if (!completion.turnId) {
+      return;
+    }
+
+    appendRuntimeTrace("codex-app-server", "turn_steer_requested", {
+      threadId: completion.threadId,
+      turnId: completion.turnId,
+      reason,
+      searchActionCount: completion.control.searchActionCount,
+      openPageActionCount: completion.control.openPageActionCount,
+      findInPageActionCount: completion.control.findInPageActionCount
+    });
+    try {
+      await this.steerTurn(completion.threadId, completion.turnId, prompt);
+    } catch (error) {
+      this.logger.debug(
+        {
+          error: error instanceof Error ? error.message : String(error),
+          threadId: completion.threadId,
+          turnId: completion.turnId,
+          reason
+        },
+        "failed to steer active codex turn"
+      );
+      appendRuntimeTrace("codex-app-server", "turn_steer_failed", {
+        threadId: completion.threadId,
+        turnId: completion.turnId,
+        reason,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
 }
 
 function dedupeStrings(values: string[]): string[] {
@@ -780,8 +1188,8 @@ function buildThreadStartParams(input: {
 
 function buildTurnStartParams(input: {
   threadId: string;
-  requestPayload: HarnessRequest;
-  outputSchema: object;
+  requestPayload: unknown;
+  outputSchema?: object;
   executionProfile: CodexExecutionProfile;
 }) {
   return {
@@ -797,7 +1205,25 @@ function buildTurnStartParams(input: {
     ...(input.executionProfile.reasoningEffort === null
       ? {}
       : { effort: input.executionProfile.reasoningEffort }),
-    outputSchema: input.outputSchema
+    ...(input.outputSchema === undefined ? {} : { outputSchema: input.outputSchema })
+  };
+}
+
+function buildTurnSteerParams(input: {
+  threadId: string;
+  turnId: string;
+  prompt: string;
+}) {
+  return {
+    threadId: input.threadId,
+    expectedTurnId: input.turnId,
+    input: [
+      {
+        type: "text",
+        text: input.prompt,
+        text_elements: []
+      }
+    ]
   };
 }
 
@@ -917,13 +1343,111 @@ function extractObservedPublicUrlsFromTurnItems(
 
   const observed = new Set<string>();
   for (const item of items) {
-    const urls = extractObservedPublicUrlsFromCommandExecutionItem(item, repoCwd);
+    const urls = [
+      ...extractObservedPublicUrlsFromCommandExecutionItem(item, repoCwd),
+      ...extractObservedPublicUrlsFromWebSearchItem(item)
+    ];
     for (const url of urls) {
       observed.add(url);
     }
   }
 
   return sortStrings(observed);
+}
+
+function extractObservedPublicUrlsFromNotificationParams(
+  params: unknown,
+  allowExternalFetch: boolean,
+  repoCwd = process.cwd()
+): string[] {
+  if (
+    typeof params !== "object" ||
+    params === null ||
+    !("item" in params)
+  ) {
+    return [];
+  }
+
+  return extractObservedPublicUrlsFromTurnItems(
+    [params.item],
+    allowExternalFetch,
+    repoCwd
+  );
+}
+
+function extractWebSearchActionTypeFromNotificationParams(
+  params: unknown
+): "search" | "openPage" | "findInPage" | null {
+  if (
+    typeof params !== "object" ||
+    params === null ||
+    !("item" in params)
+  ) {
+    return null;
+  }
+
+  return extractWebSearchActionTypeFromItem(params.item);
+}
+
+function extractWebSearchActionTypeFromItem(
+  item: unknown
+): "search" | "openPage" | "findInPage" | null {
+  if (
+    typeof item !== "object" ||
+    item === null ||
+    !("type" in item) ||
+    item.type !== "webSearch" ||
+    !("action" in item) ||
+    typeof item.action !== "object" ||
+    item.action === null ||
+    !("type" in item.action) ||
+    typeof item.action.type !== "string"
+  ) {
+    return null;
+  }
+
+  if (
+    item.action.type === "search" ||
+    item.action.type === "openPage" ||
+    item.action.type === "findInPage"
+  ) {
+    return item.action.type;
+  }
+
+  return null;
+}
+
+function extractObservedPublicUrlsFromWebSearchItem(item: unknown): string[] {
+  if (
+    typeof item !== "object" ||
+    item === null ||
+    !("type" in item) ||
+    item.type !== "webSearch" ||
+    !("action" in item) ||
+    typeof item.action !== "object" ||
+    item.action === null ||
+    !("type" in item.action)
+  ) {
+    return [];
+  }
+
+  const action = item.action;
+  const url =
+    action.type === "openPage" || action.type === "findInPage"
+      ? "url" in action && typeof action.url === "string"
+        ? action.url
+        : null
+      : null;
+
+  if (!url || !isAllowedPublicHttpUrl(url)) {
+    return [];
+  }
+
+  try {
+    return [canonicalizeUrl(url)];
+  } catch {
+    return [];
+  }
 }
 
 function extractObservedPublicUrlsFromCommandExecutionItem(
@@ -1283,11 +1807,49 @@ function getTurnCompletionError(params: unknown): Error | null {
   return new Error(message);
 }
 
+function trackPromise<T>(promise: Promise<T>): {
+  state:
+    | { status: "pending" }
+    | { status: "fulfilled"; value: T }
+    | { status: "rejected"; error: Error };
+} {
+  const tracked: {
+    state:
+      | { status: "pending" }
+      | { status: "fulfilled"; value: T }
+      | { status: "rejected"; error: Error };
+  } = {
+    state: {
+      status: "pending"
+    }
+  };
+
+  void promise.then(
+    (value) => {
+      tracked.state = {
+        status: "fulfilled",
+        value
+      };
+    },
+    (error: unknown) => {
+      tracked.state = {
+        status: "rejected",
+        error: error instanceof Error ? error : new Error(String(error))
+      };
+    }
+  );
+
+  return tracked;
+}
+
 export const __testOnly = {
   buildThreadStartParams,
   buildTurnStartParams,
+  buildTurnSteerParams,
   findLatestTurnSnapshot,
-  extractObservedPublicUrlsFromTurnItems
+  extractObservedPublicUrlsFromTurnItems,
+  extractObservedPublicUrlsFromNotificationParams,
+  extractWebSearchActionTypeFromNotificationParams
 };
 
 

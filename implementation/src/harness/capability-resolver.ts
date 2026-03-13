@@ -41,6 +41,10 @@ function shouldGrantExternalFetch(
   request: HarnessRequest,
   intent: HarnessIntentResponse
 ): boolean {
+  if (request.place.mode === "forum_longform") {
+    return true;
+  }
+
   switch (intent.requested_external_fetch) {
     case "none":
       return false;

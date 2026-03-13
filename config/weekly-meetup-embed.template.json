@@ -1,12 +1,13 @@
 {
-  "title": "AI集会のお知らせ",
-  "description": "毎週月曜 21:00 JST から AI 集会を開催します。",
+  "title": "【第29回】AI集会開催情報｜2026/03/16 21:00~",
+  "description": "**LT/テックトーク登壇者 募集中！**\n- 5〜10分の Lightning Talk 形式 - テーマ自由\n- 10分以上のTech-talk形式 - テーマ自由\n- 登壇希望は <#1365214305041252352> からチケットを申請してください。\n\n**当日の流れ**\n1. 雑談\n2. トーク開催情報\n      - 今週はなし\n\n**参加方法**\nグループインスタンスに参加\nhttps://vrc.group/VRCAI.0943\n\n> カジュアルに聞くだけ参加も大歓迎です！",
   "color": 3447003,
-  "fields": [
-    {
-      "name": "開始時刻",
-      "value": "毎週月曜 21:00 JST",
-      "inline": true
-    }
-  ]
+  "author": {
+    "name": "VRChat × AI Community",
+    "icon_url": "https://message.style/cdn/images/c4ab01ed69f9cb38549d3ebf7b680f7dba3c770abd26eaf1546c37d3e21f1a13.jfif"
+  },
+  "footer": {
+    "text": "LT 登壇〆切は毎週日曜 23:59 JST"
+  },
+  "fields": []
 }

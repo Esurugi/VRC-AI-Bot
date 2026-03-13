@@ -218,6 +218,88 @@ test("OutputSafetyGuard allows same-turn observed public URLs", () => {
   }
 });
 
+test("OutputSafetyGuard allows forum public research URLs without exact observed-url match", () => {
+  const fixture = createFixture();
+
+  try {
+    const evaluation = fixture.guard.evaluate({
+      request: createRequest({
+        scope: "conversation_only",
+        watchLocation: {
+          guildId: "guild-1",
+          channelId: "forum-parent-1",
+          mode: "forum_longform",
+          defaultScope: "conversation_only"
+        },
+        envelope: {
+          guildId: "guild-1",
+          channelId: "thread-1",
+          messageId: "message-forum-1",
+          authorId: "user-1",
+          placeType: "forum_post_thread",
+          rawPlaceType: "PublicThread",
+          content: "論じて",
+          urls: [],
+          receivedAt: "2026-03-10T00:00:04.000Z"
+        },
+        allowExternalFetch: true
+      }),
+      response: createResponse({
+        sources_used: [
+          "https://www.britannica.com/topic/Sunni",
+          "https://www.cfr.org/conference-calls/tensions-between-saudi-arabia-and-iran"
+        ]
+      }),
+      linkedKnowledgeSources: [],
+      observedPublicUrls: ["https://www.britannica.com/topic/Sunni"]
+    });
+
+    assert.equal(evaluation.decision, "allow");
+    assert.equal(evaluation.reason, null);
+  } finally {
+    fixture.close();
+  }
+});
+
+test("OutputSafetyGuard still rejects blocked or non-public URLs in forum public research", () => {
+  const fixture = createFixture();
+
+  try {
+    const evaluation = fixture.guard.evaluate({
+      request: createRequest({
+        scope: "conversation_only",
+        watchLocation: {
+          guildId: "guild-1",
+          channelId: "forum-parent-1",
+          mode: "forum_longform",
+          defaultScope: "conversation_only"
+        },
+        envelope: {
+          guildId: "guild-1",
+          channelId: "thread-1",
+          messageId: "message-forum-2",
+          authorId: "user-1",
+          placeType: "forum_post_thread",
+          rawPlaceType: "PublicThread",
+          content: "論じて",
+          urls: [],
+          receivedAt: "2026-03-10T00:00:05.000Z"
+        },
+        allowExternalFetch: true
+      }),
+      response: createResponse({
+        sources_used: ["file:///tmp/private.txt"]
+      }),
+      linkedKnowledgeSources: []
+    });
+
+    assert.equal(evaluation.decision, "retry");
+    assert.match(evaluation.reason ?? "", /blocked or non-public source url/);
+  } finally {
+    fixture.close();
+  }
+});
+
 test("OutputSafetyGuard rejects opaque and non-http source markers", () => {
   const fixture = createFixture();
 

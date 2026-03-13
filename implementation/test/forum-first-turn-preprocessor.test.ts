@@ -43,6 +43,7 @@ test("ForumFirstTurnPreprocessor prepares starter text only for the first forum 
 
     assert.deepEqual(result, {
       preparedPrompt: "prepared::thread starter",
+      progressNotice: "論点と前提を整理しながら考えています。少し待ってください。",
       wasPreprocessed: true
     });
     assert.deepEqual(fixture.executor.calls, [
@@ -51,6 +52,64 @@ test("ForumFirstTurnPreprocessor prepares starter text only for the first forum 
         starterMessage: "thread starter"
       }
     ]);
+  } finally {
+    fixture.close();
+  }
+});
+
+test("ForumFirstTurnPreprocessor reports preparation needed only before the first forum session turn", async () => {
+  const fixture = createFixture();
+  const input = {
+    message: createForumMessage({
+      messageId: "message-2",
+      content: "follow-up",
+      starterContent: "thread starter"
+    }),
+    envelope: {
+      guildId: "guild-1",
+      channelId: "forum-thread-1",
+      messageId: "message-2",
+      authorId: "user-1",
+      placeType: "forum_post_thread",
+      rawPlaceType: "PublicThread",
+      content: "follow-up",
+      urls: [] as string[],
+      receivedAt: "2026-03-10T00:00:00.000Z"
+    },
+    watchLocation: {
+      guildId: "guild-1",
+      channelId: "forum-parent-1",
+      mode: "forum_longform",
+      defaultScope: "conversation_only"
+    },
+    actorRole: "user" as const,
+    scope: "conversation_only" as const
+  } as const;
+
+  try {
+    assert.equal(await fixture.preprocessor.needsPreparation(input), true);
+
+    const identity = fixture.sessionPolicyResolver.resolveForMessage({
+      envelope: input.envelope,
+      watchLocation: input.watchLocation,
+      actorRole: input.actorRole,
+      scope: input.scope,
+      workspaceWriteActive: false
+    });
+    fixture.store.codexSessions.upsert({
+      sessionIdentity: identity.sessionIdentity,
+      workloadKind: identity.workloadKind,
+      bindingKind: identity.bindingKind,
+      bindingId: identity.bindingId,
+      actorId: identity.actorId,
+      sandboxMode: identity.sandboxMode,
+      modelProfile: identity.modelProfile,
+      runtimeContractVersion: identity.runtimeContractVersion,
+      lifecyclePolicy: identity.lifecyclePolicy,
+      codexThreadId: "codex-thread-1"
+    });
+
+    assert.equal(await fixture.preprocessor.needsPreparation(input), false);
   } finally {
     fixture.close();
   }
@@ -123,6 +182,7 @@ test("ForumFirstTurnPreprocessor skips preprocessing when a forum session bindin
 
     assert.deepEqual(result, {
       preparedPrompt: null,
+      progressNotice: null,
       wasPreprocessed: false
     });
     assert.deepEqual(fixture.executor.calls, []);
@@ -166,6 +226,7 @@ test("ForumFirstTurnPreprocessor falls back to raw content when preprocessing fa
 
     assert.deepEqual(result, {
       preparedPrompt: null,
+      progressNotice: null,
       wasPreprocessed: false
     });
     assert.equal(fixture.warns.length, 1);
@@ -231,12 +292,18 @@ class FakeExecutor implements ForumPromptPreparationExecutor {
   async prepareForumFirstTurnPrompt(input: {
     threadId: string;
     starterMessage: string;
-  }): Promise<string> {
+  }): Promise<{
+    preparedPrompt: string;
+    progressNotice: string | null;
+  }> {
     this.calls.push(input);
     if (this.executorError) {
       throw this.executorError;
     }
 
-    return `prepared::${input.starterMessage}`;
+    return {
+      preparedPrompt: `prepared::${input.starterMessage}`,
+      progressNotice: "論点と前提を整理しながら考えています。少し待ってください。"
+    };
   }
 }

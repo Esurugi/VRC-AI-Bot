@@ -55,6 +55,7 @@ export class OutputSafetyGuard {
       (input.observedPublicUrls ?? []).map((url) => safeCanonicalizeUrl(url))
     );
     const linkedSourceIds = new Set(input.linkedKnowledgeSources.map((source) => source.sourceId));
+    const forumPublicResearchMode = isForumPublicResearchMode(input.request);
 
     for (const sourceId of input.response.selected_source_ids) {
       const record = this.store.knowledgeRecords.get(sourceId);
@@ -82,6 +83,12 @@ export class OutputSafetyGuard {
         ) {
           disallowedSources.add(source);
           violations.push("blocked or non-public source url");
+          continue;
+        }
+
+        if (forumPublicResearchMode) {
+          allowedSources.add(source);
+          allowedSources.add(canonicalUrl);
           continue;
         }
 
@@ -159,6 +166,13 @@ export class OutputSafetyGuard {
     };
   }
 
+}
+
+function isForumPublicResearchMode(request: HarnessRequest): boolean {
+  return (
+    request.place.mode === "forum_longform" &&
+    request.capabilities.allow_external_fetch
+  );
 }
 
 function isRecordVisible(

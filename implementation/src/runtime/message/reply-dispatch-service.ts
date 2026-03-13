@@ -24,6 +24,10 @@ import {
   type HarnessRunner
 } from "../../harness/harness-runner.js";
 import type { HarnessResponse } from "../../harness/contracts.js";
+import {
+  canonicalizeUrl,
+  isAllowedPublicHttpUrl
+} from "../../playwright/url-policy.js";
 import type { SqliteStore, RetryJobRow } from "../../storage/database.js";
 import type { FailurePublicCategory, FailureStage } from "../../app/failure-classifier.js";
 import type { SanctionNotificationPayload } from "../../app/moderation-integration.js";
@@ -85,6 +89,8 @@ export class ReplyDispatchService {
       },
       {
         replyInSamePlace: async (content) => this.replyInSamePlace(item, content),
+        sendFollowupInSamePlace: async (content) =>
+          this.sendFollowupInSamePlace(item, content),
         resolveSamePlaceReplyTarget: () => buildSamePlaceReplyTarget(item),
         sendToExistingThread: async (content, threadId) => {
           const channel = await this.fetchReplyChannel(threadId);
@@ -112,6 +118,8 @@ export class ReplyDispatchService {
       input.messageContext,
       {
         replyInSamePlace: async (content) => this.sendChunksToChannel(input.channel, content),
+        sendFollowupInSamePlace: async (content) =>
+          this.sendChunksToChannel(input.channel, content),
         resolveSamePlaceReplyTarget: () => ({
           channelId: input.channel.id,
           threadId: input.channel.id
@@ -134,6 +142,7 @@ export class ReplyDispatchService {
     messageContext: RoutedMessageContext,
     dispatchTarget: {
       replyInSamePlace: (content: string) => Promise<void>;
+      sendFollowupInSamePlace: (content: string) => Promise<void>;
       resolveSamePlaceReplyTarget: () => FailureReplyTarget;
       sendToExistingThread: (content: string, threadId: string) => Promise<void>;
       resolveKnowledgeThread: () => Promise<AnyThreadChannel>;
@@ -191,6 +200,11 @@ export class ReplyDispatchService {
         }
         if (response.public_text?.trim()) {
           await dispatchTarget.replyInSamePlace(response.public_text);
+          await this.sendReferenceAppendixIfNeeded(
+            dispatchTarget,
+            messageContext,
+            response
+          );
         }
         return dispatchTarget.resolveSamePlaceReplyTarget();
       case "failure":
@@ -369,10 +383,41 @@ export class ReplyDispatchService {
     }
   }
 
+  async sendFollowupInSamePlace(item: QueuedMessage, content: string): Promise<void> {
+    for (const chunk of splitPlainTextReplies(content)) {
+      await item.message.channel.send({
+        content: chunk,
+        allowedMentions: {
+          parse: []
+        }
+      });
+    }
+  }
+
+  private async sendReferenceAppendixIfNeeded(
+    dispatchTarget: {
+      sendFollowupInSamePlace: (content: string) => Promise<void>;
+    },
+    messageContext: RoutedMessageContext,
+    response: HarnessResponse
+  ): Promise<void> {
+    if (messageContext.watchLocation.mode !== "forum_longform") {
+      return;
+    }
+
+    const referenceReply = buildReferenceReply(response.sources_used);
+    if (!referenceReply) {
+      return;
+    }
+
+    await dispatchTarget.sendFollowupInSamePlace(referenceReply);
+  }
+
   private async processKnowledgeIngest(
     item: RoutedMessageContext,
     dispatchTarget: {
       replyInSamePlace: (content: string) => Promise<void>;
+      sendFollowupInSamePlace: (content: string) => Promise<void>;
       resolveSamePlaceReplyTarget: () => FailureReplyTarget;
       sendToExistingThread: (content: string, threadId: string) => Promise<void>;
       resolveKnowledgeThread: () => Promise<AnyThreadChannel>;
@@ -401,6 +446,7 @@ export class ReplyDispatchService {
         });
       }
       await dispatchTarget.replyInSamePlace(buildKnowledgeReplyText(response));
+      await this.sendReferenceAppendixIfNeeded(dispatchTarget, item, response);
       return dispatchTarget.resolveSamePlaceReplyTarget();
     }
 
@@ -432,6 +478,7 @@ export class ReplyDispatchService {
         buildKnowledgeReplyText(response),
         targetThread.id
       );
+      await this.sendReferenceAppendixIfNeeded(dispatchTarget, item, response);
       return replyTarget;
     } catch (error) {
       throw attachReplyTarget(error, replyTarget);
@@ -487,6 +534,36 @@ export function buildSamePlaceReplyTarget(item: QueuedMessage): FailureReplyTarg
     channelId: item.message.channelId,
     threadId: item.message.channel.isThread() ? item.message.channel.id : null
   };
+}
+
+export function buildReferenceReply(sourcesUsed: string[]): string | null {
+  const referenceUrls = extractReferenceUrls(sourcesUsed);
+  if (referenceUrls.length === 0) {
+    return null;
+  }
+
+  return referenceUrls.map((url, index) => `[${index + 1}]: ${url}`).join("\n");
+}
+
+export function extractReferenceUrls(sourcesUsed: string[]): string[] {
+  const deduped: string[] = [];
+  const seen = new Set<string>();
+
+  for (const source of sourcesUsed) {
+    if (!isAllowedPublicHttpUrl(source)) {
+      continue;
+    }
+
+    const canonicalUrl = safeCanonicalizeUrl(source);
+    if (seen.has(canonicalUrl)) {
+      continue;
+    }
+
+    seen.add(canonicalUrl);
+    deduped.push(canonicalUrl);
+  }
+
+  return deduped;
 }
 
 export function extractStageFailure(
@@ -559,6 +636,14 @@ function buildKnowledgeThreadName(envelope: MessageEnvelope): string {
     return `${hostname}-${envelope.messageId.slice(-6)}`.slice(0, 100);
   } catch {
     return `shared-link-${envelope.messageId.slice(-6)}`;
+  }
+}
+
+function safeCanonicalizeUrl(url: string): string {
+  try {
+    return canonicalizeUrl(url);
+  } catch {
+    return url;
   }
 }
 

@@ -339,6 +339,112 @@ test("HarnessRunner grants public research and knowledge write only on answer tu
   }
 });
 
+test("HarnessRunner uses exploration loop on forum_longform answer turns", async () => {
+  const fixture = createFixture({
+    forumTextResponses: [
+      {
+        response: "acquire note",
+        observations: {
+          observed_public_urls: ["https://example.com/news"]
+        }
+      }
+    ],
+    forumJsonResponses: [
+      {
+        response: {
+          phase_result: "acquired",
+          resolved_items: ["latest facts"],
+          open_items: ["synthesis"],
+          material_gaps: [],
+          contradictions: [],
+          evidence_digest: "facts gathered",
+          provisional_outline: "outline",
+          next_phase: "finalize",
+          stop_judgement: {
+            done: true,
+            reason: "enough evidence",
+            marginal_value: "low"
+          }
+        }
+      },
+      {
+        response: createHarnessResponse({
+          public_text: "公開情報を確認して答えます。[1]",
+          sources_used: ["https://example.com/news"]
+        }),
+        observations: {
+          observed_public_urls: ["https://example.com/news"]
+        }
+      }
+    ]
+  });
+
+  try {
+    await fixture.runner.routeMessage(
+      createHarnessInput({
+        watchLocation: {
+          guildId: "guild-1",
+          channelId: "forum-parent-1",
+          mode: "forum_longform",
+          defaultScope: "conversation_only"
+        },
+        scope: "conversation_only",
+        envelope: {
+          guildId: "guild-1",
+          channelId: "thread-1",
+          messageId: "message-40",
+          authorId: "user-1",
+          placeType: "forum_post_thread",
+          rawPlaceType: "PublicThread",
+          content: "この話題を論じて",
+          urls: [],
+          receivedAt: "2026-03-10T00:00:40.000Z"
+        }
+      })
+    );
+
+    assert.deepEqual(fixture.codexClient.intentCalls[0]?.request.capabilities, {
+      allow_external_fetch: false,
+      allow_knowledge_write: false,
+      allow_moderation: false
+    });
+    assert.equal(fixture.codexClient.answerCalls.length, 0);
+    assert.equal(fixture.codexClient.textTurnCalls.length, 1);
+    assert.equal(fixture.codexClient.jsonTurnCalls.length, 2);
+    const workPayload = fixture.codexClient.textTurnCalls[0]?.payload as Record<
+      string,
+      unknown
+    >;
+    const finalizePayload = fixture.codexClient.jsonTurnCalls[1]?.payload as Record<
+      string,
+      unknown
+    >;
+    assert.equal(
+      (workPayload.forum_loop as { kind?: string } | undefined)?.kind,
+      "exploration_work"
+    );
+    assert.equal(
+      (finalizePayload.forum_loop as { kind?: string } | undefined)?.kind,
+      "finalize"
+    );
+    assert.equal(fixture.codexClient.textTurnCalls[0]?.timeoutMs, 240000);
+    assert.deepEqual(fixture.codexClient.textTurnCalls[0]?.controlPolicy, {
+      idleSteer: {
+        afterMs: 30000,
+        prompt:
+          "Focus only on the unresolved material gaps already listed in forum_loop.prior_state. Do not broaden the search space. Prefer opening specific pages or extracting passages over issuing new broad searches."
+      },
+      broadeningSearchSteer: {
+        searchActionThreshold: 3,
+        prompt:
+          "You have already searched broadly enough for this phase. Stop broadening search. Use the existing material gaps and the evidence already gathered to move toward a checkpoint-ready state."
+      }
+    });
+  } finally {
+    fixture.close();
+  }
+});
+
 test("HarnessRunner keeps knowledge write disabled for message_urls when no fetchable public URLs exist", async () => {
   const fixture = createFixture({
     intentResponses: [
@@ -460,6 +566,249 @@ test("HarnessRunner retries output safety with task.retry_context and allows obs
     assert.equal(reconfirmFixture.codexClient.answerCalls.length, 1);
   } finally {
     reconfirmFixture.close();
+  }
+});
+
+test("HarnessRunner allows forum public URLs without retry when observed URLs are partial", async () => {
+  const fixture = createFixture({
+    forumTextResponses: [
+      {
+        response: "acquire note",
+        observations: {
+          observed_public_urls: ["https://www.britannica.com/topic/Sunni"]
+        }
+      },
+      {
+        response: "integrate note"
+      }
+    ],
+    forumJsonResponses: [
+      {
+        response: {
+          phase_result: "acquired",
+          resolved_items: ["fact 1"],
+          open_items: ["fact 2"],
+          material_gaps: [
+            {
+              gap: "fact 2 synthesis",
+              needs_observation: false,
+              suggested_operator: "none"
+            }
+          ],
+          contradictions: [],
+          evidence_digest: "first digest",
+          provisional_outline: "first outline",
+          next_phase: "integrate",
+          stop_judgement: {
+            done: false,
+            reason: "need integration",
+            marginal_value: "medium"
+          }
+        }
+      },
+      {
+        response: {
+          phase_result: "integrated",
+          resolved_items: ["fact 1", "fact 2"],
+          open_items: [],
+          material_gaps: [],
+          contradictions: [],
+          evidence_digest: "final digest",
+          provisional_outline: "final outline",
+          next_phase: "finalize",
+          stop_judgement: {
+            done: true,
+            reason: "ready",
+            marginal_value: "low"
+          }
+        }
+      },
+      {
+        response: createHarnessResponse({
+          public_text: "調査結果です。[1][2]",
+          sources_used: [
+            "https://www.britannica.com/topic/Sunni",
+            "https://www.cfr.org/conference-calls/tensions-between-saudi-arabia-and-iran"
+          ]
+        })
+      }
+    ]
+  });
+
+  try {
+    const result = await fixture.runner.routeMessage(
+      createHarnessInput({
+        watchLocation: {
+          guildId: "guild-1",
+          channelId: "forum-parent-1",
+          mode: "forum_longform",
+          defaultScope: "conversation_only"
+        },
+        scope: "conversation_only",
+        envelope: {
+          guildId: "guild-1",
+          channelId: "thread-1",
+          messageId: "message-forum-allow",
+          authorId: "user-1",
+          placeType: "forum_post_thread",
+          rawPlaceType: "PublicThread",
+          content: "論じて",
+          urls: [],
+          receivedAt: "2026-03-10T00:00:41.000Z"
+        }
+      })
+    );
+
+    assert.equal(result.response.public_text, "調査結果です。[1][2]");
+    assert.equal(fixture.codexClient.answerCalls.length, 0);
+    assert.equal(fixture.codexClient.compactionCalls.length, 1);
+  } finally {
+    fixture.close();
+  }
+});
+
+test("HarnessRunner keeps forum output-safety retry free of source allowlists", async () => {
+  const fixture = createFixture({
+    forumTextResponses: [
+      {
+        response: "acquire note"
+      }
+    ],
+    forumJsonResponses: [
+      {
+        response: {
+          phase_result: "acquired",
+          resolved_items: ["unsafe cite"],
+          open_items: [],
+          material_gaps: [],
+          contradictions: [],
+          evidence_digest: "digest",
+          provisional_outline: "outline",
+          next_phase: "finalize",
+          stop_judgement: {
+            done: true,
+            reason: "ready",
+            marginal_value: "low"
+          }
+        }
+      },
+      {
+        response: createHarnessResponse({
+          public_text: "bad",
+          sources_used: ["file:///tmp/private.txt"]
+        })
+      },
+      {
+        response: createHarnessResponse({
+          public_text: "公開根拠だけで答え直します。",
+          sources_used: []
+        })
+      }
+    ]
+  });
+
+  try {
+    await fixture.runner.routeMessage(
+      createHarnessInput({
+        watchLocation: {
+          guildId: "guild-1",
+          channelId: "forum-parent-1",
+          mode: "forum_longform",
+          defaultScope: "conversation_only"
+        },
+        scope: "conversation_only",
+        envelope: {
+          guildId: "guild-1",
+          channelId: "thread-1",
+          messageId: "message-forum-retry",
+          authorId: "user-1",
+          placeType: "forum_post_thread",
+          rawPlaceType: "PublicThread",
+          content: "論じて",
+          urls: [],
+          receivedAt: "2026-03-10T00:00:42.000Z"
+        }
+      })
+    );
+
+    const retryFinalizePayload = fixture.codexClient.jsonTurnCalls[2]?.payload as {
+      task?: { retry_context?: unknown };
+      forum_loop?: { kind?: string };
+    };
+    assert.equal(retryFinalizePayload.forum_loop?.kind, "finalize");
+    assert.deepEqual(retryFinalizePayload.task?.retry_context, {
+      kind: "output_safety",
+      retry_count: 1,
+      reason: "blocked or non-public source url",
+      allowed_sources: [],
+      disallowed_sources: ["file:///tmp/private.txt"]
+    });
+  } finally {
+    fixture.close();
+  }
+});
+
+test("HarnessRunner carries termination facts into forum finalize without synthetic semantic stop labels", async () => {
+  const fixture = createFixture({
+    forumTextResponses: [
+      {
+        error: "work turn timed out"
+      }
+    ],
+    forumJsonResponses: [
+      {
+        response: createHarnessResponse({
+          public_text: "最終回答です。"
+        })
+      }
+    ]
+  });
+
+  try {
+    const result = await fixture.runner.routeMessage(
+      createHarnessInput({
+        watchLocation: {
+          guildId: "guild-1",
+          channelId: "forum-parent-1",
+          mode: "forum_longform",
+          defaultScope: "conversation_only"
+        },
+        scope: "conversation_only",
+        envelope: {
+          guildId: "guild-1",
+          channelId: "thread-1",
+          messageId: "message-forum-failure",
+          authorId: "user-1",
+          placeType: "forum_post_thread",
+          rawPlaceType: "PublicThread",
+          content: "論じて",
+          urls: [],
+          receivedAt: "2026-03-10T00:00:43.000Z"
+        }
+      })
+    );
+
+    assert.equal(result.response.public_text, "最終回答です。");
+    const finalizePayload = fixture.codexClient.jsonTurnCalls[0]?.payload as {
+      forum_loop?: {
+        kind?: string;
+        prior_state?: {
+          termination?: { reason?: string; detail?: string };
+          stop_judgement?: { marginal_value?: string };
+        };
+      };
+    };
+    assert.equal(finalizePayload.forum_loop?.kind, "finalize");
+    assert.deepEqual(finalizePayload.forum_loop?.prior_state?.termination, {
+      reason: "interrupt_timeout",
+      detail: "work turn timed out"
+    });
+    assert.equal(
+      finalizePayload.forum_loop?.prior_state?.stop_judgement?.marginal_value,
+      "high"
+    );
+  } finally {
+    fixture.close();
   }
 });
 
@@ -633,6 +982,16 @@ function createFixture(input?: {
   intentResponses?: HarnessIntentResponse[];
   answerResponses?: HarnessResponse[];
   answerObservations?: TurnObservations[];
+  forumTextResponses?: Array<{
+    response?: string | null;
+    observations?: TurnObservations;
+    error?: string;
+  }>;
+  forumJsonResponses?: Array<{
+    response: unknown;
+    observations?: TurnObservations;
+    error?: string;
+  }>;
 }) {
   const tempDir = mkdtempSync(join(tmpdir(), "vrc-ai-bot-harness-"));
   const dbPath = join(tempDir, "bot.sqlite");
@@ -831,20 +1190,58 @@ class FakeCodexClient {
     request: HarnessRequest;
     sessionMetadata?: HarnessTurnSessionMetadata;
   }> = [];
+  readonly textTurnCalls: Array<{
+    threadId: string;
+    payload: unknown;
+    sessionMetadata?: HarnessTurnSessionMetadata;
+    timeoutMs?: number;
+    controlPolicy?: unknown;
+  }> = [];
+  readonly jsonTurnCalls: Array<{
+    threadId: string;
+    payload: unknown;
+    sessionMetadata?: HarnessTurnSessionMetadata;
+    timeoutMs?: number;
+  }> = [];
+  readonly compactionCalls: string[] = [];
+  readonly interruptCalls: Array<{ threadId: string; turnId: string }> = [];
+  readonly steerCalls: Array<{ threadId: string; turnId: string; prompt: string }> = [];
   private threadCount = 0;
   private sessionInvalidationGeneration = 0;
   private readonly intentResponses: HarnessIntentResponse[];
   private readonly answerResponses: HarnessResponse[];
   private readonly answerObservations: TurnObservations[];
+  private readonly forumTextResponses: Array<{
+    response?: string | null;
+    observations?: TurnObservations;
+    error?: string;
+  }>;
+  private readonly forumJsonResponses: Array<{
+    response: unknown;
+    observations?: TurnObservations;
+    error?: string;
+  }>;
 
   constructor(input?: {
     intentResponses?: HarnessIntentResponse[];
     answerResponses?: HarnessResponse[];
     answerObservations?: TurnObservations[];
+    forumTextResponses?: Array<{
+      response?: string | null;
+      observations?: TurnObservations;
+      error?: string;
+    }>;
+    forumJsonResponses?: Array<{
+      response: unknown;
+      observations?: TurnObservations;
+      error?: string;
+    }>;
   }) {
     this.intentResponses = [...(input?.intentResponses ?? [createIntentResponse()])];
     this.answerResponses = [...(input?.answerResponses ?? [])];
     this.answerObservations = [...(input?.answerObservations ?? [])];
+    this.forumTextResponses = [...(input?.forumTextResponses ?? [])];
+    this.forumJsonResponses = [...(input?.forumJsonResponses ?? [])];
   }
 
   async startThread(
@@ -916,5 +1313,89 @@ class FakeCodexClient {
         observed_public_urls: []
       }
     };
+  }
+
+  async runTextTurn(input: {
+    threadId: string;
+    inputPayload: unknown;
+    allowExternalFetch: boolean;
+    sessionMetadata?: HarnessTurnSessionMetadata;
+    timeoutMs?: number;
+    controlPolicy?: unknown;
+  }): Promise<{
+    response: string | null;
+    observations: TurnObservations;
+  }> {
+    this.textTurnCalls.push({
+      threadId: input.threadId,
+      payload: input.inputPayload,
+      ...(input.sessionMetadata === undefined
+        ? {}
+        : { sessionMetadata: input.sessionMetadata }),
+      ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
+      ...(input.controlPolicy === undefined
+        ? {}
+        : { controlPolicy: input.controlPolicy })
+    });
+    const response = this.forumTextResponses.shift() ?? {
+      response: "internal note",
+      observations: { observed_public_urls: [] }
+    };
+    if (response.error) {
+      throw new Error(response.error);
+    }
+    return {
+      response: response.response ?? null,
+      observations: response.observations ?? {
+        observed_public_urls: []
+      }
+    };
+  }
+
+  async runJsonTurn<T>(input: {
+    threadId: string;
+    inputPayload: unknown;
+    allowExternalFetch: boolean;
+    outputSchema: object;
+    parser: (value: unknown) => T;
+    sessionMetadata?: HarnessTurnSessionMetadata;
+    timeoutMs?: number;
+  }): Promise<{
+    response: T;
+    observations: TurnObservations;
+  }> {
+    this.jsonTurnCalls.push({
+      threadId: input.threadId,
+      payload: input.inputPayload,
+      ...(input.sessionMetadata === undefined
+        ? {}
+        : { sessionMetadata: input.sessionMetadata }),
+      ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs })
+    });
+    const response = this.forumJsonResponses.shift();
+    if (!response) {
+      throw new Error("missing fake forum json response");
+    }
+    if (response.error) {
+      throw new Error(response.error);
+    }
+    return {
+      response: input.parser(response.response),
+      observations: response.observations ?? {
+        observed_public_urls: []
+      }
+    };
+  }
+
+  async startCompaction(threadId: string): Promise<void> {
+    this.compactionCalls.push(threadId);
+  }
+
+  async interruptTurn(threadId: string, turnId: string): Promise<void> {
+    this.interruptCalls.push({ threadId, turnId });
+  }
+
+  async steerTurn(threadId: string, turnId: string, prompt: string): Promise<void> {
+    this.steerCalls.push({ threadId, turnId, prompt });
   }
 }

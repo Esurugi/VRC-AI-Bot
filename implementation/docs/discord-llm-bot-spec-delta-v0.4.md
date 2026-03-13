@@ -184,8 +184,9 @@
 | 範囲 | `implementation/src/discord`, `implementation/src/override`, `implementation/src/codex`, `implementation/src/storage/database.ts`, `implementation/docs/discord-llm-bot-implementation-tasks.md` |
 | AUTH.03-02-01 | 管理者緩和の入口は guild 内の管理者限定 application command とし、command 定義の default permissions では非管理者に開かない。 |
 | AUTH.03-02-02 | bot は command 実行時にも actor role を再評価し、`owner` または `admin` 以外の実行を拒否する。 |
-| AUTH.03-02-03 | 開始 command は configured `admin_control` root channel でだけ有効とし、対応 scope は常に `conversation_only` とする。 |
-| AUTH.03-02-04 | 開始 command 実行時、bot は同じ `admin_control` root channel 配下に dedicated override thread を 1 本作成し、override session は `guild_id + override_thread_id + actor_id` 単位で保存する。 |
+| AUTH.03-02-03 | 開始 command は configured `chat`, `admin_control`, `forum_longform` の会話可能な place で有効とし、`forum_longform` では post thread 内でのみ受理する。対応 scope は常に `conversation_only` とする。 |
+| AUTH.03-02-04 | 開始 command 実行時、bot は configured `admin_control` root channel 配下に dedicated override thread を 1 本作成し、override session は `guild_id + override_thread_id + actor_id` 単位で保存する。 |
+| AUTH.03-02-04a | 開始 command の optional `prompt` は command 実行元 place の直前可視履歴を含む hidden bootstrap input に束ね、created override thread の初回 turn にだけ投入する。`prompt` 本文は visible に転載しない。 |
 | AUTH.03-02-05 | 通常の `chat_reply`, `knowledge_ingest`, knowledge thread follow-up, `admin_diagnostics` は、active override thread に入っていない場所では Codex `read-only` sandbox で動かす。 |
 | AUTH.03-02-06 | active override thread では、override を開始した同一管理者の turn 全体を、その dedicated override thread に対応する `workload=admin_override + binding_kind=thread + actor_id=開始者` の session identity で `workspace-write` sandbox として開始または resume し、global `config.toml` を書き換えて常設化しない。 |
 | AUTH.03-02-06a | active override thread では、override を開始した同一管理者に渡す Harness capability を `allow_external_fetch`, `allow_knowledge_write`, `allow_moderation` の全てで true とする。Discord thread 作成は capability ではなく system の reply-routing 責務とする。 |
@@ -196,7 +197,7 @@
 | 理由 | Discord 側の command 権限と Codex 側の sandbox mode を二段で分離し、通常利用者の会話や URL ingest を repo 変更経路へ接続しないため。 |
 | 範囲 | `implementation/src/discord`, `implementation/src/override`, `implementation/src/codex`, `implementation/src/app/bot-app.ts`, `implementation/docs/discord-llm-bot-implementation-tasks.md` |
 | AUTH.04-01-01 | repo 変更要求を扱えるのは actor role が `owner` または `admin` で、かつ dedicated override thread の active override session を開始した同一管理者である場合だけとする。 |
-| AUTH.04-01-02 | `chat_reply`, `knowledge_ingest`, `admin_diagnostics` の通常経路と root 投稿からの thread 作成経路は repo 変更を起動しない。 |
+| AUTH.04-01-02 | `chat_reply`, `knowledge_ingest`, `admin_diagnostics` の通常経路と root 投稿からの thread 作成経路は repo 変更を起動しない。明示 command `/override-start prompt:"..."` による override bootstrap はこの禁止の例外とする。 |
 | AUTH.04-01-03 | `owner` または `admin` であっても active override session がない turn は Codex `read-only` sandbox のままとし、repo 書込みを許可しない。 |
 | AUTH.04-01-04 | 非管理者の要求または command 権限検証失敗では Codex を `workspace-write` へ切り替えない。 |
 | AUTH.04-01-05 | active override は override thread-local とし、他 channel/thread/guild の Codex session へ波及させない。 |

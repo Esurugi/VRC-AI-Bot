@@ -35,6 +35,7 @@ import { createBotModerationIntegration } from "./sanction-policy-service.js";
 import { RetrySchedulerService } from "./retry-scheduler-service.js";
 import { AdminCommandService } from "../runtime/admin/admin-command-service.js";
 import { AdminOverrideBootstrapService } from "../runtime/admin/admin-override-bootstrap-service.js";
+import { OverrideBootstrapPromptContextService } from "../runtime/admin/override-bootstrap-prompt-context-service.js";
 import {
   buildOverrideCommandDefinitions,
   mergeOverrideCommandDefinitions
@@ -85,6 +86,7 @@ type BotApplicationDependencies = {
   retryJobRunner?: RetryJobRunner;
   adminCommandService?: AdminCommandService;
   adminOverrideBootstrapService?: AdminOverrideBootstrapService;
+  overrideBootstrapPromptContextService?: OverrideBootstrapPromptContextService;
   chatChannelCounterService?: ChatChannelCounterService;
   chatEngagementPolicy?: ChatEngagementPolicy;
   chatRuntimeControlService?: ChatRuntimeControlService;
@@ -113,6 +115,7 @@ export class BotApplication {
   private readonly retryJobRunner: RetryJobRunner;
   private readonly adminCommandService: AdminCommandService;
   private readonly adminOverrideBootstrapService: AdminOverrideBootstrapService;
+  private readonly overrideBootstrapPromptContextService: OverrideBootstrapPromptContextService;
   private readonly chatChannelCounterService: ChatChannelCounterService;
   private readonly chatEngagementPolicy: ChatEngagementPolicy;
   private readonly chatRuntimeControlService: ChatRuntimeControlService;
@@ -256,6 +259,9 @@ export class BotApplication {
         this.moderationExecutor,
         this.logger
       );
+    this.overrideBootstrapPromptContextService =
+      dependencies.overrideBootstrapPromptContextService ??
+      new OverrideBootstrapPromptContextService(this.logger);
     this.retryJobRunner =
       dependencies.retryJobRunner ??
       new RetryJobRunner(
@@ -277,6 +283,7 @@ export class BotApplication {
         this.sessionManager,
         this.sessionPolicyResolver,
         this.adminOverrideBootstrapService,
+        this.overrideBootstrapPromptContextService,
         this.logger
       );
     this.weeklyMeetupAnnouncementService =

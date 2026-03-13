@@ -67,6 +67,8 @@ BOT_DB_PATH=./bot.sqlite
 BOT_LOG_LEVEL=info
 CODEX_APP_SERVER_CMD=codex app-server
 BOT_WATCH_LOCATIONS_PATH=./config/watch-locations.json
+BOT_CHAT_RUNTIME_CONTROLS_PATH=./config/chat-runtime-controls.json
+BOT_WEEKLY_MEETUP_ANNOUNCEMENT_PATH=./config/weekly-meetup-announcement.json
 ```
 
 ### 初回ログイン
