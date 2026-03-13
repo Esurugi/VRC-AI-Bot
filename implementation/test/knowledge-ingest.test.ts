@@ -38,7 +38,6 @@ function createHarnessResponse(
     selected_source_ids: [],
     sources_used: [],
     knowledge_writes: [],
-    persist_items: [],
     diagnostics: {
       notes: null
     },

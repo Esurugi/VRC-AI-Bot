@@ -14,14 +14,21 @@ import type {
   WatchLocationConfig
 } from "../domain/types.js";
 import { KnowledgePersistenceService } from "../knowledge/knowledge-persistence-service.js";
-import { isAllowedPublicHttpUrl } from "../playwright/url-policy.js";
 import {
   DEFAULT_OVERRIDE_FLAGS,
   type OverrideContext
 } from "../override/types.js";
 import type { SqliteStore } from "../storage/database.js";
+import { appendRuntimeTrace } from "../observability/runtime-trace.js";
 import { buildHarnessRequest } from "./build-harness-request.js";
-import type { HarnessResponse, ThreadContextKind } from "./contracts.js";
+import { resolveHarnessCapabilities } from "./capability-resolver.js";
+import type {
+  HarnessIntentResponse,
+  HarnessRequest,
+  HarnessResponse,
+  ThreadContextKind
+} from "./contracts.js";
+import { OutputSafetyGuard } from "./output-safety-guard.js";
 
 export type HarnessMessageContext = {
   envelope: MessageEnvelope;
@@ -59,6 +66,7 @@ export type HarnessResolvedSession = {
 
 export class HarnessRunner {
   private readonly knowledgePersistence: KnowledgePersistenceService;
+  private readonly outputSafetyGuard: OutputSafetyGuard;
 
   constructor(
     private readonly store: SqliteStore,
@@ -68,25 +76,47 @@ export class HarnessRunner {
     private readonly logger: Logger
   ) {
     this.knowledgePersistence = new KnowledgePersistenceService(store, logger);
+    this.outputSafetyGuard = new OutputSafetyGuard(store);
   }
 
   async routeMessage(input: HarnessMessageContext): Promise<{
     response: HarnessResponse;
     session: HarnessResolvedSession;
     knowledgePersistenceScope: Scope | null;
+    moderationSignal: HarnessIntentResponse["moderation_signal"];
+    violationCounterSuspended: boolean;
   }> {
-    const threadContext = this.buildThreadContext(input.envelope, input.watchLocation);
+    const normalizedInput = {
+      ...input,
+      envelope: normalizeEnvelope(input.envelope)
+    };
+    const threadContext = this.buildThreadContext(
+      normalizedInput.envelope,
+      normalizedInput.watchLocation
+    );
     const overrideContext = this.buildOverrideContext(input);
     const workspaceWriteActive = canUseWorkspaceWrite(input, overrideContext);
-    const normalizedEnvelope = normalizeEnvelope(input.envelope);
-    const fetchablePublicUrlCount = normalizedEnvelope.urls.filter((url) =>
-      isAllowedPublicHttpUrl(url)
-    ).length;
+    const intentRequest = buildHarnessRequest({
+      actorRole: normalizedInput.actorRole,
+      scope: normalizedInput.scope,
+      watchLocation: normalizedInput.watchLocation,
+      envelope: normalizedInput.envelope,
+      taskKind: "route_message",
+      taskPhase: "intent",
+      overrideContext,
+      threadContext,
+      allowExternalFetch: false,
+      allowKnowledgeWrite: false,
+      allowModeration: normalizedInput.actorRole !== "user",
+      discordRuntimeFactsPath: normalizedInput.discordRuntimeFactsPath ?? null
+    });
+    const fetchablePublicUrlCount =
+      intentRequest.available_context.fetchable_public_urls.length;
     const sessionIdentity = this.sessionPolicyResolver.resolveForMessage({
-      envelope: normalizedEnvelope,
-      watchLocation: input.watchLocation,
-      actorRole: input.actorRole,
-      scope: input.scope,
+      envelope: normalizedInput.envelope,
+      watchLocation: normalizedInput.watchLocation,
+      actorRole: normalizedInput.actorRole,
+      scope: normalizedInput.scope,
       workspaceWriteActive
     });
     const session = await this.sessionManager.getOrStartSession(sessionIdentity);
@@ -95,54 +125,68 @@ export class HarnessRunner {
       threadId: session.threadId,
       startedFresh: session.startedFresh
     };
-    const request = buildHarnessRequest({
-      actorRole: input.actorRole,
-      scope: input.scope,
-      watchLocation: input.watchLocation,
-      envelope: normalizedEnvelope,
-      taskKind: "route_message",
-      overrideContext,
-      threadContext,
-      allowExternalFetch: true,
-      allowKnowledgeWrite: true,
-      allowModeration: workspaceWriteActive || input.actorRole !== "user",
-      discordRuntimeFactsPath: input.discordRuntimeFactsPath ?? null
-    });
-
     this.logger.debug(
       {
-        messageId: input.envelope.messageId,
-        placeMode: input.watchLocation.mode,
+        messageId: normalizedInput.envelope.messageId,
+        placeMode: normalizedInput.watchLocation.mode,
         threadKind: threadContext.kind,
         workspaceWriteActive,
         sessionIdentity: sessionIdentity.sessionIdentity,
         workloadKind: sessionIdentity.workloadKind,
         sandboxMode: sessionIdentity.sandboxMode,
         runtimeContractVersion: sessionIdentity.runtimeContractVersion,
-        allowExternalFetch: request.capabilities.allow_external_fetch,
-        allowKnowledgeWrite: request.capabilities.allow_knowledge_write
+        allowExternalFetch: intentRequest.capabilities.allow_external_fetch,
+        allowKnowledgeWrite: intentRequest.capabilities.allow_knowledge_write
       },
       "routing discord message through harness"
     );
 
-    const rawResponse = await this.codexClient.runHarnessRequest(
+    const intent = await this.codexClient.runHarnessIntentRequest(
       resolvedSession.threadId,
-      request,
-      {
-        sessionIdentity: sessionIdentity.sessionIdentity,
-        workloadKind: sessionIdentity.workloadKind,
-        modelProfile: sessionIdentity.modelProfile,
-        runtimeContractVersion: sessionIdentity.runtimeContractVersion
-      }
+      intentRequest,
+      toSessionMetadata(resolvedSession)
     );
-    const normalizedResponse = normalizeProductResponse(
-      input,
+    if (intent.repo_write_intent && !workspaceWriteActive) {
+      return {
+        response: buildOverrideRequiredResponse(normalizedInput),
+        session: resolvedSession,
+        knowledgePersistenceScope: null,
+        moderationSignal: intent.moderation_signal,
+        violationCounterSuspended: Boolean(
+          overrideContext.active &&
+            overrideContext.sameActor &&
+            overrideContext.flags.suspendViolationCounterForCurrentThread
+        )
+      };
+    }
+
+    const grantedCapabilities = resolveHarnessCapabilities({
+      actorRole: normalizedInput.actorRole,
+      request: intentRequest,
+      intent,
+      workspaceWriteActive
+    });
+    const answerRequest = buildHarnessRequest({
+      actorRole: normalizedInput.actorRole,
+      scope: normalizedInput.scope,
+      watchLocation: normalizedInput.watchLocation,
+      envelope: normalizedInput.envelope,
+      taskKind: "route_message",
+      taskPhase: "answer",
+      overrideContext,
       threadContext,
-      rawResponse,
-      {
-        fetchablePublicUrlCount
-      }
-    );
+      allowExternalFetch: grantedCapabilities.allow_external_fetch,
+      allowKnowledgeWrite: grantedCapabilities.allow_knowledge_write,
+      allowModeration: grantedCapabilities.allow_moderation,
+      discordRuntimeFactsPath: normalizedInput.discordRuntimeFactsPath ?? null
+    });
+    const normalizedResponse = await this.runAnswerFlow({
+      input: normalizedInput,
+      threadContext,
+      request: answerRequest,
+      session: resolvedSession,
+      fetchablePublicUrlCount
+    });
 
     this.logger.debug(
       {
@@ -157,25 +201,227 @@ export class HarnessRunner {
       "harness produced response"
     );
 
-    if (normalizedResponse.repo_write_intent && !workspaceWriteActive) {
-      return {
-        response: buildOverrideRequiredResponse(input),
-        session: resolvedSession,
-        knowledgePersistenceScope: null
-      };
-    }
-
     return {
       response: normalizedResponse,
       session: resolvedSession,
       knowledgePersistenceScope: resolveKnowledgePersistenceScope(
-        input.scope,
-        input.watchLocation,
+        normalizedInput.scope,
+        normalizedInput.watchLocation,
         threadContext,
         normalizedResponse,
         fetchablePublicUrlCount
+      ),
+      moderationSignal: intent.moderation_signal,
+      violationCounterSuspended: Boolean(
+        overrideContext.active &&
+          overrideContext.sameActor &&
+          overrideContext.flags.suspendViolationCounterForCurrentThread
       )
     };
+  }
+
+  private async runAnswerFlow(input: {
+    input: HarnessMessageContext;
+    threadContext: ResolvedThreadContext;
+    request: HarnessRequest;
+    session: HarnessResolvedSession;
+    fetchablePublicUrlCount: number;
+  }): Promise<HarnessResponse> {
+    const linkedKnowledgeSources = input.threadContext.knowledgeEntries.map((entry) => ({
+      sourceId: entry.sourceId,
+      scope: entry.scope,
+      canonicalUrl: entry.canonicalUrl
+    }));
+    const firstTurn = await this.codexClient.runHarnessRequest(
+      input.session.threadId,
+      input.request,
+      toSessionMetadata(input.session)
+    );
+    let response = normalizeProductResponse(
+      input.input,
+      input.threadContext,
+      firstTurn.response,
+      {
+        fetchablePublicUrlCount: input.fetchablePublicUrlCount
+      }
+    );
+    let observations = firstTurn.observations;
+
+    if (shouldRetryKnowledgeThreadFollowUp(input.input, input.threadContext, response)) {
+      const knowledgeRetryRequest = buildHarnessRequest({
+        actorRole: input.input.actorRole,
+        scope: input.input.scope,
+        watchLocation: input.input.watchLocation,
+        envelope: input.input.envelope,
+        taskKind: input.request.task.kind,
+        taskPhase: "retry",
+        retryContext: {
+          kind: "knowledge_followup_non_silent",
+          retryCount: 1
+        },
+        threadContext: input.threadContext,
+        allowExternalFetch: input.request.capabilities.allow_external_fetch,
+        allowKnowledgeWrite: input.request.capabilities.allow_knowledge_write,
+        allowModeration: input.request.capabilities.allow_moderation,
+        overrideContext: {
+          active: input.request.override_context.active,
+          sameActor: input.request.override_context.same_actor,
+          startedBy: input.request.override_context.started_by,
+          startedAt: input.request.override_context.started_at,
+          flags: {
+            allowPlaywrightHeaded:
+              input.request.override_context.flags.allow_playwright_headed,
+            allowPlaywrightPersistent:
+              input.request.override_context.flags.allow_playwright_persistent,
+            allowPromptInjectionTest:
+              input.request.override_context.flags.allow_prompt_injection_test,
+            suspendViolationCounterForCurrentThread:
+              input.request.override_context.flags
+                .suspend_violation_counter_for_current_thread,
+            allowExternalFetchInPrivateContextWithoutPrivateTerms:
+              input.request.override_context.flags
+                .allow_external_fetch_in_private_context_without_private_terms
+          }
+        },
+        discordRuntimeFactsPath:
+          input.request.available_context.discord_runtime_facts_path
+      });
+      const knowledgeRetryTurn = await this.codexClient.runHarnessRequest(
+        input.session.threadId,
+        knowledgeRetryRequest,
+        toSessionMetadata(input.session)
+      );
+      response = normalizeProductResponse(
+        input.input,
+        input.threadContext,
+        knowledgeRetryTurn.response,
+        {
+          fetchablePublicUrlCount: input.fetchablePublicUrlCount
+        }
+      );
+      observations = knowledgeRetryTurn.observations;
+      if (shouldRetryKnowledgeThreadFollowUp(input.input, input.threadContext, response)) {
+        return buildKnowledgeThreadFailure(input.input);
+      }
+    }
+
+    const firstEvaluation = this.outputSafetyGuard.evaluate({
+      request: input.request,
+      response,
+      linkedKnowledgeSources,
+      observedPublicUrls: observations.observed_public_urls,
+      retryCount: 0
+    });
+    this.traceOutputSafetyDecision(
+      input.input,
+      input.session,
+      firstEvaluation,
+      0
+    );
+    if (firstEvaluation.decision === "allow") {
+      return response;
+    }
+
+    if (firstEvaluation.decision === "refuse") {
+      return buildOutputSafetyRefusal(input.input, firstEvaluation.reason);
+    }
+
+    const retryRequest = buildHarnessRequest({
+      actorRole: input.input.actorRole,
+      scope: input.input.scope,
+      watchLocation: input.input.watchLocation,
+      envelope: input.input.envelope,
+      taskKind: input.request.task.kind,
+      taskPhase: "retry",
+      retryContext: {
+        kind: "output_safety",
+        retryCount: 1,
+        reason: firstEvaluation.reason ?? "unsafe source boundary",
+        allowedSources: firstEvaluation.allowedSources,
+        disallowedSources: firstEvaluation.disallowedSources
+      },
+      threadContext: input.threadContext,
+      allowExternalFetch: input.request.capabilities.allow_external_fetch,
+      allowKnowledgeWrite: input.request.capabilities.allow_knowledge_write,
+      allowModeration: input.request.capabilities.allow_moderation,
+      overrideContext: {
+        active: input.request.override_context.active,
+        sameActor: input.request.override_context.same_actor,
+        startedBy: input.request.override_context.started_by,
+        startedAt: input.request.override_context.started_at,
+        flags: {
+          allowPlaywrightHeaded:
+            input.request.override_context.flags.allow_playwright_headed,
+          allowPlaywrightPersistent:
+            input.request.override_context.flags.allow_playwright_persistent,
+          allowPromptInjectionTest:
+            input.request.override_context.flags.allow_prompt_injection_test,
+          suspendViolationCounterForCurrentThread:
+            input.request.override_context.flags
+              .suspend_violation_counter_for_current_thread,
+          allowExternalFetchInPrivateContextWithoutPrivateTerms:
+            input.request.override_context.flags
+              .allow_external_fetch_in_private_context_without_private_terms
+        }
+      },
+      discordRuntimeFactsPath:
+        input.request.available_context.discord_runtime_facts_path
+    });
+    const secondTurn = await this.codexClient.runHarnessRequest(
+      input.session.threadId,
+      retryRequest,
+      toSessionMetadata(input.session)
+    );
+    const secondPass = normalizeProductResponse(
+      input.input,
+      input.threadContext,
+      secondTurn.response,
+      {
+        fetchablePublicUrlCount: input.fetchablePublicUrlCount
+      }
+    );
+    const secondEvaluation = this.outputSafetyGuard.evaluate({
+      request: retryRequest,
+      response: secondPass,
+      linkedKnowledgeSources,
+      observedPublicUrls: secondTurn.observations.observed_public_urls,
+      retryCount: 1
+    });
+    this.traceOutputSafetyDecision(
+      input.input,
+      input.session,
+      secondEvaluation,
+      1
+    );
+    if (secondEvaluation.decision === "allow") {
+      if (shouldRetryKnowledgeThreadFollowUp(input.input, input.threadContext, secondPass)) {
+        return buildKnowledgeThreadFailure(input.input);
+      }
+      return secondPass;
+    }
+
+    return buildOutputSafetyRefusal(input.input, secondEvaluation.reason);
+  }
+
+  private traceOutputSafetyDecision(
+    input: HarnessMessageContext,
+    session: HarnessResolvedSession,
+    evaluation: ReturnType<OutputSafetyGuard["evaluate"]>,
+    retryCount: number
+  ): void {
+    const payload = {
+      messageId: input.envelope.messageId,
+      sessionIdentity: session.identity.sessionIdentity,
+      workloadKind: session.identity.workloadKind,
+      runtimeContractVersion: session.identity.runtimeContractVersion,
+      retryCount,
+      decision: evaluation.decision,
+      reason: evaluation.reason,
+      allowedSources: evaluation.allowedSources,
+      disallowedSources: evaluation.disallowedSources
+    };
+    this.logger.debug(payload, "evaluated output safety");
+    appendRuntimeTrace("codex-app-server", "output_safety_evaluated", payload);
   }
 
   persistKnowledgeResult(input: HarnessMessageContext & {
@@ -318,11 +564,34 @@ function buildOverrideRequiredResponse(input: HarnessMessageContext): HarnessRes
     selected_source_ids: [],
     sources_used: [],
     knowledge_writes: [],
-    persist_items: [],
     diagnostics: {
       notes: "repo write intent denied without active override"
     },
     sensitivity_raise: "none"
+  };
+}
+
+function buildOutputSafetyRefusal(
+  input: HarnessMessageContext,
+  reason: string | null
+): HarnessResponse {
+  return {
+    outcome: "failure",
+    repo_write_intent: false,
+    public_text:
+      "この返信は出典の公開範囲を安全に満たせなかったため、そのままは返せませんでした。公開可能な根拠を指定して、もう一度聞いてください。",
+    reply_mode: "same_place",
+    target_thread_id: null,
+    selected_source_ids: [],
+    sources_used: [],
+    knowledge_writes: [],
+    diagnostics: {
+      notes:
+        reason === null
+          ? "output safety refusal"
+          : `output safety refusal: ${reason}`
+    },
+    sensitivity_raise: input.scope === "conversation_only" ? "conversation_only" : "none"
   };
 }
 
@@ -355,29 +624,8 @@ function normalizeProductResponse(
     ...baseResponse,
     selected_source_ids: dedupeStrings(baseResponse.selected_source_ids),
     sources_used: dedupeStrings(baseResponse.sources_used),
-    knowledge_writes: dedupeKnowledgeWrites(baseResponse.knowledge_writes),
-    persist_items: []
+    knowledge_writes: dedupeKnowledgeWrites(baseResponse.knowledge_writes)
   };
-
-  if (
-    shouldRescueKnowledgeThreadFollowUp(input, threadContext, dedupedResponse)
-  ) {
-    return {
-      outcome: "chat_reply",
-      repo_write_intent: false,
-      public_text: buildKnowledgeThreadFallbackReply(input, threadContext),
-      reply_mode: "same_place",
-      target_thread_id: null,
-      selected_source_ids: [],
-      sources_used: [],
-      knowledge_writes: [],
-      persist_items: [],
-      diagnostics: {
-        notes: "rescued silent knowledge-thread follow-up with same-thread reply"
-      },
-      sensitivity_raise: dedupedResponse.sensitivity_raise
-    };
-  }
 
   return dedupedResponse;
 }
@@ -390,17 +638,8 @@ function normalizeKnowledgeIngestResponse(
     fetchablePublicUrlCount: number;
   }
 ): HarnessResponse {
-  const knowledgeWrites = response.knowledge_writes.length > 0
-    ? response.knowledge_writes
-    : response.persist_items;
-  const normalizedResponse = {
-    ...response,
-    knowledge_writes: knowledgeWrites,
-    persist_items: []
-  };
-
-  if (normalizedResponse.outcome !== "knowledge_ingest") {
-    return normalizedResponse;
+  if (response.outcome !== "knowledge_ingest") {
+    return response;
   }
 
   const shouldCreatePublicThread =
@@ -409,9 +648,9 @@ function normalizeKnowledgeIngestResponse(
     policy.fetchablePublicUrlCount > 0;
 
   return {
-    ...normalizedResponse,
+    ...response,
     public_text:
-      normalizedResponse.public_text?.trim() || buildKnowledgeReplyText(normalizedResponse),
+      response.public_text?.trim() || buildKnowledgeReplyText(response),
     reply_mode: shouldCreatePublicThread ? "create_public_thread" : "same_place",
     target_thread_id:
       shouldCreatePublicThread || !input.envelope.placeType.endsWith("thread")
@@ -479,21 +718,6 @@ function dedupeKnowledgeWrites(
   return deduped;
 }
 
-function shouldRescueKnowledgeThreadFollowUp(
-  input: HarnessMessageContext,
-  threadContext: ResolvedThreadContext,
-  response: HarnessResponse
-): boolean {
-  if (
-    threadContext.kind !== "knowledge_thread" ||
-    input.envelope.content.trim().length === 0
-  ) {
-    return false;
-  }
-
-  return !wouldProduceVisibleReply(response);
-}
-
 function wouldProduceVisibleReply(response: HarnessResponse): boolean {
   switch (response.outcome) {
     case "ignore":
@@ -512,22 +736,50 @@ function wouldProduceVisibleReply(response: HarnessResponse): boolean {
   }
 }
 
-function buildKnowledgeThreadFallbackReply(
+function buildKnowledgeThreadFailure(input: HarnessMessageContext): HarnessResponse {
+  return {
+    outcome: "failure",
+    repo_write_intent: false,
+    public_text:
+      "このスレッドへの追撃応答を生成できませんでした。必要なら同じ依頼をもう一度送ってください。",
+    reply_mode: "same_place",
+    target_thread_id: null,
+    selected_source_ids: [],
+    sources_used: [],
+    knowledge_writes: [],
+    diagnostics: {
+      notes: `knowledge thread follow-up produced no visible reply in ${input.watchLocation.mode}`
+    },
+    sensitivity_raise: input.scope === "conversation_only" ? "conversation_only" : "none"
+  };
+}
+
+function shouldRetryKnowledgeThreadFollowUp(
   input: HarnessMessageContext,
-  threadContext: ResolvedThreadContext
-): string {
-  const requestText = input.envelope.content.trim();
-  const sourceTitle = threadContext.knowledgeEntries[0]?.title?.trim();
+  threadContext: ResolvedThreadContext,
+  response: HarnessResponse
+): boolean {
+  return (
+    threadContext.kind === "knowledge_thread" &&
+    input.envelope.content.trim().length > 0 &&
+    !wouldProduceVisibleReply(response)
+  );
+}
 
-  if (requestText.includes("日本語")) {
-    return sourceTitle
-      ? `このスレッドは「${sourceTitle}」の follow-up 会話として続けられます。日本語での言い換え依頼として扱うべき場面でしたが、無言で落ちないように system 側で保護しました。必要なら同じ依頼をもう一度送ってください。`
-      : "このスレッドの follow-up は same thread の会話として扱います。日本語での言い換え依頼として扱うべき場面でしたが、無言で落ちないように system 側で保護しました。必要なら同じ依頼をもう一度送ってください。";
-  }
-
-  return sourceTitle
-    ? `このスレッドは「${sourceTitle}」の follow-up 会話として same thread に返答します。無言で落ちないように system 側で保護しました。必要なら同じ依頼をもう一度送ってください。`
-    : "このスレッドの follow-up は same thread の会話として扱います。無言で落ちないように system 側で保護しました。必要なら同じ依頼をもう一度送ってください。";
+function toSessionMetadata(
+  session: HarnessResolvedSession
+): {
+  sessionIdentity: string;
+  workloadKind: string;
+  modelProfile: string;
+  runtimeContractVersion: string;
+} {
+  return {
+    sessionIdentity: session.identity.sessionIdentity,
+    workloadKind: session.identity.workloadKind,
+    modelProfile: session.identity.modelProfile,
+    runtimeContractVersion: session.identity.runtimeContractVersion
+  };
 }
 
 export function buildKnowledgeReplyText(response: HarnessResponse): string {

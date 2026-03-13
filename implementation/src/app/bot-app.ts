@@ -21,13 +21,32 @@ import pino, { type Logger } from "pino";
 
 import {
   buildAdminDiagnosticsReply,
+  buildFailureNotice,
+  buildPermanentFailureReply,
   buildPlainTextReply,
+  buildSanctionStateChangeReply,
   splitPlainTextReplies
 } from "./replies.js";
+import {
+  type BotModerationIntegration,
+  type PostResponseModerationInput,
+  type SanctionNotificationPayload
+} from "./moderation-integration.js";
+import {
+  FailureClassifier,
+  type FailurePublicCategory,
+  type FailureStage
+} from "./failure-classifier.js";
+import { RetrySchedulerService } from "./retry-scheduler-service.js";
+import { createBotModerationIntegration } from "./sanction-policy-service.js";
 import { CodexAppServerClient } from "../codex/app-server-client.js";
 import { SessionManager } from "../codex/session-manager.js";
 import { SessionPolicyResolver } from "../codex/session-policy.js";
 import { loadConfig } from "../config/load-config.js";
+import {
+  DiscordModerationExecutor,
+  type ModerationExecutor
+} from "../discord/moderation-executor.js";
 import {
   buildMessageEnvelope,
   isEligibleMessage,
@@ -45,11 +64,12 @@ import {
 import type { HarnessResponse } from "../harness/contracts.js";
 import { DEFAULT_OVERRIDE_FLAGS, type OverrideFlags } from "../override/types.js";
 import { OrderedMessageQueue } from "../queue/ordered-message-queue.js";
-import { SqliteStore } from "../storage/database.js";
+import { SqliteStore, type RetryJobRow } from "../storage/database.js";
 
 type QueuedMessage = {
   messageId: string;
   orderingKey: string;
+  source: "live" | "retry";
   message: Message<true>;
   envelope: MessageEnvelope;
   watchLocation: WatchLocationConfig;
@@ -57,19 +77,47 @@ type QueuedMessage = {
   scope: Scope;
 };
 
+type RoutedHarnessMessage = Awaited<ReturnType<HarnessRunner["routeMessage"]>>;
+
+type FailureReplyTarget = {
+  channelId: string;
+  threadId: string | null;
+};
+
+type StageFailureInput = {
+  stage: FailureStage;
+  error: unknown;
+  replyTarget: FailureReplyTarget;
+};
+
+export type BotApplicationDependencies = {
+  moderationIntegration?: BotModerationIntegration;
+  moderationExecutor?: ModerationExecutor;
+};
+
 export class BotApplication {
+  private static readonly retryPollIntervalMs = 30_000;
+
   private readonly logger: Logger;
   private readonly store: SqliteStore;
   private readonly codexClient: CodexAppServerClient;
   private readonly sessionPolicyResolver: SessionPolicyResolver;
   private readonly sessionManager: SessionManager;
   private readonly harnessRunner: HarnessRunner;
+  private readonly failureClassifier: FailureClassifier;
+  private readonly retryScheduler: RetrySchedulerService;
+  private readonly moderationIntegration: BotModerationIntegration;
+  private readonly moderationExecutor: ModerationExecutor;
   private readonly queue: OrderedMessageQueue<QueuedMessage>;
   private readonly client: Client;
   private readonly runtimeInstanceId = randomUUID();
   private runtimeLeaseTimer: NodeJS.Timeout | null = null;
+  private retryPollTimer: NodeJS.Timeout | null = null;
 
-  constructor(private readonly config: AppConfig) {
+  constructor(
+    private readonly config: AppConfig,
+    dependencies: BotApplicationDependencies = {}
+  ) {
     this.logger = pino({
       level: config.botLogLevel
     });
@@ -93,6 +141,8 @@ export class BotApplication {
       this.sessionManager,
       this.logger
     );
+    this.failureClassifier = new FailureClassifier();
+    this.retryScheduler = new RetrySchedulerService(this.store, this.logger);
     this.queue = new OrderedMessageQueue(async (item) => this.processQueueItem(item));
     this.client = new Client({
       intents: [
@@ -101,6 +151,12 @@ export class BotApplication {
         GatewayIntentBits.MessageContent
       ]
     });
+    this.moderationExecutor =
+      dependencies.moderationExecutor ??
+      new DiscordModerationExecutor(this.client, this.logger);
+    this.moderationIntegration =
+      dependencies.moderationIntegration ??
+      createBotModerationIntegration(this.store, this.logger);
   }
 
   async start(): Promise<void> {
@@ -129,9 +185,15 @@ export class BotApplication {
     this.startRuntimeLeaseHeartbeat();
     await this.seedInitialCursors();
     await this.catchUpPendingMessages();
+    await this.drainDueRetryJobs();
+    this.startRetryScheduler();
   }
 
   async stop(): Promise<void> {
+    if (this.retryPollTimer) {
+      clearInterval(this.retryPollTimer);
+      this.retryPollTimer = null;
+    }
     if (this.runtimeLeaseTimer) {
       clearInterval(this.runtimeLeaseTimer);
       this.runtimeLeaseTimer = null;
@@ -265,6 +327,7 @@ export class BotApplication {
     const enqueued = this.queue.enqueue({
       messageId: typedMessage.id,
       orderingKey: typedMessage.channelId,
+      source: "live",
       message: typedMessage,
       envelope,
       watchLocation,
@@ -278,37 +341,80 @@ export class BotApplication {
   }
 
   private async processQueueItem(item: QueuedMessage): Promise<void> {
-    const acquired = this.store.messageProcessing.tryAcquire(
-      item.envelope.messageId,
-      item.envelope.channelId
-    );
-    if (!acquired) {
+    const acquired = this.store.messageProcessing.tryAcquire(item.envelope.messageId, item.envelope.channelId, {
+      allowPendingRetryAcquire: item.source === "retry"
+    });
+    if (acquired.status !== "acquired") {
       this.logger.info(
-        { messageId: item.envelope.messageId, channelId: item.envelope.channelId },
+        {
+          messageId: item.envelope.messageId,
+          channelId: item.envelope.channelId,
+          acquisitionState: acquired.status
+        },
         "skipping duplicate message processing"
       );
-      this.store.channelCursors.upsert(item.envelope.channelId, item.envelope.messageId);
+      if (acquired.status === "already_completed") {
+        this.store.channelCursors.upsert(item.envelope.channelId, item.envelope.messageId);
+        this.retryScheduler.clear(item.envelope.messageId);
+      }
+      return;
+    }
+
+    const blocked = await this.runSoftBlockPreflight(item);
+    if (blocked) {
+      this.markMessageCompleted(item);
       return;
     }
 
     const stopTyping = this.startTypingIndicator(item.message.channel);
     try {
-      await this.handleResolvedMessage(item);
-      this.store.channelCursors.upsert(item.envelope.channelId, item.envelope.messageId);
-      this.store.messageProcessing.markCompleted(item.envelope.messageId);
+      let routed: RoutedHarnessMessage | null;
+      let replyTarget = buildSamePlaceReplyTarget(item);
+      try {
+        routed = await this.resolveHarnessMessage(item);
+      } catch (error) {
+        await this.handleRuntimeFailure(item, {
+          stage: "fetch_or_resolve",
+          error,
+          replyTarget: buildSamePlaceReplyTarget(item)
+        });
+        return;
+      }
+
+      try {
+        replyTarget = await this.dispatchResolvedMessage(item, routed);
+      } catch (error) {
+        await this.handleRuntimeFailure(item, extractStageFailure(error, item, "dispatch"));
+        return;
+      }
+
+      try {
+        await this.runPostResponseModeration(item, routed);
+      } catch (error) {
+        await this.handleRuntimeFailure(item, {
+          stage: "post_response",
+          error,
+          replyTarget
+        });
+        return;
+      }
+
+      this.markMessageCompleted(item);
     } catch (error) {
       this.logger.error({ error, messageId: item.envelope.messageId }, "queue item failed");
-      await this.notifyPermanentFailure(item, error);
-      this.store.channelCursors.upsert(item.envelope.channelId, item.envelope.messageId);
-      this.store.messageProcessing.markCompleted(item.envelope.messageId);
+      await this.handleRuntimeFailure(item, {
+        stage: "fetch_or_resolve",
+        error,
+        replyTarget: buildSamePlaceReplyTarget(item)
+      });
     } finally {
       stopTyping();
     }
   }
 
-  private async handleResolvedMessage(item: QueuedMessage): Promise<void> {
+  private async resolveHarnessMessage(item: QueuedMessage): Promise<RoutedHarnessMessage | null> {
     if (!shouldProcessMessage(item.envelope, item.watchLocation)) {
-      return;
+      return null;
     }
 
     const runtimeFacts = writeDiscordRuntimeSnapshot({
@@ -325,12 +431,7 @@ export class BotApplication {
       scope: item.scope,
       discordRuntimeFactsPath: runtimeFacts.snapshotPath
     });
-    await this.dispatchHarnessResponse(
-      item,
-      routed.response,
-      routed.session,
-      routed.knowledgePersistenceScope
-    );
+    return routed;
   }
 
   private async processKnowledgeIngest(
@@ -338,7 +439,7 @@ export class BotApplication {
     response: HarnessResponse,
     session: HarnessResolvedSession,
     persistenceScope: Scope | null
-  ): Promise<void> {
+  ): Promise<FailureReplyTarget> {
     const routing = resolveKnowledgeIngestRouting({
       isThreadMessage: item.message.channel.isThread(),
       watchMode: item.watchLocation.mode,
@@ -359,29 +460,54 @@ export class BotApplication {
         });
       }
       await this.replyInSamePlace(item, buildKnowledgeReplyText(response));
-      return;
+      return buildSamePlaceReplyTarget(item);
     }
 
     const targetThread = await this.resolveKnowledgeThread(item);
-    this.sessionManager.bindSession(
-      this.sessionPolicyResolver.resolveKnowledgeThreadConversation({
-        threadId: targetThread.id
-      }),
-      session.threadId
-    );
-    if (persistenceScope) {
-      this.harnessRunner.persistKnowledgeResult({
-        envelope: item.envelope,
-        watchLocation: item.watchLocation,
-        actorRole: item.actorRole,
-        scope: item.scope,
-        persistenceScope,
-        replyThreadId: targetThread.id,
-        response
-      });
+    const replyTarget = {
+      channelId: targetThread.id,
+      threadId: targetThread.id
+    } satisfies FailureReplyTarget;
+    try {
+      this.sessionManager.bindSession(
+        this.sessionPolicyResolver.resolveKnowledgeThreadConversation({
+          threadId: targetThread.id
+        }),
+        session.threadId
+      );
+      if (persistenceScope) {
+        this.harnessRunner.persistKnowledgeResult({
+          envelope: item.envelope,
+          watchLocation: item.watchLocation,
+          actorRole: item.actorRole,
+          scope: item.scope,
+          persistenceScope,
+          replyThreadId: targetThread.id,
+          response
+        });
+      }
+
+      await this.sendChunksToChannel(targetThread, buildKnowledgeReplyText(response));
+      return replyTarget;
+    } catch (error) {
+      throw attachReplyTarget(error, replyTarget);
+    }
+  }
+
+  private async dispatchResolvedMessage(
+    item: QueuedMessage,
+    routed: RoutedHarnessMessage | null
+  ): Promise<FailureReplyTarget> {
+    if (!routed) {
+      return buildSamePlaceReplyTarget(item);
     }
 
-    await this.sendChunksToChannel(targetThread, buildKnowledgeReplyText(response));
+    return this.dispatchHarnessResponse(
+      item,
+      routed.response,
+      routed.session,
+      routed.knowledgePersistenceScope
+    );
   }
 
   private async dispatchHarnessResponse(
@@ -389,7 +515,7 @@ export class BotApplication {
     response: HarnessResponse,
     session: HarnessResolvedSession,
     knowledgePersistenceScope: Scope | null
-  ): Promise<void> {
+  ): Promise<FailureReplyTarget> {
     this.logger.debug(
       {
         messageId: item.envelope.messageId,
@@ -407,7 +533,7 @@ export class BotApplication {
     );
     switch (response.outcome) {
       case "ignore":
-        return;
+        return buildSamePlaceReplyTarget(item);
       case "admin_diagnostics":
         await this.replyInSamePlace(
           item,
@@ -424,29 +550,28 @@ export class BotApplication {
             notes: response.diagnostics.notes
           })
         );
-        return;
+        return buildSamePlaceReplyTarget(item);
       case "knowledge_ingest":
-        await this.processKnowledgeIngest(
+        return this.processKnowledgeIngest(
           item,
           response,
           session,
           knowledgePersistenceScope
         );
-        return;
       case "chat_reply":
         if (response.reply_mode === "no_reply") {
-          return;
+          return buildSamePlaceReplyTarget(item);
         }
         if (response.public_text?.trim()) {
           await this.replyInSamePlace(item, response.public_text);
         }
-        return;
+        return buildSamePlaceReplyTarget(item);
       case "failure":
-        if (response.public_text?.trim()) {
-          await this.replyInSamePlace(item, response.public_text);
-          return;
-        }
-        throw new Error(response.diagnostics.notes ?? "harness returned failure");
+        await this.replyInSamePlace(
+          item,
+          response.public_text?.trim() ? response.public_text : "AI処理に失敗しました。"
+        );
+        return buildSamePlaceReplyTarget(item);
     }
   }
 
@@ -541,13 +666,19 @@ export class BotApplication {
   }
 
   private async notifyPermanentFailure(
-    item: QueuedMessage,
-    error: unknown
+    input: {
+      guildId: string;
+      messageId: string;
+      placeMode: WatchLocationConfig["mode"];
+      channelId: string;
+      error: unknown;
+      stage: FailureStage;
+      category: FailurePublicCategory;
+    }
   ): Promise<void> {
-    const failureTarget = this.config.watchLocations.find(
-      (location) =>
-        location.guildId === item.watchLocation.guildId &&
-        location.mode === "admin_control"
+    const failureTarget = findAdminControlWatchLocation(
+      this.config.watchLocations,
+      input.guildId
     );
 
     if (!failureTarget) {
@@ -559,29 +690,278 @@ export class BotApplication {
       return;
     }
 
-    const message = [
-      "```json",
-      JSON.stringify(
-        {
-          type: "permanent_failure",
-          message_id: item.envelope.messageId,
-          place_mode: item.watchLocation.mode,
-          channel_id: item.envelope.channelId,
-          error:
-            error instanceof Error ? error.message : "unknown_error"
-        },
-        null,
-        2
-      ),
-      "```"
-    ].join("\n");
-
     await channel.send({
-      content: message,
+      content: buildPermanentFailureReply({
+        messageId: input.messageId,
+        placeMode: input.placeMode,
+        channelId: input.channelId,
+        stage: input.stage,
+        category: input.category,
+        error:
+          input.error instanceof Error ? input.error.message : String(input.error)
+      }),
       allowedMentions: {
         parse: []
       }
     });
+  }
+
+  private async handleRuntimeFailure(
+    item: QueuedMessage,
+    input: StageFailureInput
+  ): Promise<void> {
+    const existingRetry = this.store.retryJobs.get(item.envelope.messageId);
+    const decision = this.failureClassifier.classify(input.error, {
+      stage: input.stage,
+      attemptCount: existingRetry?.attempt_count ?? 0,
+      watchMode: item.watchLocation.mode
+    });
+    const notice = buildFailureNotice({
+      category: decision.publicCategory,
+      ...(decision.delayMs == null ? {} : { delayMs: decision.delayMs })
+    });
+
+    try {
+      await this.notifyFailureInTarget(item, input.replyTarget, notice);
+    } catch (notifyError) {
+      this.logger.warn(
+        {
+          error:
+            notifyError instanceof Error ? notifyError.message : String(notifyError),
+          messageId: item.envelope.messageId,
+          stage: input.stage,
+          replyTarget: input.replyTarget
+        },
+        "failed to notify runtime failure in public target"
+      );
+    }
+
+    if (decision.retryable) {
+      this.retryScheduler.schedule({
+        envelope: item.envelope,
+        watchLocation: item.watchLocation,
+        stage: input.stage,
+        decision,
+        replyChannelId: input.replyTarget.channelId,
+        replyThreadId: input.replyTarget.threadId
+      });
+      return;
+    }
+
+    await this.notifyPermanentFailure({
+      guildId: item.watchLocation.guildId,
+      messageId: item.envelope.messageId,
+      placeMode: item.watchLocation.mode,
+      channelId: item.envelope.channelId,
+      error: input.error,
+      stage: input.stage,
+      category: decision.publicCategory
+    });
+    this.markMessageCompleted(item);
+  }
+
+  private markMessageCompleted(item: QueuedMessage): void {
+    this.markMessageCompletedById(item.envelope.messageId, item.envelope.channelId);
+  }
+
+  private markMessageCompletedById(messageId: string, channelId: string): void {
+    this.retryScheduler.clear(messageId);
+    this.store.messageProcessing.markCompleted(messageId);
+    this.store.channelCursors.upsert(channelId, messageId);
+  }
+
+  private async notifyFailureInTarget(
+    item: QueuedMessage,
+    target: FailureReplyTarget,
+    content: string
+  ): Promise<void> {
+    if (!target.threadId) {
+      await this.replyInSamePlace(item, content);
+      return;
+    }
+
+    const channel = await this.fetchReplyChannel(target.threadId);
+    if (!channel || !channel.isThread()) {
+      throw new Error("thread no longer available");
+    }
+    await this.sendChunksToChannel(channel, content);
+  }
+
+  private async notifyFailureForRetryJob(
+    job: RetryJobRow,
+    content: string
+  ): Promise<void> {
+    const targetChannelId = job.reply_thread_id ?? job.reply_channel_id;
+    const channel = await this.fetchReplyChannel(targetChannelId);
+    if (!channel) {
+      throw new Error("channel no longer available");
+    }
+
+    if (channel.isThread()) {
+      await this.sendChunksToChannel(channel, content);
+      return;
+    }
+
+    for (const chunk of splitPlainTextReplies(content)) {
+      await channel.send({
+        content: chunk,
+        allowedMentions: {
+          parse: []
+        }
+      });
+    }
+  }
+
+  private async fetchReplyChannel(
+    channelId: string
+  ): Promise<TextChannel | NewsChannel | AnyThreadChannel | null> {
+    const channel = await this.client.channels.fetch(channelId);
+    if (!channel) {
+      return null;
+    }
+
+    if (isBaseWatchChannel(channel)) {
+      return channel;
+    }
+
+    if (channel.isThread()) {
+      return channel;
+    }
+
+    return null;
+  }
+
+  private startRetryScheduler(): void {
+    if (this.retryPollTimer) {
+      clearInterval(this.retryPollTimer);
+    }
+
+    this.retryPollTimer = setInterval(() => {
+      void this.drainDueRetryJobs().catch((error) => {
+        this.logger.error({ error }, "failed to drain due retry jobs");
+      });
+    }, BotApplication.retryPollIntervalMs);
+  }
+
+  private async drainDueRetryJobs(): Promise<void> {
+    const dueJobs = this.retryScheduler.pollDueJobs();
+    for (const job of dueJobs) {
+      await this.enqueueRetryJob(job);
+    }
+  }
+
+  private async enqueueRetryJob(job: RetryJobRow): Promise<void> {
+    try {
+      const retryItem = await this.fetchRetryQueuedMessage(job);
+      const enqueued = this.queue.enqueue(retryItem);
+      if (!enqueued) {
+        this.logger.debug(
+          {
+            messageId: job.message_id,
+            channelId: job.channel_id
+          },
+          "retry job already enqueued"
+        );
+      }
+    } catch (error) {
+      await this.handleRetryJobFailure(job, error);
+    }
+  }
+
+  private async fetchRetryQueuedMessage(job: RetryJobRow): Promise<QueuedMessage> {
+    const channel = await this.fetchReplyChannel(job.channel_id);
+    if (!channel) {
+      throw new Error("channel no longer available");
+    }
+
+    const message = await channel.messages.fetch(job.message_id);
+    if (!message.inGuild()) {
+      throw new Error("message no longer available");
+    }
+
+    const typedMessage = message as Message<true>;
+    const watchLocation = resolveWatchLocation(typedMessage, this.config.watchLocations);
+    if (!watchLocation) {
+      throw new Error("watch location not found");
+    }
+
+    return {
+      messageId: typedMessage.id,
+      orderingKey: typedMessage.channelId,
+      source: "retry",
+      message: typedMessage,
+      envelope: buildMessageEnvelope(typedMessage, watchLocation),
+      watchLocation,
+      actorRole: resolveActorRole(typedMessage, this.config.discordOwnerUserIds),
+      scope: resolveScope(typedMessage, watchLocation)
+    };
+  }
+
+  private async handleRetryJobFailure(
+    job: RetryJobRow,
+    error: unknown
+  ): Promise<void> {
+    const decision = this.failureClassifier.classify(error, {
+      stage: "fetch_or_resolve",
+      attemptCount: job.attempt_count,
+      watchMode: job.place_mode
+    });
+    const notice = buildFailureNotice({
+      category: decision.publicCategory,
+      ...(decision.delayMs == null ? {} : { delayMs: decision.delayMs })
+    });
+
+    try {
+      await this.notifyFailureForRetryJob(job, notice);
+    } catch (notifyError) {
+      this.logger.warn(
+        {
+          error:
+            notifyError instanceof Error ? notifyError.message : String(notifyError),
+          messageId: job.message_id,
+          channelId: job.reply_channel_id,
+          threadId: job.reply_thread_id
+        },
+        "failed to notify retry-job failure in public target"
+      );
+    }
+
+    if (decision.retryable) {
+      this.retryScheduler.schedule({
+        envelope: buildSchedulerEnvelope(job),
+        watchLocation: this.resolveRetryWatchLocation(job),
+        stage: "fetch_or_resolve",
+        decision,
+        replyChannelId: job.reply_channel_id,
+        replyThreadId: job.reply_thread_id
+      });
+      return;
+    }
+
+    await this.notifyPermanentFailure({
+      guildId: job.guild_id,
+      messageId: job.message_id,
+      placeMode: job.place_mode,
+      channelId: job.channel_id,
+      error,
+      stage: "fetch_or_resolve",
+      category: decision.publicCategory
+    });
+    this.markMessageCompletedById(job.message_id, job.channel_id);
+  }
+
+  private resolveRetryWatchLocation(job: RetryJobRow): WatchLocationConfig {
+    return (
+      this.config.watchLocations.find(
+        (location) =>
+          location.guildId === job.guild_id && location.channelId === job.channel_id
+      ) ?? {
+        guildId: job.guild_id,
+        channelId: job.channel_id,
+        mode: job.place_mode,
+        defaultScope: "server_public"
+      }
+    );
   }
 
   private async tryAddProcessingReaction(message: Message<true>): Promise<void> {
@@ -823,6 +1203,73 @@ export class BotApplication {
     }
     await interaction.channel.setArchived(true, `override-end by ${interaction.user.id}`);
   }
+
+  private async runSoftBlockPreflight(item: QueuedMessage): Promise<boolean> {
+    const decision = await this.moderationIntegration.checkSoftBlock({
+      envelope: item.envelope,
+      watchLocation: item.watchLocation,
+      actorRole: item.actorRole,
+      scope: item.scope
+    });
+    if (!decision.blocked) {
+      return false;
+    }
+
+    if (decision.notice_text?.trim()) {
+      await this.replyInSamePlace(item, decision.notice_text);
+    }
+
+    return true;
+  }
+
+  private async runPostResponseModeration(
+    item: QueuedMessage,
+    routed: RoutedHarnessMessage | null
+  ): Promise<void> {
+    if (!routed) {
+      return;
+    }
+
+    const callbackInput: PostResponseModerationInput = {
+      envelope: item.envelope,
+      watchLocation: item.watchLocation,
+      actorRole: item.actorRole,
+      scope: item.scope,
+      response: routed.response,
+      session: routed.session,
+      moderation_signal: routed.moderationSignal,
+      violation_counter_suspended: routed.violationCounterSuspended,
+      executeModeration: this.moderationExecutor,
+      notifySanctionStateChange: async (payload) =>
+        this.notifySanctionStateChange(item.watchLocation.guildId, payload)
+    };
+    await this.moderationIntegration.afterResponse?.(callbackInput);
+  }
+
+  private async notifySanctionStateChange(
+    guildId: string,
+    payload: SanctionNotificationPayload
+  ): Promise<void> {
+    const failureTarget = findAdminControlWatchLocation(
+      this.config.watchLocations,
+      guildId
+    );
+    if (!failureTarget) {
+      return;
+    }
+
+    const channel = await this.fetchWatchBaseChannel(failureTarget.channelId);
+    if (!channel) {
+      return;
+    }
+
+    await channel.send({
+      content: buildSanctionStateChangeReply(payload),
+      allowedMentions: {
+        parse: []
+      }
+    });
+  }
 }
 
 export function resolveKnowledgeIngestRouting(input: {
@@ -852,6 +1299,72 @@ export function resolveKnowledgeIngestRouting(input: {
   return {
     kind: "create_public_thread"
   };
+}
+
+function buildSamePlaceReplyTarget(item: QueuedMessage): FailureReplyTarget {
+  return {
+    channelId: item.message.channelId,
+    threadId: item.message.channel.isThread() ? item.message.channel.id : null
+  };
+}
+
+function extractStageFailure(
+  error: unknown,
+  item: QueuedMessage,
+  stage: FailureStage
+): StageFailureInput {
+  return {
+    stage,
+    error,
+    replyTarget: readReplyTarget(error) ?? buildSamePlaceReplyTarget(item)
+  };
+}
+
+function attachReplyTarget(
+  error: unknown,
+  replyTarget: FailureReplyTarget
+): Error & { replyTarget: FailureReplyTarget } {
+  const normalized =
+    error instanceof Error ? error : new Error(typeof error === "string" ? error : String(error));
+  return Object.assign(normalized, { replyTarget });
+}
+
+function readReplyTarget(error: unknown): FailureReplyTarget | null {
+  if (!error || typeof error !== "object") {
+    return null;
+  }
+
+  const candidate = error as { replyTarget?: FailureReplyTarget };
+  if (!candidate.replyTarget) {
+    return null;
+  }
+
+  return candidate.replyTarget;
+}
+
+function buildSchedulerEnvelope(job: RetryJobRow): MessageEnvelope {
+  return {
+    guildId: job.guild_id,
+    channelId: job.channel_id,
+    messageId: job.message_id,
+    authorId: "retry-scheduler",
+    placeType: job.reply_thread_id ? "public_thread" : "chat_channel",
+    rawPlaceType: job.reply_thread_id ? "public_thread" : "chat_channel",
+    content: "",
+    urls: [],
+    receivedAt: new Date().toISOString()
+  };
+}
+
+export function findAdminControlWatchLocation(
+  watchLocations: WatchLocationConfig[],
+  guildId: string
+): WatchLocationConfig | null {
+  return (
+    watchLocations.find(
+      (location) => location.guildId === guildId && location.mode === "admin_control"
+    ) ?? null
+  );
 }
 
 function buildKnowledgeThreadName(envelope: MessageEnvelope): string {
@@ -1051,8 +1564,11 @@ async function replyToInteraction(
   });
 }
 
-export function createApplication(config = loadConfig()): BotApplication {
-  return new BotApplication(config);
+export function createApplication(
+  config = loadConfig(),
+  dependencies: BotApplicationDependencies = {}
+): BotApplication {
+  return new BotApplication(config, dependencies);
 }
 
 

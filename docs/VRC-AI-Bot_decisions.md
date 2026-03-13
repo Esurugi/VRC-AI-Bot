@@ -141,6 +141,17 @@
 - 影響範囲：runtime harness の解釈、T09 の責務、same-place knowledge save の扱い、自然文保存の persistence scope が同一 guild の `server_public` であることに影響する。
 
 ---
+- 日時：2026-03-12T17:10:00+09:00
+- 事項：T11 は本文の意味分類ではなく、`sources_used` と source visibility を根拠にした薄い output safety guard として実装する方針を採用した。
+- 背景：session policy と knowledge-assisted conversation が通ったことで、次に必要なのは新 workload を足しても共通に効く出力境界だった。一方で、ユーザーは一貫して「System は事実・境界・副作用だけを持ち、意味解釈は Harness に残す」ことを重視しており、T11 でも TypeScript が本文の意味を広く判定する設計は避ける必要があった。
+- 関連：SEC.01.03, SEC.01.04, SEC.01.05, implementation/src/harness/output-safety-guard.ts, implementation/src/harness/harness-runner.ts, implementation/src/harness/contracts.ts, implementation/src/codex/app-server-client.ts
+- 理由：「T11 は、Harness の意味解釈を TypeScript が奪わずに、最終出力の直前で source 境界だけを検査する薄い System guard として実装する」
+- 代替案：本文パターンや固有表現を System が広く検査する DLP 風ガード案。違反時に即拒否し再生成しない案。
+- 捨てた理由：前者は意味解釈を System 側へ戻し、境界原則に反する。後者は安全性は満たせても、Harness に公開可能な根拠だけで答え直す余地を与えず UX を悪化させる。
+- 影響範囲：System は `sources_used`、record visibility、`fetchable_public_urls`、blocked/private URL、安全再生成 1 回、fixed refusal だけを持つ。DB query wording、save intent、retrieval strategy は T11 では決めない。
+- 検証：pnpm typecheck; pnpm test
+
+---
 - 日時：2026-03-12T01:15:00+09:00
 - 事項：DB 検索語や保存意図の意味解釈は System の TypeScript heuristic で持たず、repo-local skills と scripts を正規運用経路として Harness 主導に戻す方針を採用した。
 - 背景：ユーザーから、System と Harness の境界として重要なのは「DB 内の情報から欲しい情報を抜き取る精度が System 側に依存していないこと」であり、クエリ保存や検索語決定まで System が担うと精度の大部分が単純検索機能に依存してしまうと指摘があった。さらに、Harness とは必要な情報を必要な瞬間に最小コストで届ける外部構造であり、LLM が DB や Discord の運用手順を実装読解なしで使えるべきだという原則が再提示された。
@@ -179,5 +190,49 @@
 - 理由：「App Server側のセッションどれ使うかは、この先色んな機能を追加していくうえでもっと抽象レイヤーで管理しないとダメそう」
 - 代替案：`place_id -> codex_thread_id` を維持しつつ、skills 更新時だけ手動で session を掃除する案。runtime contract hash を自動生成して hidden key に混ぜる案。
 - 捨てた理由：前者は stale thread 再利用を運用手順に押し付けるだけで、今後追加する playground / AI news / ArXiv news のような workload 差分を吸収できない。後者は change boundary が不透明になり、いつ resume を切るかが人間に説明しづらい。
+
+---
+- 日時：2026-03-12T18:25:00+09:00
+- 事項：T12 へ進む前に、T11 の capability gate と same-turn public reconfirmation の実装修正を先に完了させる方針を採用した。
+- 背景：並列コードレビューで、`allow_knowledge_write` の factual gate 漏れ、`sources_used` に skill/script 風文字列を入れたときの境界抜け道、public reconfirmation の観測根拠が緩いことが見つかった。これらはどれも共有ハーネス層の安全境界に属し、未修正のまま T12 制裁や T14 失敗処理へ進むと downstream workload 全体へ不整合が波及する状態だった。
+- 関連：implementation/src/harness/capability-resolver.ts, implementation/src/harness/output-safety-guard.ts, implementation/src/codex/app-server-client.ts, implementation/test/harness-runner.test.ts, implementation/test/output-safety-guard.test.ts, implementation/test/app-server-client.test.ts
+- 理由：「次の機能実装を先に進めるべきではありません」「共有ハーネス層の安全境界と capability gate に関わるため」
+- 代替案：T11 の欠陥を抱えたまま T12 制裁を先に進める案。T11 修正と T12 実装を同時並列に進める案。
+- 捨てた理由：前者は不正な knowledge write や reconfirmation 観測が制裁ロジックへ流れ込み、誤判定の土台を広げる。後者は共有境界の修正と下流 feature 実装が同じファイル群で衝突し、レビューと切り分けが難しくなる。
+- 影響範囲：今回は仕様変更ではなく実装修正として扱い、T11 の factual gate、source boundary、public reconfirmation 観測だけを正したうえで次の T12 へ進む。`sources_used` の許可根拠は record id と fetchable/reconfirmed public URL に限定し、reconfirmation は same-turn の authoritative command execution と構造化出力だけを根拠にする。
+- 検証：pnpm typecheck; pnpm test
 - 影響範囲：session identity は `workload_kind + binding_kind + binding_id + actor_id + sandbox_mode + model_profile + runtime_contract_version + lifecycle_policy` を正本にする。`skills/changed` は reusable session invalidation signal とする。knowledge ingest root から public thread を作った後は、その thread conversation identity を同じ Codex thread に bind する。旧 `codex_session` は `codex_session_legacy` へ退避し、新 runtime は resume に使わない。
+- 検証：pnpm typecheck; pnpm test
+
+---
+- 日時：2026-03-12T18:30:00+09:00
+- 事項：T11 後続修正では、後方互換を残さず `intent -> answer -> optional retry` の 2 段階 turn と `task.retry_context` を正本にし、same-turn public reconfirmation は repo-local `public-source-fetch` skill の構造化出力だけを authoritative evidence とする方針を採用した。
+- 背景：T11 初版の実装後、same-turn public reconfirmation が死んでいること、retry metadata が `available_context` に混ざって facts-only 原則を崩していること、knowledge thread 無言救済で System が意味解釈していること、`allow_external_fetch` / `allow_knowledge_write` が広すぎることが未解決として残った。さらにユーザーから「後方互換性は徹底して廃する」と明示された。
+- 関連：AGENTS.md, implementation/src/harness/contracts.ts, implementation/src/harness/build-harness-request.ts, implementation/src/harness/harness-runner.ts, implementation/src/harness/capability-resolver.ts, implementation/src/harness/output-safety-guard.ts, implementation/src/codex/app-server-client.ts, implementation/src/knowledge/public-source-fetch.ts, .agents/skills/public-source-fetch/SKILL.md
+- 理由：「same-turn public reconfirmation、retry metadata の置き場、Harness/System 境界の食い込み、capability の広さについても対処」「後方互換性は徹底して廃する」
+- 代替案：`persist_items` や `available_context.output_safety` を残したまま新 contract を併存させる案。same-turn reconfirmation を model 自己申告や `sources_used` だけで認める案。knowledge thread 無言時に System が意味解釈付き fallback 文を返し続ける案。
+- 捨てた理由：1 つ目は contract を二重化し、Harness と System の境界を曖昧にする。2 つ目は reconfirmation の authoritative evidence が崩れる。3 つ目は System が意味解釈を肩代わりしてしまい、境界原則に反する。
+- 影響範囲：`available_context` は facts-only に固定され、retry 制御は `task.retry_context` に分離される。Harness は `intent` turn で必要 capability を宣言し、System は factual gate を通った `answer` turn にだけ付与する。same-turn public reconfirmation は `public-source-fetch` skill の成功出力から `observed_public_urls` を構成した場合だけ成立する。knowledge thread follow-up の無言救済は semantic fallback ではなく control-plane retry と generic failure に置き換わる。
+- 検証：pnpm typecheck; pnpm test
+
+---
+- 日時：2026-03-12T19:40:00+09:00
+- 事項：T12 では violation の正本を Harness の `moderation_signal` に限定し、System は通常応答の後段で violation 記録・制裁評価・Discord 制裁実行・admin_control 通知だけを行う方針を採用した。
+- 背景：T11 までで source boundary と capability gate は System facts に基づく薄い境界として整理できた。次の T12 では dangerous/prohibited の意味解釈まで TypeScript に戻さず、Harness が `intent` turn で危険判定し、System はその結果を append-only 監査ログと Discord 側の制裁へ変換するだけに留める必要があった。また、ユーザー体験としては current message の通常応答を潰さず、その後に sanction を適用する運用が自然だった。
+- 関連：implementation/src/harness/contracts.ts, implementation/src/codex/app-server-client.ts, implementation/src/app/sanction-policy-service.ts, implementation/src/app/moderation-integration.ts, implementation/src/app/bot-app.ts, implementation/src/discord/moderation-executor.ts, migrations/007_sanction_v1.sql
+- 理由：「Harness 主導の violation 記録と Discord 制裁」「current message の通常応答を潰さず、応答送信後に適用する」
+- 代替案：blocked URL や output safety guard 違反も System 側で violation に加算する案。通常応答の前に sanction 判定を行い、該当 turn 自体を握りつぶす案。owner/admin や override suspension でも countable violation として扱う案。
+- 捨てた理由：1 つ目は危険意味解釈を System に戻してしまい、境界原則に反する。2 つ目は利用者から見ると bot が無言で制裁だけ行う形になり UX が悪い。3 つ目は管理者検証や override 作業を制裁カウンタと混同してしまう。
+- 影響範囲：`intent` turn の `moderation_signal` だけが violation 記録の根拠になる。owner/admin と `suspend_violation_counter_for_current_thread` は audit-only row を残し、countable threshold や sanction へ進まない。soft-block は guild-wide per user で preflight し、same channel で 12 時間通知抑制する。state change のみ admin_control へ JSON 通知する。
+- 検証：pnpm typecheck; pnpm test
+
+---
+- 日時：2026-03-12T21:20:00+09:00
+- 事項：T14 では失敗処理を Harness の semantic failure と System-owned runtime failure に分離し、retry は DB-backed scheduler と `message_processing = pending_retry` を正本にする方針を採用した。
+- 背景：T11/T12 までで source boundary、capability gate、sanction の責務は整理できたが、失敗処理だけは permanent failure 通知と catch-all error handling に寄っており、再起動をまたぐ transient failure の再試行、cursor 停止条件、Harness `failure` の扱いが仕様上あいまいだった。ユーザー要求でも「失敗理由と再試行予定を出す形」が明示されており、semantic failure まで scheduler に載せると Harness/System 境界が崩れる状態だった。
+- 関連：implementation/src/app/failure-classifier.ts, implementation/src/app/retry-scheduler-service.ts, implementation/src/app/bot-app.ts, implementation/src/app/replies.ts, implementation/src/storage/database.ts, migrations/008_retry_scheduler_v1.sql
+- 理由：「DB 永続化された scheduler」「semantic Harness failure not retried」
+- 代替案：runtime failure も semantic failure も同じ catch-all 経路で permanent failure に落とす案。in-memory timer だけで retry し、`message_processing` は従来どおり binary に保つ案。
+- 捨てた理由：前者は transient failure の自動回復余地を失い、Harness が明示した user-facing failure まで infra retry に巻き込んでしまう。後者は再起動後に retry が継続せず、cursor と duplicate 判定も `pending_retry` を区別できない。
+- 影響範囲：System-owned runtime failure は固定 public category へ分類し、transient failure だけを `5分 -> 30分 -> 2時間` の最大 3 回で再試行する。retry 中の message は `message_processing = pending_retry` に留まり、success または終端 failure まで completed にならない。Harness `outcome = failure` は semantic な終端結果として same place / same thread に返し、retry scheduler へ載せない。
 - 検証：pnpm typecheck; pnpm test

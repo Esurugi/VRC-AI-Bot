@@ -9,16 +9,17 @@
 | BOT.01-04 | bot は、LLM が利用者本文、運用制約、会話場所の事実、内部知見への参照経路を混同しないよう、入力情報を出自別に区別して渡す。 |
 | 理由 | 利用者本文を system 制約や返信先決定に関わる事実と混同させず、誤った場所への返信や権限逸脱を防ぐため。 |
 | 範囲 | `implementation/src/harness/contracts.ts`, `implementation/src/harness/build-harness-request.ts`, `AGENTS.md`, `.agents/skills/discord-harness/SKILL.md` |
-| BOT.01-04-01 | system は Codex への入力を `HarnessRequest` 1 つに統一し、`source`, `actor`, `place`, `message`, `capabilities`, `available_context`, `task` を分けて渡す。 |
+| BOT.01-04-01 | system は Codex への入力を `HarnessRequest` 1 つに統一し、`source`, `actor`, `place`, `message`, `capabilities`, `available_context`, `task` を分けて渡す。`task.phase` は `intent | answer | retry` の 3 段階を持つ。 |
 | BOT.01-04-02 | 利用者本文は `message.content` と `message.urls` にのみ載せる。`place`, `capabilities`, `available_context`, `task` は system facts として扱う。 |
 | BOT.01-04-03 | `place` には `guild_id`, `channel_id`, `root_channel_id`, `thread_id`, `mode`, `place_type`, `scope` を載せる。これらは reply target と参照境界の決定に使う。 |
 | BOT.01-04-04 | `available_context.thread_context` には `kind`, `source_message_id`, `known_source_urls`, `reply_thread_id`, `root_channel_id` を載せる。これは thread が root channel か plain thread か knowledge thread かを LLM が解釈するための事実である。 |
-| BOT.01-04-05 | `available_context` には `discord_runtime_facts_path`, `fetchable_public_urls`, `blocked_urls`, `thread_context` だけを載せ、DB 検索結果の事前注入は system で先回りしない。意味解釈や検索語の決定は Harness が skill/script を用いて行う。 |
+| BOT.01-04-05 | `available_context` には `discord_runtime_facts_path`, `fetchable_public_urls`, `blocked_urls`, `thread_context` だけを載せ、DB 検索結果の事前注入や retry 制御情報の混入は system で行わない。意味解釈や検索語の決定は Harness が skill/script を用いて行う。 |
+| BOT.01-04-05a | retry 制御は `task.retry_context` に載せる。`task.retry_context` は control plane metadata であり、利用者入力や会話本文として解釈してはならない。 |
 | BOT.01-04-06 | system は business intent を先に決めない。system が固定するのは role, scope, reply target rule, URL 安全境界, thread lineage だけとする。 |
 | BOT.01-05 | bot は、投稿の解釈を system が固定分類で先決めせず、LLM が会話文脈に応じて解釈できるようにする。 |
 | 理由 | 投稿の種類を固定列挙で縛らず、知見スレッド follow-up や将来の会話形を増やしても system 分岐を肥大化させないため。 |
 | 範囲 | `implementation/src/harness/contracts.ts`, `implementation/src/harness/harness-runner.ts`, `implementation/src/app/bot-app.ts` |
-| BOT.01-05-01 | Harness の出力は `HarnessResponse` に統一し、`outcome`, `public_text`, `reply_mode`, `target_thread_id`, `knowledge_writes`, `diagnostics.notes`, `sensitivity_raise` を返す。 |
+| BOT.01-05-01 | Harness は 2 段階で動作する。`intent` turn では `HarnessIntentResponse` を返し、`outcome_candidate`, `repo_write_intent`, `requested_external_fetch`, `requested_knowledge_write`, `diagnostics.notes` を持つ。`answer` / `retry` turn では `HarnessResponse` を返し、`outcome`, `public_text`, `reply_mode`, `target_thread_id`, `knowledge_writes`, `diagnostics.notes`, `sensitivity_raise` を持つ。 |
 | BOT.01-05-02 | `outcome` は `chat_reply`, `knowledge_ingest`, `admin_diagnostics`, `ignore`, `failure` の 5 値とする。system はまずこの値を見て副作用を決める。 |
 | BOT.01-05-03 | `reply_mode` と `target_thread_id` は contract には残すが、現行 adapter はこれらを主制御子としては使わない。現行 runtime では `outcome` と Discord facts を優先して返信先を決める。 |
 | BOT.01-05-04 | `chat_reply` は same place 返信の通常会話として扱う。 |
@@ -26,6 +27,7 @@
 | BOT.01-05-06 | `admin_diagnostics` は admin_control place でのみ利用し、運用者向けの JSON diagnostics を same place に返す。 |
 | BOT.01-05-07 | `ignore` は返信しない。 |
 | BOT.01-05-08 | `failure` は `public_text` があれば same place に返し、無ければ admin_control channel へ permanent failure を通知する。 |
+| BOT.01-05-08a | Harness が `outcome = failure` を返した場合、それは semantic な終端結果として扱い、system は same place / same thread に返して retry scheduler へ載せない。 |
 | BOT.01-06 | bot は、投稿に含まれる URL のうち、ローカル資源、私設ネットワーク、実行可能スキームを指す URL を外部取得対象から除外する。 |
 | 理由 | bot がローカルファイル、内部ネットワーク、実行可能 URL を読み取り対象にせず、取得境界を決定的に守るため。 |
 | 範囲 | `implementation/src/playwright/url-policy.ts`, `implementation/src/harness/build-harness-request.ts`, `AGENTS.md`, `.agents/skills/discord-harness/SKILL.md` |
@@ -61,7 +63,9 @@
 | RUN.01-04-02 | bot 再起動時は cursor より後の message だけを catch-up する。 |
 | RUN.01-04-03 | live 受信と catch-up は同じ queue に流し、channel 単位の ordering key で順序を保つ。 |
 | RUN.01-04-04 | 同じ Discord message の処理開始は `message_processing` で 1 回に制限する。 |
+| RUN.01-04-04a | `message_processing.state` は `processing | pending_retry | completed` を持ち、transient runtime failure を retry scheduler へ委譲した message は `pending_retry` に遷移する。 |
 | RUN.01-04-05 | 既に別 worker または別経路で処理中の message は duplicate として処理をスキップし、同じ message に二重返信しない。 |
+| RUN.01-04-05a | `pending_retry` または `processing` な duplicate では cursor を進めず、`completed` の duplicate だけ cursor を前進できる。 |
 | RUN.01-04-06 | bot process 自体の多重起動は `app_runtime_lock` で防止し、lease を失った instance は停止する。 |
 
 ### 【URL知見化】
@@ -72,9 +76,9 @@
 | 理由 | URL 内容取得の方法を 1 つの技術に固定せず、会話文脈と取得対象に応じて柔軟に選べるようにするため。 |
 | 範囲 | `implementation/src/harness/contracts.ts`, `implementation/src/harness/build-harness-request.ts`, `implementation/src/harness/harness-runner.ts`, `implementation/src/knowledge/knowledge-persistence-service.ts`, `AGENTS.md`, `.agents/skills/discord-harness/SKILL.md` |
 | ING.01-02-01 | system は取得手段そのものを固定しない。message 内 URL は `fetchable_public_urls` と `blocked_urls` に分けて渡し、追加の Discord facts や knowledge DB read は repo-local skill/script を通じて on-demand で取得できるようにする。 |
-| ING.01-02-02 | `url_watch` の root 投稿で URL を含む場合、`allow_external_fetch = true`, `allow_knowledge_write = true` を渡せる。public thread 作成は system が `knowledge_ingest` outcome に基づいて行う。 |
-| ING.01-02-03 | 利用者が自然文で明示的に保存を依頼した場合、message 自体に URL が無くても `allow_external_fetch = true`, `allow_knowledge_write = true` を渡せる。取得対象は公開情報に限る。 |
-| ING.01-02-04 | knowledge thread follow-up で `known_source_urls` が 1 件以上ある場合、message 自体に URL が無くても `allow_external_fetch = true` にできる。 |
+| ING.01-02-02 | `url_watch` の root 投稿で URL を含む場合、Harness は `intent` turn で `requested_external_fetch = message_urls`, `requested_knowledge_write = true`, `outcome_candidate = knowledge_ingest` を要求できる。system は `fetchable_public_urls` が存在する場合に限り `answer` turn で `allow_external_fetch = true`, `allow_knowledge_write = true` を付与する。public thread 作成は system が `knowledge_ingest` outcome に基づいて行う。 |
+| ING.01-02-03 | 利用者が自然文で明示的に保存を依頼した場合、Harness は `intent` turn で `requested_external_fetch = public_research`, `requested_knowledge_write = true` を要求できる。system は意味解釈を追加せず、その要求を `answer` turn へ factual gate 付きで反映する。取得対象は公開情報に限る。 |
+| ING.01-02-04 | knowledge thread follow-up で `known_source_urls` が 1 件以上ある場合、Harness は `intent` turn で `requested_external_fetch = known_thread_sources` を要求できる。system は `thread_context.kind = knowledge_thread` かつ `known_source_urls` が 1 件以上ある場合に限り `answer` turn で `allow_external_fetch = true` を付与する。 |
 | ING.01-02-05 | `knowledge_ingest` が返った場合、`url_watch` root 投稿なら system が public thread を作成し、その thread に共有向け summary を返す。自然文の明示保存依頼や thread 内 follow-up では same place / same thread に返信する。 |
 | ING.01-02-05a | 共有対象が主に非日本語の公開記事である場合、shared output は英語要約ではなく、日本語で読める本文を既定とする。 |
 | ING.01-02-06 | persistence は `knowledge_writes` を advisory として受け取り、URL 対応が揺れていても source URL、`public_text`、明示保存依頼で得た公開情報から fallback 保存できるようにする。 |
@@ -126,12 +130,16 @@
 | SEC.01-03-01 | system は message ごとに `scope` を解決し、`place.scope` として Codex に渡す。 |
 | SEC.01-03-02 | admin_control と private thread は常に `conversation_only` とする。 |
 | SEC.01-03-03 | それ以外の場所は watch location の `defaultScope` を使う。 |
+| SEC.01-03-04 | system は最終送信直前に `sources_used` を authoritative な source 境界入口として検査し、knowledge source は record visibility、URL source は `fetchable_public_urls` または同 turn の公開再確認に一致するものだけを許可する。same-turn public reconfirmation の authoritative evidence は repo-local skill `public-source-fetch` の構造化出力だけとする。 |
 | SEC.01-05 | 非公開由来の内容を明示的な許可なしに公開範囲へ出力しない。 |
 | 理由 | 上位機密区分の内容が public thread や一般チャンネルへ漏れるのを防ぐため。 |
-| 範囲 | `AGENTS.md`, `.agents/skills/discord-harness/SKILL.md`, `implementation/src/app/bot-app.ts` |
+| 範囲 | `AGENTS.md`, `.agents/skills/discord-harness/SKILL.md`, `implementation/src/app/bot-app.ts`, `implementation/src/harness/output-safety-guard.ts` |
 | SEC.01-05-01 | Harness は scope を広げない。`sensitivity_raise` は維持または厳格化だけに使う。 |
 | SEC.01-05-02 | Harness は `blocked_urls` を取得対象として扱わない。 |
 | SEC.01-05-03 | Harness は Discord の副作用を自分で実行した前提で話さない。reply target と保存実行は system が決める。 |
+| SEC.01-05-04 | `conversation_only` / private thread / admin_control 由来 source を `channel_family` / `server_public` へそのまま出さない。公開可視 source か同 turn の公開再確認で裏づけられた場合だけ public 出力を許可する。 |
+| SEC.01-05-05 | source 境界違反時、system は `task.retry_context.kind = output_safety` を付けて 1 回だけ安全再生成を行い、それでも直らなければ same place / same thread に refusal を返す。無言終了はさせない。 |
+| SEC.01-05-06 | knowledge thread の non-empty human follow-up で visible reply が無い場合、system は意味解釈付き fallback を生成せず、`task.retry_context.kind = knowledge_followup_non_silent` で 1 回だけ retry し、それでも無応答なら generic same-thread failure を返す。 |
 
 ### 【権限制御】
 
@@ -202,8 +210,11 @@
 | 理由 | 処理失敗時に利用者側と運用者側のどちらへ何を返すかを一定に保つため。 |
 | 範囲 | `implementation/src/app/bot-app.ts`, `implementation/src/app/replies.ts` |
 | ERR.01-03-01 | queue item 失敗時、通常場所には内部 raw error を直接出さない。 |
+| ERR.01-03-01a | system-owned runtime failure は `公開ページではない`, `取得がタイムアウトした`, `権限不足で読めない`, `この場所では扱えない`, `AI処理に失敗した`, `再試行上限に達した` の固定 public category に分類して扱う。 |
+| ERR.01-03-01b | transient runtime failure は DB-backed retry scheduler により `5分 -> 30分 -> 2時間` の最大 3 回で再試行し、その間 `message_processing` は `pending_retry` に留める。 |
 | ERR.01-03-02 | 対象 guild に admin_control watch location がある場合、そこへ `permanent_failure` JSON code block を送る。 |
 | ERR.01-03-03 | `permanent_failure` には `message_id`, `place_mode`, `channel_id`, `error` を含める。 |
+| ERR.01-03-03a | retry scheduler の対象は runtime / transport failure だけとし、Harness の semantic `failure` outcome は再試行しない。 |
 | ERR.01-03-04 | `admin_diagnostics` が成功した場合は same place に diagnostics JSON code block を返す。 |
 | ERR.01-03-05 | diagnostics JSON には `message_id`, `place_mode`, `actor_role`, `resolved_scope`, `codex_thread_id`, `session_identity`, `workload_kind`, `model_profile`, `runtime_contract_version`, `notes` を含める。 |
 

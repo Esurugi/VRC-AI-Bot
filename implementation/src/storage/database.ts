@@ -4,6 +4,7 @@ import { dirname, resolve } from "node:path";
 import Database from "better-sqlite3";
 
 import type {
+  ActorRole,
   CodexSandboxMode,
   Scope,
   VisibleCandidate,
@@ -97,11 +98,26 @@ type ThreadKnowledgeContextRow = {
 type MessageProcessingRow = {
   message_id: string;
   channel_id: string;
-  state: "processing" | "completed";
+  state: "processing" | "pending_retry" | "completed";
   lease_expires_at: string | null;
   created_at: string;
   updated_at: string;
   completed_at: string | null;
+};
+
+export type RetryJobRow = {
+  message_id: string;
+  channel_id: string;
+  guild_id: string;
+  attempt_count: number;
+  next_attempt_at: string;
+  last_failure_category: string;
+  reply_channel_id: string;
+  reply_thread_id: string | null;
+  place_mode: WatchLocationConfig["mode"];
+  stage: string;
+  created_at: string;
+  updated_at: string;
 };
 
 type AppRuntimeLockRow = {
@@ -127,6 +143,40 @@ type OverrideSessionRow = {
   cleanup_reason: string | null;
 };
 
+export type ViolationEventRow = {
+  event_id: string;
+  guild_id: string;
+  user_id: string;
+  message_id: string;
+  place_id: string;
+  violation_category: string;
+  control_request_class: string;
+  handled_as: string;
+  counts_toward_threshold: number;
+  actor_role: ActorRole;
+  occurred_at: string;
+};
+
+export type SanctionStateRow = {
+  sanction_id: string;
+  guild_id: string;
+  user_id: string;
+  state: string;
+  action: "timeout" | "soft_block" | "kick";
+  delivery_status: "applied" | "fallback" | "failed";
+  trigger_event_id: string | null;
+  started_at: string;
+  ends_at: string | null;
+  reason: string;
+};
+
+export type SoftBlockNoticeRow = {
+  guild_id: string;
+  user_id: string;
+  channel_id: string;
+  last_notified_at: string;
+};
+
 export class SqliteStore {
   readonly db: Database.Database;
   readonly watchLocations: WatchLocationRepository;
@@ -137,7 +187,11 @@ export class SqliteStore {
   readonly knowledgeSourceTexts: KnowledgeSourceTextRepository;
   readonly sourceLinks: SourceLinkRepository;
   readonly overrideSessions: OverrideSessionRepository;
+  readonly violationEvents: ViolationEventRepository;
+  readonly sanctionStates: SanctionStateRepository;
+  readonly softBlockNotices: SoftBlockNoticeRepository;
   readonly messageProcessing: MessageProcessingRepository;
+  readonly retryJobs: RetryJobRepository;
   readonly runtimeLock: AppRuntimeLockRepository;
 
   constructor(dbPath: string, private readonly projectRoot = process.cwd()) {
@@ -153,7 +207,11 @@ export class SqliteStore {
     this.knowledgeSourceTexts = new KnowledgeSourceTextRepository(this.db);
     this.sourceLinks = new SourceLinkRepository(this.db);
     this.overrideSessions = new OverrideSessionRepository(this.db);
+    this.violationEvents = new ViolationEventRepository(this.db);
+    this.sanctionStates = new SanctionStateRepository(this.db);
+    this.softBlockNotices = new SoftBlockNoticeRepository(this.db);
     this.messageProcessing = new MessageProcessingRepository(this.db);
+    this.retryJobs = new RetryJobRepository(this.db);
     this.runtimeLock = new AppRuntimeLockRepository(this.db);
   }
 
@@ -927,11 +985,322 @@ export class OverrideSessionRepository {
   }
 }
 
+export class ViolationEventRepository {
+  constructor(private readonly db: Database.Database) {}
+
+  append(input: {
+    eventId: string;
+    guildId: string;
+    userId: string;
+    messageId: string;
+    placeId: string;
+    violationCategory: string;
+    controlRequestClass: string | null;
+    handledAs: string;
+    countsTowardThreshold: boolean;
+    actorRole: ActorRole;
+    occurredAt: string;
+  }): void {
+    this.db
+      .prepare(`
+        INSERT INTO violation_event (
+          event_id,
+          guild_id,
+          user_id,
+          message_id,
+          place_id,
+          violation_category,
+          control_request_class,
+          handled_as,
+          counts_toward_threshold,
+          actor_role,
+          occurred_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      .run(
+        input.eventId,
+        input.guildId,
+        input.userId,
+        input.messageId,
+        input.placeId,
+        input.violationCategory,
+        input.controlRequestClass ?? "",
+        input.handledAs,
+        input.countsTowardThreshold ? 1 : 0,
+        input.actorRole,
+        input.occurredAt
+      );
+  }
+
+  get(eventId: string): ViolationEventRow | null {
+    return (
+      (this.db
+        .prepare(`
+          SELECT
+            event_id,
+            guild_id,
+            user_id,
+            message_id,
+            place_id,
+            violation_category,
+            control_request_class,
+            handled_as,
+            counts_toward_threshold,
+            actor_role,
+            occurred_at
+          FROM violation_event
+          WHERE event_id = ?
+        `)
+        .get(eventId) as ViolationEventRow | undefined) ?? null
+    );
+  }
+
+  listForActorSince(input: {
+    guildId: string;
+    userId: string;
+    occurredAtGte: string;
+    countableOnly?: boolean;
+  }): ViolationEventRow[] {
+    const params: unknown[] = [input.guildId, input.userId, input.occurredAtGte];
+    const countableClause = input.countableOnly
+      ? "AND counts_toward_threshold = 1"
+      : "";
+
+    return this.db
+      .prepare(`
+        SELECT
+          event_id,
+          guild_id,
+          user_id,
+          message_id,
+          place_id,
+          violation_category,
+          control_request_class,
+          handled_as,
+          counts_toward_threshold,
+          actor_role,
+          occurred_at
+        FROM violation_event
+        WHERE guild_id = ?
+          AND user_id = ?
+          AND occurred_at >= ?
+          ${countableClause}
+        ORDER BY occurred_at DESC, event_id DESC
+      `)
+      .all(...params) as ViolationEventRow[];
+  }
+
+  countForActorSince(input: {
+    guildId: string;
+    userId: string;
+    occurredAtGte: string;
+    countableOnly?: boolean;
+  }): number {
+    const params: unknown[] = [input.guildId, input.userId, input.occurredAtGte];
+    const countableClause = input.countableOnly
+      ? "AND counts_toward_threshold = 1"
+      : "";
+
+    const row = this.db
+      .prepare(`
+        SELECT COUNT(*) AS count
+        FROM violation_event
+        WHERE guild_id = ?
+          AND user_id = ?
+          AND occurred_at >= ?
+          ${countableClause}
+      `)
+      .get(...params) as { count: number };
+
+    return row.count;
+  }
+}
+
+export class SanctionStateRepository {
+  constructor(private readonly db: Database.Database) {}
+
+  insert(input: {
+    sanctionId: string;
+    guildId: string;
+    userId: string;
+    state: string;
+    action: "timeout" | "soft_block" | "kick";
+    deliveryStatus: "applied" | "fallback" | "failed";
+    triggerEventId: string | null;
+    startedAt: string;
+    endsAt: string | null;
+    reason: string;
+  }): void {
+    this.db
+      .prepare(`
+        INSERT INTO sanction_state (
+          sanction_id,
+          guild_id,
+          user_id,
+          state,
+          action,
+          delivery_status,
+          trigger_event_id,
+          started_at,
+          ends_at,
+          reason
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      .run(
+        input.sanctionId,
+        input.guildId,
+        input.userId,
+        input.state,
+        input.action,
+        input.deliveryStatus,
+        input.triggerEventId,
+        input.startedAt,
+        input.endsAt,
+        input.reason
+      );
+  }
+
+  getActiveSoftBlock(
+    guildId: string,
+    userId: string,
+    nowIso: string
+  ): SanctionStateRow | null {
+    return (
+      (this.db
+        .prepare(`
+          SELECT
+            sanction_id,
+            guild_id,
+            user_id,
+            state,
+            action,
+            delivery_status,
+            trigger_event_id,
+            started_at,
+            ends_at,
+            reason
+          FROM sanction_state
+          WHERE guild_id = ?
+            AND user_id = ?
+            AND action = 'soft_block'
+            AND state = 'active'
+            AND (ends_at IS NULL OR ends_at > ?)
+          ORDER BY started_at DESC, sanction_id DESC
+          LIMIT 1
+        `)
+        .get(guildId, userId, nowIso) as SanctionStateRow | undefined) ?? null
+    );
+  }
+
+  listRecentForActor(input: {
+    guildId: string;
+    userId: string;
+    startedAtGte: string;
+    actions?: Array<"timeout" | "soft_block" | "kick">;
+    states?: string[];
+  }): SanctionStateRow[] {
+    const params: unknown[] = [input.guildId, input.userId, input.startedAtGte];
+    const actionClause =
+      input.actions && input.actions.length > 0
+        ? `AND action IN (${buildInClause(input.actions.length)})`
+        : "";
+    const stateClause =
+      input.states && input.states.length > 0
+        ? `AND state IN (${buildInClause(input.states.length)})`
+        : "";
+
+    if (input.actions) {
+      params.push(...input.actions);
+    }
+    if (input.states) {
+      params.push(...input.states);
+    }
+
+    return this.db
+      .prepare(`
+        SELECT
+          sanction_id,
+          guild_id,
+          user_id,
+          state,
+          action,
+          delivery_status,
+          trigger_event_id,
+          started_at,
+          ends_at,
+          reason
+        FROM sanction_state
+        WHERE guild_id = ?
+          AND user_id = ?
+          AND started_at >= ?
+          ${actionClause}
+          ${stateClause}
+        ORDER BY started_at DESC, sanction_id DESC
+      `)
+      .all(...params) as SanctionStateRow[];
+  }
+}
+
+export class SoftBlockNoticeRepository {
+  constructor(private readonly db: Database.Database) {}
+
+  get(guildId: string, userId: string, channelId: string): SoftBlockNoticeRow | null {
+    return (
+      (this.db
+        .prepare(`
+          SELECT
+            guild_id,
+            user_id,
+            channel_id,
+            last_notified_at
+          FROM soft_block_notice
+          WHERE guild_id = ? AND user_id = ? AND channel_id = ?
+        `)
+        .get(guildId, userId, channelId) as SoftBlockNoticeRow | undefined) ?? null
+    );
+  }
+
+  upsert(input: {
+    guildId: string;
+    userId: string;
+    channelId: string;
+    lastNotifiedAt: string;
+  }): void {
+    this.db
+      .prepare(`
+        INSERT INTO soft_block_notice (
+          guild_id,
+          user_id,
+          channel_id,
+          last_notified_at
+        ) VALUES (?, ?, ?, ?)
+        ON CONFLICT(guild_id, user_id, channel_id) DO UPDATE SET
+          last_notified_at = excluded.last_notified_at
+      `)
+      .run(
+        input.guildId,
+        input.userId,
+        input.channelId,
+        input.lastNotifiedAt
+      );
+  }
+}
+
 export class MessageProcessingRepository {
   constructor(private readonly db: Database.Database) {}
 
-  tryAcquire(messageId: string, channelId: string, leaseMs = 5 * 60_000): boolean {
+  tryAcquire(
+    messageId: string,
+    channelId: string,
+    input: {
+      leaseMs?: number;
+      allowPendingRetryAcquire?: boolean;
+    } = {}
+  ): {
+    status: "acquired" | "already_completed" | "in_flight" | "pending_retry";
+  } {
     const now = new Date();
+    const leaseMs = input.leaseMs ?? 5 * 60_000;
     const leaseExpiresAt = new Date(now.getTime() + leaseMs).toISOString();
     const nowIso = now.toISOString();
 
@@ -969,26 +1338,63 @@ export class MessageProcessingRepository {
       WHERE message_id = ?
     `);
 
-    const transaction = this.db.transaction(() => {
+    const transaction = this.db.transaction((): {
+      status: "acquired" | "already_completed" | "in_flight" | "pending_retry";
+    } => {
       const existing = find.get(messageId) as MessageProcessingRow | undefined;
       if (!existing) {
         insert.run(messageId, channelId, leaseExpiresAt, nowIso, nowIso);
-        return true;
+        return {
+          status: "acquired"
+        } as const;
       }
 
       if (existing.state === "completed") {
-        return false;
+        return {
+          status: "already_completed"
+        } as const;
+      }
+
+      if (existing.state === "pending_retry") {
+        if (!input.allowPendingRetryAcquire) {
+          return {
+            status: "pending_retry"
+          } as const;
+        }
+
+        updateLease.run(channelId, leaseExpiresAt, nowIso, messageId);
+        return {
+          status: "acquired"
+        } as const;
       }
 
       if (!existing.lease_expires_at || existing.lease_expires_at > nowIso) {
-        return false;
+        return {
+          status: "in_flight"
+        } as const;
       }
 
       updateLease.run(channelId, leaseExpiresAt, nowIso, messageId);
-      return true;
+      return {
+        status: "acquired"
+      } as const;
     });
 
     return transaction();
+  }
+
+  markPendingRetry(messageId: string): void {
+    this.db
+      .prepare(`
+        UPDATE message_processing
+        SET
+          state = 'pending_retry',
+          lease_expires_at = NULL,
+          updated_at = CURRENT_TIMESTAMP,
+          completed_at = NULL
+        WHERE message_id = ?
+      `)
+      .run(messageId);
   }
 
   markCompleted(messageId: string): void {
@@ -1022,6 +1428,119 @@ export class MessageProcessingRepository {
         `)
         .get(messageId) as MessageProcessingRow | undefined) ?? null
     );
+  }
+}
+
+export class RetryJobRepository {
+  constructor(private readonly db: Database.Database) {}
+
+  upsert(input: {
+    messageId: string;
+    channelId: string;
+    guildId: string;
+    attemptCount: number;
+    nextAttemptAt: string;
+    lastFailureCategory: string;
+    replyChannelId: string;
+    replyThreadId: string | null;
+    placeMode: WatchLocationConfig["mode"];
+    stage: string;
+  }): void {
+    this.db
+      .prepare(`
+        INSERT INTO retry_job (
+          message_id,
+          channel_id,
+          guild_id,
+          attempt_count,
+          next_attempt_at,
+          last_failure_category,
+          reply_channel_id,
+          reply_thread_id,
+          place_mode,
+          stage
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(message_id) DO UPDATE SET
+          channel_id = excluded.channel_id,
+          guild_id = excluded.guild_id,
+          attempt_count = excluded.attempt_count,
+          next_attempt_at = excluded.next_attempt_at,
+          last_failure_category = excluded.last_failure_category,
+          reply_channel_id = excluded.reply_channel_id,
+          reply_thread_id = excluded.reply_thread_id,
+          place_mode = excluded.place_mode,
+          stage = excluded.stage,
+          updated_at = CURRENT_TIMESTAMP
+      `)
+      .run(
+        input.messageId,
+        input.channelId,
+        input.guildId,
+        input.attemptCount,
+        input.nextAttemptAt,
+        input.lastFailureCategory,
+        input.replyChannelId,
+        input.replyThreadId,
+        input.placeMode,
+        input.stage
+      );
+  }
+
+  get(messageId: string): RetryJobRow | null {
+    return (
+      (this.db
+        .prepare(`
+          SELECT
+            message_id,
+            channel_id,
+            guild_id,
+            attempt_count,
+            next_attempt_at,
+            last_failure_category,
+            reply_channel_id,
+            reply_thread_id,
+            place_mode,
+            stage,
+            created_at,
+            updated_at
+          FROM retry_job
+          WHERE message_id = ?
+        `)
+        .get(messageId) as RetryJobRow | undefined) ?? null
+    );
+  }
+
+  listDue(nowIso: string, limit = 50): RetryJobRow[] {
+    return this.db
+      .prepare(`
+        SELECT
+          message_id,
+          channel_id,
+          guild_id,
+          attempt_count,
+          next_attempt_at,
+          last_failure_category,
+          reply_channel_id,
+          reply_thread_id,
+          place_mode,
+          stage,
+          created_at,
+          updated_at
+        FROM retry_job
+        WHERE next_attempt_at <= ?
+        ORDER BY next_attempt_at ASC, message_id ASC
+        LIMIT ?
+      `)
+      .all(nowIso, limit) as RetryJobRow[];
+  }
+
+  delete(messageId: string): void {
+    this.db
+      .prepare(`
+        DELETE FROM retry_job
+        WHERE message_id = ?
+      `)
+      .run(messageId);
   }
 }
 

@@ -24,6 +24,8 @@
 | RUN.01.01 | 停止中に投稿された対象メッセージを過去ログから抽出する。 |
 | RUN.01.02 | 抽出した対象メッセージを受付順に並べる。 |
 | RUN.01.03 | 並べた対象メッセージを順次処理する。 |
+| RUN.01.04 | transient runtime failure の対象メッセージは DB-backed retry scheduler に載せ、`message_processing` を `pending_retry` として保持したまま再試行できるようにする。 |
+| RUN.01.05 | `pending_retry` または `processing` の重複処理では cursor を進めず、成功または終端失敗で `completed` になったときだけ前進する。 |
 
 ### 【URL知見化】
 
@@ -76,6 +78,11 @@
 | SEC.01.03 | 機密区分ごとに参照可能な保持データを制限する。 |
 | SEC.01.04 | 公開先に返す内容から上位機密区分の情報を除外する。 |
 | SEC.01.05 | 非公開由来の内容を明示的な許可なしに公開範囲へ出力しない。 |
+| SEC.01.04a | system は最終出力直前に `sources_used` と source visibility を検査し、scope 外 source や blocked/private URL を根拠にした応答をそのまま送信しない。 |
+| SEC.01.04b | source 境界違反があった場合、system は 1 回だけ安全再生成を要求し、なお unsafe なら same place / same thread に短い refusal を返す。 |
+| SEC.01.05a | `conversation_only` や admin_control 由来 source を `channel_family` / `server_public` へそのまま出さず、同じ事実が公開可視 source にあるか同 turn の公開再確認がある場合に限って許可する。 |
+| SEC.01.05b | same-turn public reconfirmation の根拠は、repo-local skill `public-source-fetch` の構造化出力だけを authoritative evidence として扱う。 |
+| SEC.01.05c | knowledge thread の non-empty follow-up は無言終了させず、system は 1 回だけ control-plane retry を要求し、それでも不可なら generic same-thread failure を返す。 |
 
 ### 【権限制御】
 
@@ -110,6 +117,14 @@
 | AUTH.03.05a | 制約緩和中の専用 thread では、override を開始した同一管理者に渡す Harness capability を `allow_external_fetch`, `allow_knowledge_write`, `allow_moderation` の全てで true とする。Discord thread 作成は system の reply-routing で扱い、LLM capability には含めない。 |
 | AUTH.03.06 | 管理者が専用 thread 内で終了 command を明示実行できるようにし、終了時は thread と workspace-write Codex の両方を閉じて通常の read-only 制約状態へ戻す。 |
 | AUTH.03.07 | 制約緩和用 thread と対応する workspace-write Codex session は、session identity の version が一致する間だけ、bot 停止、再起動、container 再作成後も dedicated override thread 単位で再利用できるようにする。 |
+
+### 【Harness契約】
+
+| ID | 要求文 |
+|---|---|
+| BOT.01.06a | bot は Harness turn を `intent -> answer -> optional retry` の 2 段階基本フローで扱い、System は intent 解釈を追加しない。 |
+| BOT.01.06b | `available_context` は facts-only とし、retry 制御情報は `task.retry_context` に分離する。 |
+| BOT.01.06c | 外部取得と knowledge 保存の capability は Harness request と System factual gate の両方を満たした `answer` turn にだけ付与する。 |
 
 ### 【コンテナ運用】
 
@@ -186,6 +201,8 @@
 | ERR.01.01 | 処理失敗の理由を生成する。 |
 | ERR.01.02 | 再試行予定を生成する。 |
 | ERR.01.03 | 生成した内容を対象の会話場所に通知する。 |
+| ERR.01.04 | runtime / transport failure は固定カテゴリへ分類し、transient failure だけを `5分 -> 30分 -> 2時間` の最大 3 回で再試行する。 |
+| ERR.01.05 | Harness が `failure` を返した場合は semantic な終端結果として same place / same thread に返し、retry scheduler へ載せない。 |
 
 ### 【ペルソナ】
 

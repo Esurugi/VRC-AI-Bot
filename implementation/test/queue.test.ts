@@ -77,3 +77,36 @@ test("OrderedMessageQueue runs different keys concurrently while preserving in-k
 
   assert.deepEqual(completed, ["c2:3", "c1:1", "c1:2"]);
 });
+
+test("OrderedMessageQueue allows re-enqueue of the same message after processing finishes", async () => {
+  const processed: string[] = [];
+  let resolveFirst: (() => void) | undefined;
+  const firstDone = new Promise<void>((resolve) => {
+    resolveFirst = resolve;
+  });
+  let resolveSecond: (() => void) | undefined;
+  const secondDone = new Promise<void>((resolve) => {
+    resolveSecond = resolve;
+  });
+
+  const queue = new OrderedMessageQueue<{
+    messageId: string;
+    orderingKey: string;
+  }>(async (item) => {
+    processed.push(`${item.orderingKey}:${item.messageId}:${processed.length}`);
+    if (processed.length === 1) {
+      resolveFirst?.();
+    }
+    if (processed.length === 2) {
+      resolveSecond?.();
+    }
+  });
+
+  queue.enqueue({ messageId: "1", orderingKey: "c1" });
+  await firstDone;
+  await new Promise((resolve) => setImmediate(resolve));
+  queue.enqueue({ messageId: "1", orderingKey: "c1" });
+  await secondDone;
+
+  assert.deepEqual(processed, ["c1:1:0", "c1:1:1"]);
+});

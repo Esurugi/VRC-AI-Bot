@@ -32,6 +32,36 @@ export const HARNESS_TASK_KIND_VALUES = [
 ] as const;
 export type HarnessTaskKind = (typeof HARNESS_TASK_KIND_VALUES)[number];
 
+export const HARNESS_TASK_PHASE_VALUES = [
+  "intent",
+  "answer",
+  "retry"
+] as const;
+export type HarnessTaskPhase = (typeof HARNESS_TASK_PHASE_VALUES)[number];
+
+export const RETRY_CONTEXT_KIND_VALUES = [
+  "output_safety",
+  "knowledge_followup_non_silent"
+] as const;
+export type RetryContextKind = (typeof RETRY_CONTEXT_KIND_VALUES)[number];
+
+export const REQUESTED_EXTERNAL_FETCH_VALUES = [
+  "none",
+  "message_urls",
+  "known_thread_sources",
+  "public_research"
+] as const;
+export type RequestedExternalFetch =
+  (typeof REQUESTED_EXTERNAL_FETCH_VALUES)[number];
+
+export const MODERATION_VIOLATION_CATEGORY_VALUES = [
+  "none",
+  "dangerous",
+  "prohibited"
+] as const;
+export type ModerationViolationCategory =
+  (typeof MODERATION_VIOLATION_CATEGORY_VALUES)[number];
+
 export const THREAD_CONTEXT_KIND_VALUES = [
   "root_channel",
   "knowledge_thread",
@@ -96,6 +126,20 @@ export type HarnessRequest = {
   };
   task: {
     kind: HarnessTaskKind;
+    phase: HarnessTaskPhase;
+    retry_context:
+      | {
+          kind: "output_safety";
+          reason: string;
+          allowed_sources: string[];
+          disallowed_sources: string[];
+          retry_count: number;
+        }
+      | {
+          kind: "knowledge_followup_non_silent";
+          retry_count: number;
+        }
+      | null;
   };
 };
 
@@ -119,7 +163,6 @@ export const harnessResponseSchema = z.object({
   selected_source_ids: z.array(z.string().min(1)),
   sources_used: z.array(z.string().min(1)),
   knowledge_writes: z.array(knowledgeWriteSchema),
-  persist_items: z.array(knowledgeWriteSchema).optional().default([]),
   diagnostics: z.object({
     notes: z.string().nullable()
   }),
@@ -127,6 +170,23 @@ export const harnessResponseSchema = z.object({
 });
 
 export type HarnessResponse = z.infer<typeof harnessResponseSchema>;
+
+export const harnessIntentResponseSchema = z.object({
+  outcome_candidate: z.enum(HARNESS_OUTCOME_VALUES),
+  repo_write_intent: z.boolean(),
+  requested_external_fetch: z.enum(REQUESTED_EXTERNAL_FETCH_VALUES),
+  requested_knowledge_write: z.boolean(),
+  moderation_signal: z.object({
+    violation_category: z.enum(MODERATION_VIOLATION_CATEGORY_VALUES),
+    control_request_class: z.string().min(1).nullable(),
+    notes: z.string().nullable()
+  }),
+  diagnostics: z.object({
+    notes: z.string().nullable()
+  })
+});
+
+export type HarnessIntentResponse = z.infer<typeof harnessIntentResponseSchema>;
 
 const knowledgeWriteJsonSchema = {
   type: "object",
@@ -170,7 +230,6 @@ export const harnessResponseJsonSchema = {
     "selected_source_ids",
     "sources_used",
     "knowledge_writes",
-    "persist_items",
     "diagnostics",
     "sensitivity_raise"
   ],
@@ -208,10 +267,6 @@ export const harnessResponseJsonSchema = {
       type: "array",
       items: knowledgeWriteJsonSchema
     },
-    persist_items: {
-      type: "array",
-      items: knowledgeWriteJsonSchema
-    },
     diagnostics: {
       type: "object",
       additionalProperties: false,
@@ -225,6 +280,66 @@ export const harnessResponseJsonSchema = {
     sensitivity_raise: {
       type: "string",
       enum: ["none", ...SCOPE_VALUES.slice(1)]
+    }
+  }
+} as const;
+
+export const harnessIntentResponseJsonSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "outcome_candidate",
+    "repo_write_intent",
+    "requested_external_fetch",
+    "requested_knowledge_write",
+    "moderation_signal",
+    "diagnostics"
+  ],
+  properties: {
+    outcome_candidate: {
+      type: "string",
+      enum: [...HARNESS_OUTCOME_VALUES]
+    },
+    repo_write_intent: {
+      type: "boolean"
+    },
+    requested_external_fetch: {
+      type: "string",
+      enum: [...REQUESTED_EXTERNAL_FETCH_VALUES]
+    },
+    requested_knowledge_write: {
+      type: "boolean"
+    },
+    moderation_signal: {
+      type: "object",
+      additionalProperties: false,
+      required: [
+        "violation_category",
+        "control_request_class",
+        "notes"
+      ],
+      properties: {
+        violation_category: {
+          type: "string",
+          enum: [...MODERATION_VIOLATION_CATEGORY_VALUES]
+        },
+        control_request_class: {
+          type: ["string", "null"]
+        },
+        notes: {
+          type: ["string", "null"]
+        }
+      }
+    },
+    diagnostics: {
+      type: "object",
+      additionalProperties: false,
+      required: ["notes"],
+      properties: {
+        notes: {
+          type: ["string", "null"]
+        }
+      }
     }
   }
 } as const;

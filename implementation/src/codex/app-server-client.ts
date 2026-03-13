@@ -1,15 +1,23 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { relative, resolve } from "node:path";
 
 import type { Logger } from "pino";
 
 import {
+  harnessIntentResponseJsonSchema,
+  harnessIntentResponseSchema,
   harnessResponseJsonSchema,
   harnessResponseSchema,
+  type HarnessIntentResponse,
   type HarnessRequest,
   type HarnessResponse
 } from "../harness/contracts.js";
 import type { CodexSandboxMode } from "../domain/types.js";
 import { appendRuntimeTrace } from "../observability/runtime-trace.js";
+import {
+  canonicalizeUrl,
+  isAllowedPublicHttpUrl
+} from "../playwright/url-policy.js";
 import {
   getDefaultCodexConfigPath,
   readMcpDisabledConfigOverride
@@ -45,8 +53,14 @@ type PendingRequest = {
 };
 
 type TurnCompletion = {
-  resolve: (lastAgentMessage: string | null) => void;
+  resolve: (result: {
+    lastAgentMessage: string | null;
+    turnId: string | null;
+  }) => void;
   reject: (error: Error) => void;
+  threadId: string;
+  allowExternalFetch: boolean;
+  turnId: string | null;
   lastAgentMessage: string | null;
 };
 
@@ -55,6 +69,10 @@ export type HarnessTurnSessionMetadata = {
   workloadKind: string;
   modelProfile: string;
   runtimeContractVersion: string;
+};
+
+export type TurnObservations = {
+  observed_public_urls: string[];
 };
 
 export const HARNESS_DEVELOPER_INSTRUCTIONS = [
@@ -72,8 +90,15 @@ export const HARNESS_DEVELOPER_INSTRUCTIONS = [
   "Unless the user explicitly requests another language, write public_text in natural Japanese.",
   "fetchable_public_urls are already-approved direct URLs from the user message. blocked_urls are visible context, not approved fetch targets.",
   "If capabilities.allow_external_fetch is true and the user explicitly asks you to investigate, gather, or save public knowledge, you may inspect public sources that stay within the same public-URL safety boundary.",
+  "task.phase tells you whether this turn is intent-only, answer generation, or retry generation.",
+  "On task.phase=intent, decide requested capabilities and return moderation_signal based on the user's dangerous or prohibited control request. For normal requests, set moderation_signal.violation_category to none.",
+  "task.retry_context is control-plane metadata, not user input. Follow it exactly when present.",
+  "If task.retry_context.kind is output_safety, use only task.retry_context.allowed_sources as grounding. Do not rely on task.retry_context.disallowed_sources.",
+  "If task.retry_context.kind is output_safety and no safe answer can be given from the allowed public grounding, return a brief failure-style public_text rather than staying silent.",
+  "If task.retry_context.kind is knowledge_followup_non_silent, this is a forced same-thread retry because your prior answer produced no visible reply. Produce a visible Japanese reply in the same thread without going silent.",
   "If you need repository-local Discord runtime facts beyond the request payload, use the repo skill discord-harness and its read-only scripts. Do not browse Discord docs or grep the codebase for current-turn runtime facts.",
   "If you need repository-local knowledge DB reads, use the repo skill knowledge-runtime-ops and its read-only scripts. Do not guess DB shape from memory and do not ask system to invent retrieval queries for you.",
+  "If you need to establish same-turn public reconfirmation for a public URL that is not already in fetchable_public_urls, use the repo skill public-source-fetch and its read-only script. Only that skill establishes reconfirmed public URLs for System.",
   "System no longer precomputes retrieval queries or global knowledge search results for you. Decide what to look up yourself when relevant.",
   "If outcome is knowledge_ingest, produce a shareable summary in public_text and include knowledge_writes when you want System to persist reusable knowledge.",
   "knowledge_writes are advisory persistence handoff. Missing or partial knowledge_writes should not block a successful answer.",
@@ -96,7 +121,8 @@ export const HARNESS_DEVELOPER_INSTRUCTIONS = [
 export class CodexAppServerClient {
   private process: ChildProcessWithoutNullStreams | null = null;
   private readonly pending = new Map<number, PendingRequest>();
-  private readonly turnCompletions = new Map<string, TurnCompletion>();
+  private readonly pendingTurnCompletions = new Map<string, TurnCompletion[]>();
+  private readonly activeTurnCompletions = new Map<string, TurnCompletion>();
   private readonly threadConfigOverride: ReturnType<
     typeof readMcpDisabledConfigOverride
   >;
@@ -230,109 +256,177 @@ export class CodexAppServerClient {
     threadId: string,
     requestPayload: HarnessRequest,
     sessionMetadata?: HarnessTurnSessionMetadata
-  ): Promise<HarnessResponse> {
+  ): Promise<{
+    response: HarnessResponse;
+    observations: TurnObservations;
+  }> {
+    return this.runStructuredHarnessTurn<HarnessResponse>({
+      threadId,
+      requestPayload,
+      ...(sessionMetadata === undefined ? {} : { sessionMetadata }),
+      outputSchema: harnessResponseJsonSchema,
+      parser: (value) => harnessResponseSchema.parse(value)
+    });
+  }
+
+  async runHarnessIntentRequest(
+    threadId: string,
+    requestPayload: HarnessRequest,
+    sessionMetadata?: HarnessTurnSessionMetadata
+  ): Promise<HarnessIntentResponse> {
+    const result = await this.runStructuredHarnessTurn<HarnessIntentResponse>({
+      threadId,
+      requestPayload,
+      ...(sessionMetadata === undefined ? {} : { sessionMetadata }),
+      outputSchema: harnessIntentResponseJsonSchema,
+      parser: (value) => harnessIntentResponseSchema.parse(value)
+    });
+    return result.response;
+  }
+
+  private async runStructuredHarnessTurn<T>(input: {
+    threadId: string;
+    requestPayload: HarnessRequest;
+    sessionMetadata?: HarnessTurnSessionMetadata;
+    outputSchema: object;
+    parser: (value: unknown) => T;
+  }): Promise<{
+    response: T;
+    observations: TurnObservations;
+  }> {
     this.logger.debug(
       {
-        threadId,
-        placeMode: requestPayload.place.mode,
-        threadKind: requestPayload.available_context.thread_context.kind,
-        capabilityFlags: requestPayload.capabilities,
-        sessionIdentity: sessionMetadata?.sessionIdentity,
-        workloadKind: sessionMetadata?.workloadKind,
-        modelProfile: sessionMetadata?.modelProfile,
-        runtimeContractVersion: sessionMetadata?.runtimeContractVersion
+        threadId: input.threadId,
+        placeMode: input.requestPayload.place.mode,
+        threadKind: input.requestPayload.available_context.thread_context.kind,
+        phase: input.requestPayload.task.phase,
+        capabilityFlags: input.requestPayload.capabilities,
+        sessionIdentity: input.sessionMetadata?.sessionIdentity,
+        workloadKind: input.sessionMetadata?.workloadKind,
+        modelProfile: input.sessionMetadata?.modelProfile,
+        runtimeContractVersion: input.sessionMetadata?.runtimeContractVersion
       },
       "starting codex harness turn"
     );
     appendRuntimeTrace("codex-app-server", "harness_turn_started", {
-      threadId,
-      requestId: requestPayload.request_id,
-      place: requestPayload.place,
-      actor: requestPayload.actor,
-      capabilities: requestPayload.capabilities,
-      task: requestPayload.task,
-      overrideContext: requestPayload.override_context,
-      availableContext: requestPayload.available_context,
-      sessionIdentity: sessionMetadata?.sessionIdentity,
-      workloadKind: sessionMetadata?.workloadKind,
-      modelProfile: sessionMetadata?.modelProfile,
-      runtimeContractVersion: sessionMetadata?.runtimeContractVersion
+      threadId: input.threadId,
+      requestId: input.requestPayload.request_id,
+      place: input.requestPayload.place,
+      actor: input.requestPayload.actor,
+      capabilities: input.requestPayload.capabilities,
+      task: input.requestPayload.task,
+      overrideContext: input.requestPayload.override_context,
+      availableContext: input.requestPayload.available_context,
+      sessionIdentity: input.sessionMetadata?.sessionIdentity,
+      workloadKind: input.sessionMetadata?.workloadKind,
+      modelProfile: input.sessionMetadata?.modelProfile,
+      runtimeContractVersion: input.sessionMetadata?.runtimeContractVersion
     });
-    const completion = this.waitForTurnCompletion(threadId);
+    const completion = this.waitForTurnCompletion({
+      threadId: input.threadId,
+      allowExternalFetch: input.requestPayload.capabilities.allow_external_fetch
+    });
 
-    await this.request("turn/start", {
-      threadId,
+    const turnStartResult = (await this.request("turn/start", {
+      threadId: input.threadId,
       input: [
         {
           type: "text",
-          text: JSON.stringify(requestPayload, null, 2),
+          text: JSON.stringify(input.requestPayload, null, 2),
           text_elements: []
         }
       ],
-      outputSchema: harnessResponseJsonSchema
-    });
+      outputSchema: input.outputSchema
+    })) as { turn?: { id?: string } };
 
-    const completionLastAgentMessage = await completion;
+    const completionResult = await completion;
+    const turnSnapshot = await this.readLatestTurnSnapshotWithRetry({
+      threadId: input.threadId,
+      turnId: completionResult.turnId ?? turnStartResult.turn?.id ?? null,
+      allowExternalFetch: input.requestPayload.capabilities.allow_external_fetch
+    });
     const lastAgentText =
-      completionLastAgentMessage ??
-      (await this.readLastAgentMessageWithRetry(threadId));
+      turnSnapshot.lastAgentMessage ?? completionResult.lastAgentMessage;
     if (!lastAgentText) {
       throw new Error("codex thread/read did not contain an agent message");
     }
 
     const parsed = JSON.parse(lastAgentText) as unknown;
-    const response = harnessResponseSchema.parse(parsed);
+    const response = input.parser(parsed);
     this.logger.debug(
       {
-        threadId,
-        outcome: response.outcome,
-        replyMode: response.reply_mode,
-        hasPublicText: Boolean(response.public_text?.trim())
+        threadId: input.threadId,
+        phase: input.requestPayload.task.phase
       },
       "completed codex harness turn"
     );
     appendRuntimeTrace("codex-app-server", "harness_turn_completed", {
-      threadId,
-      requestId: requestPayload.request_id,
+      threadId: input.threadId,
+      requestId: input.requestPayload.request_id,
       response,
-      sessionIdentity: sessionMetadata?.sessionIdentity,
-      workloadKind: sessionMetadata?.workloadKind,
-      modelProfile: sessionMetadata?.modelProfile,
-      runtimeContractVersion: sessionMetadata?.runtimeContractVersion
+      observations: {
+        observed_public_urls: sortStrings(turnSnapshot.observedPublicUrls)
+      },
+      sessionIdentity: input.sessionMetadata?.sessionIdentity,
+      workloadKind: input.sessionMetadata?.workloadKind,
+      modelProfile: input.sessionMetadata?.modelProfile,
+      runtimeContractVersion: input.sessionMetadata?.runtimeContractVersion
     });
-    return response;
+    return {
+      response,
+      observations: {
+        observed_public_urls: sortStrings(turnSnapshot.observedPublicUrls)
+      }
+    };
   }
 
-  private waitForTurnCompletion(threadId: string): Promise<string | null> {
+  private waitForTurnCompletion(input: {
+    threadId: string;
+    allowExternalFetch: boolean;
+  }): Promise<{ lastAgentMessage: string | null; turnId: string | null }> {
     return new Promise((resolve, reject) => {
-      this.turnCompletions.set(threadId, {
-        resolve: (lastAgentMessage) => {
-          resolve(lastAgentMessage);
-        },
+      const queue = this.pendingTurnCompletions.get(input.threadId) ?? [];
+      queue.push({
+        resolve,
         reject: (error) => {
           reject(error);
         },
+        threadId: input.threadId,
+        allowExternalFetch: input.allowExternalFetch,
+        turnId: null,
         lastAgentMessage: null
       });
+      this.pendingTurnCompletions.set(input.threadId, queue);
     });
   }
 
-  private async readLastAgentMessageWithRetry(threadId: string): Promise<string | null> {
+  private async readLatestTurnSnapshotWithRetry(input: {
+    threadId: string;
+    turnId: string | null;
+    allowExternalFetch: boolean;
+  }): Promise<{
+    lastAgentMessage: string | null;
+    observedPublicUrls: string[];
+  }> {
     for (let attempt = 0; attempt < 5; attempt += 1) {
       const response = (await this.request("thread/read", {
-        threadId,
+        threadId: input.threadId,
         includeTurns: true
       })) as {
         thread?: {
           turns?: Array<{
-            items?: Array<{ type: string; text?: string }>;
+            items?: unknown[];
           }>;
         };
       };
 
-      const lastAgentText = findLastAgentMessageText(response);
-      if (lastAgentText) {
-        return lastAgentText;
+      const snapshot = findLatestTurnSnapshot(
+        response,
+        input.turnId,
+        input.allowExternalFetch
+      );
+      if (snapshot.lastAgentMessage) {
+        return snapshot;
       }
 
       if (attempt < 4) {
@@ -340,7 +434,10 @@ export class CodexAppServerClient {
       }
     }
 
-    return null;
+    return {
+      lastAgentMessage: null,
+      observedPublicUrls: []
+    };
   }
 
   private request(method: string, params?: unknown): Promise<unknown> {
@@ -437,6 +534,23 @@ export class CodexAppServerClient {
       method,
       params: summarizeNotificationParams(method, params)
     });
+    if (method === "turn/started") {
+      const threadId = getNotificationThreadId(params);
+      const turnId = getNotificationTurnId(params);
+      if (!threadId || !turnId) {
+        return;
+      }
+
+      const completion = this.shiftPendingTurnCompletion(threadId);
+      if (!completion) {
+        return;
+      }
+
+      completion.turnId = turnId;
+      this.activeTurnCompletions.set(turnId, completion);
+      return;
+    }
+
     if (method === "codex/event/task_complete") {
       const threadId = getNotificationThreadId(params);
       const lastAgentMessage = getTaskCompleteLastAgentMessage(params);
@@ -444,7 +558,7 @@ export class CodexAppServerClient {
         return;
       }
 
-      const completion = this.turnCompletions.get(threadId);
+      const completion = this.findTurnCompletion(params);
       if (!completion) {
         return;
       }
@@ -460,7 +574,7 @@ export class CodexAppServerClient {
         return;
       }
 
-      const completion = this.turnCompletions.get(threadId);
+      const completion = this.findTurnCompletion(params);
       if (!completion) {
         return;
       }
@@ -476,7 +590,7 @@ export class CodexAppServerClient {
         return;
       }
 
-      const completion = this.turnCompletions.get(threadId);
+      const completion = this.findTurnCompletion(params);
       if (!completion) {
         return;
       }
@@ -492,7 +606,7 @@ export class CodexAppServerClient {
         return;
       }
 
-      const completion = this.turnCompletions.get(threadId);
+      const completion = this.findTurnCompletion(params);
       if (!completion) {
         return;
       }
@@ -502,24 +616,20 @@ export class CodexAppServerClient {
     }
 
     if (method === "turn/completed") {
-      const threadId = getNotificationThreadId(params);
-
-      if (!threadId) {
-        return;
-      }
-
-      const completion = this.turnCompletions.get(threadId);
+      const completion = this.takeTurnCompletion(params);
       if (!completion) {
         return;
       }
 
-      this.turnCompletions.delete(threadId);
       const completionError = getTurnCompletionError(params);
       if (completionError) {
         completion.reject(completionError);
         return;
       }
-      completion.resolve(completion.lastAgentMessage);
+      completion.resolve({
+        lastAgentMessage: completion.lastAgentMessage,
+        turnId: completion.turnId
+      });
       return;
     }
 
@@ -546,11 +656,78 @@ export class CodexAppServerClient {
       pending.reject(error);
     }
 
-    for (const [threadId, completion] of this.turnCompletions) {
-      this.turnCompletions.delete(threadId);
+    for (const [, completions] of this.pendingTurnCompletions) {
+      for (const completion of completions) {
+        completion.reject(error);
+      }
+    }
+    this.pendingTurnCompletions.clear();
+
+    for (const [turnId, completion] of this.activeTurnCompletions) {
+      this.activeTurnCompletions.delete(turnId);
       completion.reject(error);
     }
   }
+
+  private shiftPendingTurnCompletion(threadId: string): TurnCompletion | null {
+    const queue = this.pendingTurnCompletions.get(threadId);
+    if (!queue || queue.length === 0) {
+      return null;
+    }
+
+    const completion = queue.shift() ?? null;
+    if (queue.length === 0) {
+      this.pendingTurnCompletions.delete(threadId);
+    } else {
+      this.pendingTurnCompletions.set(threadId, queue);
+    }
+
+    return completion;
+  }
+
+  private findTurnCompletion(params: unknown): TurnCompletion | null {
+    const turnId = getNotificationTurnId(params);
+    if (turnId) {
+      const active = this.activeTurnCompletions.get(turnId);
+      if (active) {
+        return active;
+      }
+    }
+
+    const threadId = getNotificationThreadId(params);
+    if (!threadId) {
+      return null;
+    }
+
+    const queue = this.pendingTurnCompletions.get(threadId);
+    return queue?.[0] ?? null;
+  }
+
+  private takeTurnCompletion(params: unknown): TurnCompletion | null {
+    const turnId = getNotificationTurnId(params);
+    if (turnId) {
+      const active = this.activeTurnCompletions.get(turnId);
+      if (active) {
+        this.activeTurnCompletions.delete(turnId);
+        return active;
+      }
+    }
+
+    const threadId = getNotificationThreadId(params);
+    if (!threadId) {
+      return null;
+    }
+
+    return this.shiftPendingTurnCompletion(threadId);
+  }
+}
+
+function dedupeStrings(values: string[]): string[] {
+  return [...new Set(values)];
+}
+
+function sortStrings(values: Iterable<string>): string[] {
+  return [...values].sort((left, right) => left.localeCompare(right));
 }
 
 function buildCodexChildEnv(
@@ -597,6 +774,259 @@ function findLastAgentMessageText(response: {
   return null;
 }
 
+type ThreadReadResponse = {
+  thread?: {
+    turns?: Array<{
+      id?: string;
+      items?: unknown[];
+    }>;
+  };
+};
+
+type TurnSnapshot = {
+  lastAgentMessage: string | null;
+  observedPublicUrls: string[];
+};
+
+function findLatestTurnSnapshot(
+  response: ThreadReadResponse,
+  turnId: string | null,
+  allowExternalFetch: boolean,
+  repoCwd = process.cwd()
+): TurnSnapshot {
+  const turns = response.thread?.turns ?? [];
+  const turn = findTargetTurn(turns, turnId);
+  if (!turn) {
+    return {
+      lastAgentMessage: null,
+      observedPublicUrls: []
+    };
+  }
+
+  const items = Array.isArray(turn.items) ? turn.items : [];
+  return {
+    lastAgentMessage: findLastAgentMessageInItems(items),
+    observedPublicUrls:
+      turnId === null
+        ? []
+        : extractObservedPublicUrlsFromTurnItems(items, allowExternalFetch, repoCwd)
+  };
+}
+
+function findTargetTurn(
+  turns: Array<{
+    id?: string;
+    items?: unknown[];
+  }>,
+  turnId: string | null
+):
+  | {
+      id?: string;
+      items?: unknown[];
+    }
+  | null {
+  if (turnId) {
+    for (let index = turns.length - 1; index >= 0; index -= 1) {
+      const turn = turns[index];
+      if (turn?.id === turnId) {
+        return turn;
+      }
+    }
+  }
+
+  return turns.length > 0 ? (turns[turns.length - 1] ?? null) : null;
+}
+
+function findLastAgentMessageInItems(items: unknown[]): string | null {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    if (
+      typeof item === "object" &&
+      item !== null &&
+      "type" in item &&
+      item.type === "agentMessage" &&
+      "text" in item &&
+      typeof item.text === "string"
+    ) {
+      return item.text.trim();
+    }
+  }
+
+  return null;
+}
+
+function extractObservedPublicUrlsFromTurnItems(
+  items: unknown[],
+  allowExternalFetch: boolean,
+  repoCwd = process.cwd()
+): string[] {
+  if (!allowExternalFetch) {
+    return [];
+  }
+
+  const observed = new Set<string>();
+  for (const item of items) {
+    const urls = extractObservedPublicUrlsFromCommandExecutionItem(item, repoCwd);
+    for (const url of urls) {
+      observed.add(url);
+    }
+  }
+
+  return sortStrings(observed);
+}
+
+function extractObservedPublicUrlsFromCommandExecutionItem(
+  item: unknown,
+  repoCwd: string
+): string[] {
+  if (
+    typeof item !== "object" ||
+    item === null ||
+    !("type" in item) ||
+    item.type !== "commandExecution"
+  ) {
+    return [];
+  }
+
+  if (
+    !("exitCode" in item) ||
+    item.exitCode !== 0 ||
+    !("aggregatedOutput" in item) ||
+    typeof item.aggregatedOutput !== "string" ||
+    !("command" in item) ||
+    typeof item.command !== "string" ||
+    !("cwd" in item) ||
+    typeof item.cwd !== "string"
+  ) {
+    return [];
+  }
+
+  if (!matchesPublicSourceFetchCommand(item.command, item.cwd, repoCwd)) {
+    return [];
+  }
+
+  const payload = parseStructuredPublicSourceFetchOutput(item.aggregatedOutput);
+  if (!payload) {
+    return [];
+  }
+
+  return dedupeStrings([payload.canonicalUrl, payload.finalUrl].filter(Boolean));
+}
+
+function matchesPublicSourceFetchCommand(
+  command: string,
+  cwd: string,
+  repoCwd: string
+): boolean {
+  if (!sameNormalizedPath(cwd, repoCwd)) {
+    return false;
+  }
+
+  const tokens = tokenizeCommand(command);
+  if (tokens.length < 4 || tokens[0]?.toLowerCase() !== "node") {
+    return false;
+  }
+
+  let index = 1;
+  if (tokens[index] === "--import") {
+    if (tokens[index + 1]?.toLowerCase() !== "tsx") {
+      return false;
+    }
+    index += 2;
+  }
+
+  const scriptPath = normalizeScriptToken(tokens[index] ?? "", cwd);
+  if (scriptPath !== ".agents/skills/public-source-fetch/scripts/fetch-public-source.ts") {
+    return false;
+  }
+
+  const urlFlagIndex = tokens.findIndex((token, tokenIndex) => {
+    return tokenIndex > index && token === "--url";
+  });
+  const requestedUrl = urlFlagIndex === -1 ? undefined : tokens[urlFlagIndex + 1];
+  if (!requestedUrl) {
+    return false;
+  }
+
+  return isAllowedPublicHttpUrl(requestedUrl);
+}
+
+function parseStructuredPublicSourceFetchOutput(output: string): {
+  finalUrl: string;
+  canonicalUrl: string;
+} | null {
+  const trimmed = output.trim();
+  if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) {
+    return null;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+
+  if (
+    typeof parsed !== "object" ||
+    parsed === null ||
+    !("public" in parsed) ||
+    parsed.public !== true ||
+    !("status" in parsed) ||
+    typeof parsed.status !== "number" ||
+    parsed.status < 200 ||
+    parsed.status >= 400 ||
+    !("finalUrl" in parsed) ||
+    typeof parsed.finalUrl !== "string" ||
+    !("canonicalUrl" in parsed) ||
+    typeof parsed.canonicalUrl !== "string"
+  ) {
+    return null;
+  }
+
+  const finalUrl = canonicalizeObservedPublicUrl(parsed.finalUrl);
+  const canonicalUrl = canonicalizeObservedPublicUrl(parsed.canonicalUrl);
+  if (!finalUrl || !canonicalUrl) {
+    return null;
+  }
+
+  return {
+    finalUrl,
+    canonicalUrl
+  };
+}
+
+function canonicalizeObservedPublicUrl(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  try {
+    return isAllowedPublicHttpUrl(trimmed) ? canonicalizeUrl(trimmed) : null;
+  } catch {
+    return null;
+  }
+}
+
+function tokenizeCommand(command: string): string[] {
+  const matches = command.match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
+  return matches.map((token) => token.replace(/^['"]|['"]$/g, ""));
+}
+
+function normalizeScriptToken(token: string, cwd: string): string {
+  const normalized = token.replaceAll("\\", "/");
+  if (/^[A-Za-z]:\//i.test(normalized) || normalized.startsWith("/")) {
+    return relative(resolve(cwd), resolve(token)).replaceAll("\\", "/");
+  }
+
+  return normalized.replace(/^\.\//, "");
+}
+
+function sameNormalizedPath(left: string, right: string): boolean {
+  return resolve(left).toLowerCase() === resolve(right).toLowerCase();
+}
+
 function getNotificationThreadId(params: unknown): string | null {
   return typeof params === "object" &&
     params !== null &&
@@ -608,6 +1038,23 @@ function getNotificationThreadId(params: unknown): string | null {
         "conversationId" in params &&
         typeof params.conversationId === "string"
       ? params.conversationId
+      : null;
+}
+
+function getNotificationTurnId(params: unknown): string | null {
+  return typeof params === "object" &&
+    params !== null &&
+    "turnId" in params &&
+    typeof params.turnId === "string"
+    ? params.turnId
+    : typeof params === "object" &&
+        params !== null &&
+        "turn" in params &&
+        typeof params.turn === "object" &&
+        params.turn !== null &&
+        "id" in params.turn &&
+        typeof params.turn.id === "string"
+      ? params.turn.id
       : null;
 }
 
@@ -712,6 +1159,7 @@ function summarizeNotificationParams(method: string, params: unknown): unknown {
   if (method === "turn/completed") {
     return {
       threadId: getNotificationThreadId(params),
+      turnId: getNotificationTurnId(params),
       error: getTurnCompletionError(params)?.message ?? null
     };
   }
@@ -783,6 +1231,11 @@ function getTurnCompletionError(params: unknown): Error | null {
 
   return new Error(message);
 }
+
+export const __testOnly = {
+  findLatestTurnSnapshot,
+  extractObservedPublicUrlsFromTurnItems
+};
 
 
 

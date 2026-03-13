@@ -133,9 +133,7 @@ export class KnowledgePersistenceService {
 }
 
 function getKnowledgeWrites(response: HarnessResponse): KnowledgeWrite[] {
-  return response.knowledge_writes.length > 0
-    ? response.knowledge_writes
-    : response.persist_items;
+  return response.knowledge_writes;
 }
 
 function buildPersistInputs(input: {

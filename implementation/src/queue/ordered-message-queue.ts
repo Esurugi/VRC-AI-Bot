@@ -97,6 +97,8 @@ export class OrderedMessageQueue<
           await this.worker(item);
         } catch {
           // The worker is responsible for logging and failure handling.
+        } finally {
+          this.seen.delete(item.messageId);
         }
       }
     } finally {

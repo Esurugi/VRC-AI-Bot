@@ -472,16 +472,25 @@
 - 対象要求 ID: `SEC.01-03`, `SEC.01-04`, `SEC.01-05`, `AUTH.01-05`
 - 目的: 範囲外 source の混入や private 由来情報の公開漏えいを防ぐ。
 - 入力契約:
-- visible candidates は事前に scope filter 済み
-- 最終応答では `sources_used` を検査する
+- turn は `intent -> answer -> optional retry` の 2 段階基本フローとし、System は `intent` で意味解釈を追加しない
+- `available_context` は facts-only に保ち、retry 制御情報は `task.retry_context` に載せる
+- Harness は `intent` で `requested_external_fetch` / `requested_knowledge_write` を宣言し、System は factual gate を通った `answer` turn にだけ capability を付与する
+- System は意味解釈を行わず、source 境界だけを検査する
+- 最終応答では `sources_used` を authoritative input として検査する
+- knowledge source は record visibility、URL source は `fetchable_public_urls` または同 turn の公開再確認に一致するものだけを許可する
+- 同 turn の公開再確認は repo-local skill `public-source-fetch` の構造化出力だけを authoritative evidence とする
 - private 由来の事実を公開場所へ出せるのは、同じ事実が `server_public` source にあるか、同 turn の公開 Web で独立再確認できた場合だけ
 - 出力契約:
 - output guard
 - 1 回だけの安全再生成
 - fallback refusal
+- reply target は変えない
 - 実装内容:
+- `intent` turn では `allow_external_fetch=false`, `allow_knowledge_write=false` を基本にして Harness の要求を受ける。
+- `CapabilityResolver` で `message_urls`, `known_thread_sources`, `public_research`, `knowledge_write` を事実境界だけで grant し、`answer` turn に反映する。
 - `sources_used` に範囲外 source があれば Discord 投稿前に reject する。
-- 1 回だけ安全再生成し、それでも直らなければ「この場所では扱えない」と返す。
+- source 境界違反時は `task.retry_context.kind = output_safety` で 1 回だけ安全再生成し、それでも直らなければ「この場所では扱えない」と返す。
+- knowledge thread の non-empty follow-up が visible reply を返さない場合は `task.retry_context.kind = knowledge_followup_non_silent` で 1 回だけ retry し、それでも不可なら generic same-thread failure を返す。
 - 一般利用者の要求で上位機密参照や browser mode 拡大を行わない。
 - 変更境界:
 - moderation 実行は持たない。出力安全に限定。
@@ -559,6 +568,7 @@
 - 対象要求 ID: `ERR.01-01`, `ERR.01-02`, `ERR.01-03`, `ERR.01-04`
 - 目的: 失敗を内部詳細と利用者通知へ分離し、transient failure だけ自動再試行する。
 - 入力契約:
+- Harness の `outcome = failure` は semantic な終端結果として same place / same thread に返し、retry scheduler へ載せない。
 - 利用者向け失敗カテゴリは `公開ページではない`, `取得がタイムアウトした`, `権限不足で読めない`, `AI処理に失敗した`, `この場所では扱えない`, `再試行上限に達した`
 - retry 対象は transient failure のみ
 - retry 間隔は 5 分後、30 分後、2 時間後の最大 3 回
@@ -568,11 +578,12 @@
 - 出力契約:
 - failure classifier
 - retry scheduler
+- `message_processing.state = processing | pending_retry | completed`
 - user notification builder
 - admin notification builder
 - 実装内容:
 - raw error と利用者向けカテゴリを分離する。
-- retry 予定のジョブは cursor を進めず scheduler 管理へ回す。
+- retry 予定のジョブは DB-backed scheduler 管理へ回し、`message_processing` を `pending_retry` にして cursor を進めない。
 - 利用者向けには stack trace を出さない。
 - 変更境界:
 - feature 本体は持たない。失敗後の後始末だけ。

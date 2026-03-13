@@ -18,13 +18,16 @@ These fields are System-owned facts. Use them directly when present.
 - `place`: guild, channel, root channel, thread, place mode, place type, scope.
 - `message`: message id, content, URLs, timestamp.
 - `actor`: user id and role.
+- `task.phase`: whether this turn is `intent`, `answer`, or `retry`.
+- `task.retry_context`: control-plane retry metadata. This is not user content and not extra meaning to infer.
 - `capabilities`: turn-local policy gates such as `allow_external_fetch`, `allow_knowledge_write`, `allow_moderation`.
 - `override_context`: whether the current place is an active override context and whether the actor matches it.
 - `available_context.thread_context`: whether this is a root channel, knowledge thread, or plain thread; the reply thread id; known source URLs; root channel id.
 - `available_context.fetchable_public_urls`: already-approved direct public URLs from the current message.
 - `available_context.blocked_urls`: visible but never fetchable URLs.
-
 - `available_context.discord_runtime_facts_path`: optional path to a repo-local JSON facts artifact for deeper Discord inspection.
+
+`available_context` is facts-only. If retry or output-safety instructions are present, they live in `task.retry_context`, not in `available_context`.
 
 If the information you need is already in those fields, do not run any script.
 

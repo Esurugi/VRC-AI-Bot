@@ -10,6 +10,7 @@ import type { OverrideContext } from "../override/types.js";
 import { isAllowedPublicHttpUrl } from "../playwright/url-policy.js";
 import type {
   HarnessRequest,
+  HarnessTaskPhase,
   HarnessTaskKind,
   ThreadContextKind
 } from "./contracts.js";
@@ -20,6 +21,7 @@ export function buildHarnessRequest(input: {
   watchLocation: WatchLocationConfig;
   envelope: MessageEnvelope;
   taskKind: HarnessTaskKind;
+  taskPhase?: HarnessTaskPhase;
   threadContext?: {
     kind: ThreadContextKind;
     sourceMessageId: string | null;
@@ -32,6 +34,19 @@ export function buildHarnessRequest(input: {
   allowModeration?: boolean;
   overrideContext?: OverrideContext;
   discordRuntimeFactsPath?: string | null;
+  retryContext?:
+    | {
+        kind: "output_safety";
+        retryCount: number;
+        reason: string;
+        allowedSources: string[];
+        disallowedSources: string[];
+      }
+    | {
+        kind: "knowledge_followup_non_silent";
+        retryCount: number;
+      }
+    | null;
 }): HarnessRequest {
   const {
     actorRole,
@@ -39,6 +54,7 @@ export function buildHarnessRequest(input: {
     watchLocation,
     envelope,
     taskKind,
+    taskPhase = "answer",
     threadContext = {
       kind: "root_channel",
       sourceMessageId: null,
@@ -62,7 +78,8 @@ export function buildHarnessRequest(input: {
         allowExternalFetchInPrivateContextWithoutPrivateTerms: false
       }
     },
-    discordRuntimeFactsPath = null
+    discordRuntimeFactsPath = null,
+    retryContext = null
   } = input;
   const fetchablePublicUrls: string[] = [];
   const blockedUrls: string[] = [];
@@ -133,7 +150,23 @@ export function buildHarnessRequest(input: {
       blocked_urls: blockedUrls
     },
     task: {
-      kind: taskKind
+      kind: taskKind,
+      phase: taskPhase,
+      retry_context:
+        retryContext?.kind === "output_safety"
+          ? {
+              kind: "output_safety",
+              retry_count: retryContext.retryCount,
+              reason: retryContext.reason,
+              allowed_sources: retryContext.allowedSources,
+              disallowed_sources: retryContext.disallowedSources
+            }
+          : retryContext?.kind === "knowledge_followup_non_silent"
+            ? {
+                kind: "knowledge_followup_non_silent",
+                retry_count: retryContext.retryCount
+              }
+            : null
     }
   };
 }
