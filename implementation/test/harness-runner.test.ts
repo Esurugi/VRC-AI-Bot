@@ -1231,7 +1231,8 @@ function createFixture(input?: {
               max_sources: 3
             }
           ],
-          synthesis_brief: "統合方針"
+          synthesis_brief: "統合方針",
+          evidence_gaps: ["不足論点"]
         }
       );
     }
@@ -1426,6 +1427,7 @@ class FakeCodexClient {
   readonly textTurnCalls: Array<{
     threadId: string;
     payload: unknown;
+    allowExternalFetch: boolean;
     sessionMetadata?: HarnessTurnSessionMetadata;
     timeoutMs?: number;
     controlPolicy?: unknown;
@@ -1433,6 +1435,7 @@ class FakeCodexClient {
   readonly jsonTurnCalls: Array<{
     threadId: string;
     payload: unknown;
+    allowExternalFetch: boolean;
     sessionMetadata?: HarnessTurnSessionMetadata;
     timeoutMs?: number;
   }> = [];
@@ -1442,6 +1445,7 @@ class FakeCodexClient {
   readonly streamingTextTurnCalls: Array<{
     threadId: string;
     payload: unknown;
+    allowExternalFetch: boolean;
     sessionMetadata?: HarnessTurnSessionMetadata;
     timeoutMs?: number;
   }> = [];
@@ -1580,6 +1584,7 @@ class FakeCodexClient {
     this.textTurnCalls.push({
       threadId: input.threadId,
       payload: input.inputPayload,
+      allowExternalFetch: input.allowExternalFetch,
       ...(input.sessionMetadata === undefined
         ? {}
         : { sessionMetadata: input.sessionMetadata }),
@@ -1620,6 +1625,7 @@ class FakeCodexClient {
     this.streamingTextTurnCalls.push({
       threadId: input.threadId,
       payload: input.inputPayload,
+      allowExternalFetch: input.allowExternalFetch,
       ...(input.sessionMetadata === undefined
         ? {}
         : { sessionMetadata: input.sessionMetadata }),
@@ -1658,6 +1664,7 @@ class FakeCodexClient {
     this.jsonTurnCalls.push({
       threadId: input.threadId,
       payload: input.inputPayload,
+      allowExternalFetch: input.allowExternalFetch,
       ...(input.sessionMetadata === undefined
         ? {}
         : { sessionMetadata: input.sessionMetadata }),

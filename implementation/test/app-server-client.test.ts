@@ -217,7 +217,7 @@ test("extractWebSearchActionTypeFromNotificationParams returns search action typ
   );
 });
 
-test("HARNESS_DEVELOPER_INSTRUCTIONS describes forum research planner, workers, and bundled synthesis", () => {
+test("HARNESS_DEVELOPER_INSTRUCTIONS describes forum research planner, workers, and forum research context", () => {
   assert.match(
     HARNESS_DEVELOPER_INSTRUCTIONS,
     /output_safety and place\.mode is forum_longform .* fresh public research now/i
@@ -232,7 +232,7 @@ test("HARNESS_DEVELOPER_INSTRUCTIONS describes forum research planner, workers, 
   );
   assert.match(
     HARNESS_DEVELOPER_INSTRUCTIONS,
-    /forum_research_bundle is present, the bundled evidence already satisfies the public-research requirement/i
+    /forum_research_context.*persisted evidence facts/i
   );
   assert.match(
     HARNESS_DEVELOPER_INSTRUCTIONS,

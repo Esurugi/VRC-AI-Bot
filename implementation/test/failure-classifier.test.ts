@@ -88,7 +88,7 @@ test("FailureClassifier stops retrying after three attempts or in post_response 
   assert.equal(postResponse.publicCategory, "retry_limit_reached");
 });
 
-test("FailureClassifier makes forum planner timeout terminal", () => {
+test("FailureClassifier treats forum planner timeout like other transient forum timeouts", () => {
   const classifier = new FailureClassifier();
 
   const decision = classifier.classify(
@@ -102,7 +102,7 @@ test("FailureClassifier makes forum planner timeout terminal", () => {
     }
   );
 
-  assert.equal(decision.retryable, false);
-  assert.equal(decision.publicCategory, "ai_processing_failed");
-  assert.equal(decision.terminalReason, "forum_planner_timeout");
+  assert.equal(decision.retryable, true);
+  assert.equal(decision.publicCategory, "fetch_timeout");
+  assert.equal(decision.delayMs, 0);
 });

@@ -87,7 +87,6 @@ export class MessageProcessingService {
             actorRole: item.actorRole,
             scope: item.scope
           });
-        await this.sendForumBootstrapNoticeIfNeeded(item, forumBootstrap);
         routed = await this.resolveHarnessMessage(item, forumBootstrap);
       } catch (error) {
         await this.handleRuntimeFailure(item, {
@@ -161,39 +160,14 @@ export class MessageProcessingService {
       discordRuntimeFactsPath: runtimeFacts.snapshotPath,
       effectiveContentOverride: resolvedForumBootstrap.preparedPrompt,
       recentMessages,
-      forumResearchPlan: resolvedForumBootstrap.researchPlan,
+      forumStarterMessage: resolvedForumBootstrap.starterMessage,
       ...(item.watchLocation.mode === "forum_longform"
-        ? { forumRetryCallbacks: this.buildForumRetryCallbacks(item) }
+        ? { forumRetryCallbacks: this.buildForumCallbacks(item) }
         : {})
     });
   }
 
-  private async sendForumBootstrapNoticeIfNeeded(
-    item: QueuedMessage,
-    forumBootstrap: ForumFirstTurnPreparation
-  ): Promise<void> {
-    if (item.source !== "live" || !forumBootstrap.progressNotice) {
-      return;
-    }
-
-    try {
-      await this.replyDispatchService.sendFollowupInSamePlace(
-        item,
-        forumBootstrap.progressNotice
-      );
-    } catch (error) {
-      this.logger.warn(
-        {
-          error: error instanceof Error ? error.message : String(error),
-          messageId: item.envelope.messageId,
-          channelId: item.envelope.channelId
-        },
-        "failed to send forum bootstrap notice"
-      );
-    }
-  }
-
-  private buildForumRetryCallbacks(item: QueuedMessage) {
+  private buildForumCallbacks(item: QueuedMessage) {
     let streamWriterPromise:
       | Promise<{
           append: (delta: string) => Promise<void>;
@@ -201,8 +175,16 @@ export class MessageProcessingService {
         }>
       | null = null;
     let statusSent = false;
+    let progressSent = false;
 
     return {
+      onProgressNotice: async (content: string) => {
+        if (item.source !== "live" || progressSent) {
+          return;
+        }
+        progressSent = true;
+        await this.replyDispatchService.sendFollowupInSamePlace(item, content);
+      },
       onRetryStatus: async (content: string) => {
         if (statusSent) {
           return;

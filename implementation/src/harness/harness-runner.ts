@@ -16,7 +16,6 @@ import type {
   Scope,
   WatchLocationConfig
 } from "../domain/types.js";
-import type { ForumResearchPlan } from "../forum-research/types.js";
 import { KnowledgePersistenceService } from "../knowledge/knowledge-persistence-service.js";
 import {
   DEFAULT_OVERRIDE_FLAGS,
@@ -47,7 +46,7 @@ export type HarnessMessageContext = {
   discordRuntimeFactsPath?: string | null;
   effectiveContentOverride?: string | null;
   recentMessages?: RecentChatMessageFact[];
-  forumResearchPlan?: ForumResearchPlan | null;
+  forumStarterMessage?: string | null;
   forumRetryCallbacks?: ForumResearchRetryCallbacks;
 };
 
@@ -93,6 +92,7 @@ export class HarnessRunner {
     this.knowledgePersistence = new KnowledgePersistenceService(store, logger);
     this.outputSafetyGuard = new OutputSafetyGuard(store);
     this.forumResearchPipeline = new ForumResearchPipeline(
+      store,
       codexClient,
       forumResearchPlanner,
       logger
@@ -266,11 +266,11 @@ export class HarnessRunner {
       input.input.watchLocation.mode === "forum_longform" &&
       input.request.capabilities.allow_external_fetch;
     const firstTurn = isForumResearch
-      ? await this.forumResearchPipeline.run({
+        ? await this.forumResearchPipeline.run({
           request: input.request,
           threadId: input.session.threadId,
           sessionMetadata: toSessionMetadata(input.session),
-          precomputedPlan: input.input.forumResearchPlan ?? null,
+          starterMessage: input.input.forumStarterMessage ?? null,
           ...(input.input.forumRetryCallbacks
             ? { callbacks: input.input.forumRetryCallbacks }
             : {})

@@ -43,7 +43,33 @@ const weeklyMeetupAnnouncementSchema = z.object({
   announceWeekday: z.literal("monday"),
   announceTime: z.literal("18:00"),
   eventTime: z.literal("21:00"),
+  firstEventDate: z.string().min(1),
+  skipDates: z.array(z.string().min(1)).default([]),
   embedTemplatePath: z.string().min(1)
+}).superRefine((value, ctx) => {
+  validateWeeklyMeetupDate(value.firstEventDate, ctx, ["firstEventDate"]);
+
+  const seen = new Set<string>();
+  for (const [index, date] of value.skipDates.entries()) {
+    validateWeeklyMeetupDate(date, ctx, ["skipDates", index]);
+    if (seen.has(date)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["skipDates", index],
+        message: `Duplicate skipDates entry: ${date}`
+      });
+      continue;
+    }
+    seen.add(date);
+
+    if (date < value.firstEventDate) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["skipDates", index],
+        message: `skipDates entry must be on or after firstEventDate: ${date}`
+      });
+    }
+  }
 });
 
 const chatRuntimeControlsSchema = z.object({
@@ -151,4 +177,55 @@ function readChatRuntimeControls(
   }
 
   return parsed;
+}
+
+function validateWeeklyMeetupDate(
+  value: string,
+  ctx: z.RefinementCtx,
+  path: Array<string | number>
+): void {
+  if (!isIsoDateString(value)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path,
+      message: `Expected ISO date (YYYY-MM-DD): ${value}`
+    });
+    return;
+  }
+
+  if (!isMondayIsoDate(value)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path,
+      message: `Expected Monday date for weekly meetup schedule: ${value}`
+    });
+  }
+}
+
+function isIsoDateString(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return false;
+  }
+
+  const parsed = parseIsoDate(value);
+  return formatIsoDate(parsed) === value;
+}
+
+function isMondayIsoDate(value: string): boolean {
+  return parseIsoDate(value).getUTCDay() === 1;
+}
+
+function parseIsoDate(value: string): Date {
+  const [yearText, monthText, dayText] = value.split("-");
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) {
+    throw new Error(`Invalid ISO date: ${value}`);
+  }
+  return new Date(Date.UTC(year, month - 1, day));
+}
+
+function formatIsoDate(value: Date): string {
+  return value.toISOString().slice(0, 10);
 }

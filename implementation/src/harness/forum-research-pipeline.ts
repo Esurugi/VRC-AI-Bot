@@ -24,7 +24,8 @@ import {
   type ForumResearchPlan,
   type ForumResearchSourceCatalogEntry,
   type ForumResearchWorkerResult,
-  type ForumResearchWorkerTask
+  type ForumResearchWorkerTask,
+  type PersistedForumResearchState
 } from "../forum-research/types.js";
 import {
   harnessResponseJsonSchema,
@@ -33,23 +34,36 @@ import {
   type HarnessResponse
 } from "./contracts.js";
 import type { ForumResearchPlanner } from "../runtime/forum/forum-research-planner.js";
+import type { SqliteStore } from "../storage/database.js";
 
-const WORKER_TIMEOUT_MS = 35_000;
-const FINAL_TIMEOUT_MS = 90_000;
+const FORUM_REPLY_SLA_MS = 180_000;
+const IMMEDIATE_RETRY_RESERVE_MS = 30_000;
+const PLANNER_BUDGET_CAP_MS = 45_000;
+const FINAL_BUDGET_CAP_MS = 90_000;
+const MIN_TURN_BUDGET_MS = 10_000;
 
 export type ForumResearchPipelineState = {
   plan: ForumResearchPlan;
   bundle: ForumResearchBundle;
+  persistedState: PersistedForumResearchState | null;
+  effectiveUserText: string | null;
 };
 
 export type ForumResearchRetryCallbacks = {
+  onProgressNotice?: (content: string) => Promise<void> | void;
   onRetryStatus?: (content: string) => Promise<void> | void;
   onRetryStream?: StreamingTextTurnCallbacks;
   onRetryCompleted?: () => Promise<void> | void;
 };
 
+type DeadlineBudget = {
+  startedAt: number;
+  deadlineAt: number;
+};
+
 export class ForumResearchPipeline {
   constructor(
+    private readonly store: SqliteStore,
     private readonly codexClient: CodexAppServerClient,
     private readonly planner: ForumResearchPlanner,
     private readonly logger: Pick<Logger, "warn" | "debug">
@@ -59,7 +73,7 @@ export class ForumResearchPipeline {
     request: HarnessRequest;
     threadId: string;
     sessionMetadata: HarnessTurnSessionMetadata;
-    precomputedPlan?: ForumResearchPlan | null;
+    starterMessage?: string | null;
     callbacks?: ForumResearchRetryCallbacks;
   }): Promise<{
     response: HarnessResponse;
@@ -67,23 +81,38 @@ export class ForumResearchPipeline {
     state: ForumResearchPipelineState;
     primaryReplyAlreadySent: boolean;
   }> {
-    const plan =
-      input.precomputedPlan ??
-      (await this.planner.plan({
-        messageId: input.request.message.id,
-        currentMessage: input.request.message.content,
-        starterMessage: null,
-        isInitialTurn: false,
-        threadId: input.request.place.thread_id ?? input.request.place.channel_id
-      }));
-
-    appendRuntimeTrace("codex-app-server", "forum_research_plan_created", {
-      messageId: input.request.message.id,
-      workerCount: plan.worker_tasks.length
+    const deadline = startDeadlineBudget();
+    const persistedState = this.loadPersistedState(input.sessionMetadata.sessionIdentity);
+    const plan = await this.planWithFallback({
+      request: input.request,
+      threadId: input.threadId,
+      sessionMetadata: input.sessionMetadata,
+      starterMessage: input.starterMessage ?? null,
+      persistedState,
+      deadline,
+      ...(input.callbacks ? { callbacks: input.callbacks } : {})
+    });
+    const plannedRequest = applyPlannerOverride(input.request, plan);
+    const workerResults = await this.runWorkerWave({
+      request: plannedRequest,
+      plan,
+      deadline
+    });
+    const bundle = buildForumResearchBundle({
+      plan,
+      workerResults,
+      previousState: persistedState
+    });
+    const nextState = persistNextResearchState({
+      store: this.store,
+      sessionIdentity: input.sessionMetadata.sessionIdentity,
+      threadId: input.threadId,
+      lastMessageId: input.request.message.id,
+      plan,
+      bundle,
+      previousState: persistedState
     });
 
-    const workerResults = await this.runWorkerWave(input.request, plan);
-    const bundle = buildForumResearchBundle(plan, workerResults);
     appendRuntimeTrace("codex-app-server", "forum_research_wave_completed", {
       messageId: input.request.message.id,
       workerCount: plan.worker_tasks.length,
@@ -91,16 +120,19 @@ export class ForumResearchPipeline {
       distinctSourceCount: bundle.distinctSources.length
     });
 
-    const state = {
+    const state: ForumResearchPipelineState = {
       plan,
-      bundle
-    } satisfies ForumResearchPipelineState;
+      bundle,
+      persistedState: nextState,
+      effectiveUserText: plan.effective_user_text?.trim() || null
+    };
 
     return this.runFinalWithTimeoutRecovery({
-      request: input.request,
+      request: plannedRequest,
       threadId: input.threadId,
       sessionMetadata: input.sessionMetadata,
       state,
+      deadline,
       ...(input.callbacks ? { callbacks: input.callbacks } : {})
     });
   }
@@ -119,17 +151,85 @@ export class ForumResearchPipeline {
       threadId: input.threadId,
       sessionMetadata: input.sessionMetadata,
       state: input.state,
-      retryKind: "output_safety_retry"
+      retryKind: "output_safety_retry",
+      timeoutMs: FINAL_BUDGET_CAP_MS
     });
   }
 
-  private async runWorkerWave(
-    request: HarnessRequest,
-    plan: ForumResearchPlan
-  ): Promise<ForumResearchWorkerResult[]> {
-    const tasks = plan.worker_tasks.slice(0, FORUM_RESEARCH_MAX_WORKERS);
+  private async planWithFallback(input: {
+    request: HarnessRequest;
+    threadId: string;
+    sessionMetadata: HarnessTurnSessionMetadata;
+    starterMessage: string | null;
+    persistedState: PersistedForumResearchState | null;
+    deadline: DeadlineBudget;
+    callbacks?: ForumResearchRetryCallbacks;
+  }): Promise<ForumResearchPlan> {
+    const timeoutMs = capBudget({
+      deadline: input.deadline,
+      reserveMs: IMMEDIATE_RETRY_RESERVE_MS + MIN_TURN_BUDGET_MS,
+      capMs: PLANNER_BUDGET_CAP_MS
+    });
+    try {
+      const plan = await this.planner.plan({
+        messageId: input.request.message.id,
+        currentMessage: input.request.message.content,
+        starterMessage: input.starterMessage,
+        isInitialTurn: input.persistedState === null,
+        threadId: input.threadId,
+        previousResearchState: input.persistedState,
+        timeoutMs
+      });
+      appendRuntimeTrace("codex-app-server", "forum_research_plan_created", {
+        messageId: input.request.message.id,
+        workerCount: plan.worker_tasks.length
+      });
+      const progressNotice = plan.progress_notice?.trim();
+      if (progressNotice) {
+        await input.callbacks?.onProgressNotice?.(progressNotice);
+      }
+      return plan;
+    } catch (error) {
+      this.logger.warn(
+        {
+          error: error instanceof Error ? error.message : String(error),
+          messageId: input.request.message.id,
+          sessionIdentity: input.sessionMetadata.sessionIdentity
+        },
+        "forum research planner fell back to direct final"
+      );
+      appendRuntimeTrace("codex-app-server", "forum_research_plan_fallback", {
+        messageId: input.request.message.id
+      });
+      return {
+        progress_notice: null,
+        effective_user_text: null,
+        worker_tasks: [],
+        synthesis_brief:
+          input.persistedState?.plannerBrief?.trim() ||
+          "現在の依頼と利用可能な根拠を統合して回答する。",
+        evidence_gaps: input.persistedState?.evidenceGaps ?? []
+      };
+    }
+  }
+
+  private async runWorkerWave(input: {
+    request: HarnessRequest;
+    plan: ForumResearchPlan;
+    deadline: DeadlineBudget;
+  }): Promise<ForumResearchWorkerResult[]> {
+    const tasks = input.plan.worker_tasks.slice(0, FORUM_RESEARCH_MAX_WORKERS);
+    if (tasks.length === 0) {
+      return [];
+    }
+
+    const timeoutMs = capBudget({
+      deadline: input.deadline,
+      reserveMs: IMMEDIATE_RETRY_RESERVE_MS + MIN_TURN_BUDGET_MS,
+      capMs: Math.max(MIN_TURN_BUDGET_MS, Math.floor(remainingBudgetMs(input.deadline) * 0.5))
+    });
     const results = await Promise.allSettled(
-      tasks.map((task) => this.runWorker(request, plan, task))
+      tasks.map((task) => this.runWorker(input.request, input.plan, task, timeoutMs))
     );
 
     const successful: ForumResearchWorkerResult[] = [];
@@ -142,7 +242,7 @@ export class ForumResearchPipeline {
       this.logger.warn(
         {
           error: result.reason instanceof Error ? result.reason.message : String(result.reason),
-          messageId: request.message.id
+          messageId: input.request.message.id
         },
         "forum research worker failed"
       );
@@ -154,7 +254,8 @@ export class ForumResearchPipeline {
   private async runWorker(
     request: HarnessRequest,
     plan: ForumResearchPlan,
-    task: ForumResearchWorkerTask
+    task: ForumResearchWorkerTask,
+    timeoutMs: number
   ): Promise<ForumResearchWorkerResult> {
     const threadId = await this.codexClient.startEphemeralThread(
       "read-only",
@@ -178,8 +279,9 @@ export class ForumResearchPipeline {
             thread_id: request.place.thread_id,
             root_channel_id: request.place.root_channel_id
           },
-          plan_context: {
-            synthesis_brief: plan.synthesis_brief
+          planning_context: {
+            synthesis_brief: plan.synthesis_brief,
+            evidence_gaps: plan.evidence_gaps
           },
           task
         },
@@ -187,7 +289,7 @@ export class ForumResearchPipeline {
         outputSchema: forumResearchWorkerResultJsonSchema,
         parser: (value) => forumResearchWorkerResultSchema.parse(value),
         modelProfile: FORUM_LONGFORM_LOW_CODEX_MODEL_PROFILE,
-        timeoutMs: WORKER_TIMEOUT_MS
+        timeoutMs
       });
 
       appendRuntimeTrace("codex-app-server", "forum_research_worker_completed", {
@@ -206,6 +308,7 @@ export class ForumResearchPipeline {
     threadId: string;
     sessionMetadata: HarnessTurnSessionMetadata;
     state: ForumResearchPipelineState;
+    deadline: DeadlineBudget;
     callbacks?: ForumResearchRetryCallbacks;
   }): Promise<{
     response: HarnessResponse;
@@ -219,7 +322,12 @@ export class ForumResearchPipeline {
         threadId: input.threadId,
         sessionMetadata: input.sessionMetadata,
         state: input.state,
-        retryKind: "initial"
+        retryKind: "initial",
+        timeoutMs: capBudget({
+          deadline: input.deadline,
+          reserveMs: IMMEDIATE_RETRY_RESERVE_MS,
+          capMs: FINAL_BUDGET_CAP_MS
+        })
       });
       return {
         ...result,
@@ -236,13 +344,18 @@ export class ForumResearchPipeline {
         retryKind: "timeout_recovery"
       });
       await input.callbacks?.onRetryStatus?.(
-        "再試行しています。根拠を整理し直しています。"
+        "再試行しています。集まっている根拠から整理し直しています。"
       );
       const retried = await this.runStreamingTimeoutRecovery({
         request: input.request,
         threadId: input.threadId,
         sessionMetadata: input.sessionMetadata,
         state: input.state,
+        timeoutMs: capBudget({
+          deadline: input.deadline,
+          reserveMs: 0,
+          capMs: IMMEDIATE_RETRY_RESERVE_MS
+        }),
         ...(input.callbacks ? { callbacks: input.callbacks } : {})
       });
       return {
@@ -259,6 +372,7 @@ export class ForumResearchPipeline {
     sessionMetadata: HarnessTurnSessionMetadata;
     state: ForumResearchPipelineState;
     retryKind: "initial" | "output_safety_retry";
+    timeoutMs: number;
   }): Promise<{
     response: HarnessResponse;
     observations: TurnObservations;
@@ -271,13 +385,13 @@ export class ForumResearchPipeline {
 
     const result = await this.codexClient.runJsonTurn({
       threadId: input.threadId,
-      inputPayload: buildFinalPayload(input.request, input.state, input.retryKind),
-      allowExternalFetch: false,
+      inputPayload: buildFinalPayload(input.request, input.state, input.retryKind, input.timeoutMs),
+      allowExternalFetch: input.request.capabilities.allow_external_fetch,
       outputSchema: harnessResponseJsonSchema,
       parser: (value) => harnessResponseSchema.parse(value),
       sessionMetadata: input.sessionMetadata,
       modelProfile: FORUM_LONGFORM_CODEX_MODEL_PROFILE,
-      timeoutMs: FINAL_TIMEOUT_MS
+      timeoutMs: input.timeoutMs
     });
 
     appendRuntimeTrace("codex-app-server", "forum_high_synthesis_completed", {
@@ -293,6 +407,7 @@ export class ForumResearchPipeline {
     threadId: string;
     sessionMetadata: HarnessTurnSessionMetadata;
     state: ForumResearchPipelineState;
+    timeoutMs: number;
     callbacks?: ForumResearchRetryCallbacks;
   }): Promise<{
     response: HarnessResponse;
@@ -303,11 +418,11 @@ export class ForumResearchPipeline {
     });
     const result = await this.codexClient.runStreamingTextTurn({
       threadId: input.threadId,
-      inputPayload: buildStreamingRetryPayload(input.request, input.state),
-      allowExternalFetch: false,
+      inputPayload: buildStreamingRetryPayload(input.request, input.state, input.timeoutMs),
+      allowExternalFetch: input.request.capabilities.allow_external_fetch,
       sessionMetadata: input.sessionMetadata,
       modelProfile: FORUM_LONGFORM_CODEX_MODEL_PROFILE,
-      timeoutMs: FINAL_TIMEOUT_MS,
+      timeoutMs: input.timeoutMs,
       callbacks: {
         onAgentMessageDelta: async (delta) => {
           appendRuntimeTrace("codex-app-server", "forum_retry_stream_chunk_sent", {
@@ -330,21 +445,90 @@ export class ForumResearchPipeline {
     return {
       response: synthesizeStreamingResponse(
         result.response,
-        input.state.bundle.sourceCatalog
+        input.state.bundle.sourceCatalog,
+        result.observations.observed_public_urls
       ),
       observations: result.observations
     };
   }
+
+  private loadPersistedState(sessionIdentity: string): PersistedForumResearchState | null {
+    const row = this.store.forumResearchStates.get(sessionIdentity);
+    if (!row) {
+      return null;
+    }
+
+    appendRuntimeTrace("codex-app-server", "forum_research_state_loaded", {
+      sessionIdentity,
+      threadId: row.thread_id
+    });
+    return {
+      sessionIdentity: row.session_identity,
+      threadId: row.thread_id,
+      lastMessageId: row.last_message_id,
+      plannerBrief: row.planner_brief,
+      evidenceGaps: parseStringArray(row.evidence_gaps_json),
+      workerResults: parseWorkerResults(row.worker_results_json),
+      sourceCatalog: parseSourceCatalog(row.source_catalog_json),
+      distinctSources: parseStringArray(row.distinct_sources_json)
+    };
+  }
 }
 
-function buildForumResearchBundle(
-  plan: ForumResearchPlan,
-  workerResults: ForumResearchWorkerResult[]
-): ForumResearchBundle {
-  const sourceCatalog = buildSourceCatalog(workerResults);
+function startDeadlineBudget(): DeadlineBudget {
+  const startedAt = Date.now();
   return {
-    plan,
-    workerResults,
+    startedAt,
+    deadlineAt: startedAt + FORUM_REPLY_SLA_MS
+  };
+}
+
+function remainingBudgetMs(deadline: DeadlineBudget): number {
+  return Math.max(0, deadline.deadlineAt - Date.now());
+}
+
+function capBudget(input: {
+  deadline: DeadlineBudget;
+  reserveMs: number;
+  capMs: number;
+}): number {
+  const available = Math.max(
+    MIN_TURN_BUDGET_MS,
+    remainingBudgetMs(input.deadline) - input.reserveMs
+  );
+  return Math.max(MIN_TURN_BUDGET_MS, Math.min(input.capMs, available));
+}
+
+function applyPlannerOverride(
+  request: HarnessRequest,
+  plan: ForumResearchPlan
+): HarnessRequest {
+  const override = plan.effective_user_text?.trim();
+  if (!override) {
+    return request;
+  }
+
+  return {
+    ...request,
+    message: {
+      ...request.message,
+      content: override
+    }
+  };
+}
+
+function buildForumResearchBundle(input: {
+  plan: ForumResearchPlan;
+  workerResults: ForumResearchWorkerResult[];
+  previousState: PersistedForumResearchState | null;
+}): ForumResearchBundle {
+  const sourceCatalog = buildSourceCatalog(
+    input.previousState?.sourceCatalog ?? [],
+    input.workerResults
+  );
+  return {
+    plan: input.plan,
+    workerResults: input.workerResults,
     distinctSourceTarget: FORUM_RESEARCH_DISTINCT_SOURCE_TARGET,
     distinctSources: sourceCatalog.map((entry) => entry.url),
     sourceCatalog
@@ -352,9 +536,22 @@ function buildForumResearchBundle(
 }
 
 function buildSourceCatalog(
+  priorCatalog: ForumResearchSourceCatalogEntry[],
   workerResults: ForumResearchWorkerResult[]
 ): ForumResearchSourceCatalogEntry[] {
   const byUrl = new Map<string, ForumResearchSourceCatalogEntry>();
+  for (const prior of priorCatalog) {
+    const canonicalUrl = normalizePublicUrl(prior.url);
+    if (!canonicalUrl) {
+      continue;
+    }
+    byUrl.set(canonicalUrl, {
+      index: 0,
+      url: canonicalUrl,
+      claims: [...prior.claims]
+    });
+  }
+
   for (const workerResult of workerResults) {
     for (const citation of workerResult.citations) {
       const canonicalUrl = normalizePublicUrl(citation.url);
@@ -369,72 +566,116 @@ function buildSourceCatalog(
       }
 
       byUrl.set(canonicalUrl, {
-        index: byUrl.size + 1,
+        index: 0,
         url: canonicalUrl,
         claims: [citation.claim]
       });
     }
   }
 
-  return [...byUrl.values()];
+  return [...byUrl.values()].map((entry, index) => ({
+    ...entry,
+    index: index + 1
+  }));
+}
+
+function persistNextResearchState(input: {
+  store: SqliteStore;
+  sessionIdentity: string;
+  threadId: string;
+  lastMessageId: string;
+  plan: ForumResearchPlan;
+  bundle: ForumResearchBundle;
+  previousState: PersistedForumResearchState | null;
+}): PersistedForumResearchState {
+  const mergedWorkerResults = [
+    ...(input.previousState?.workerResults ?? []),
+    ...input.bundle.workerResults
+  ];
+  const nextState: PersistedForumResearchState = {
+    sessionIdentity: input.sessionIdentity,
+    threadId: input.threadId,
+    lastMessageId: input.lastMessageId,
+    plannerBrief: input.plan.synthesis_brief,
+    evidenceGaps: input.plan.evidence_gaps,
+    workerResults: mergedWorkerResults,
+    sourceCatalog: input.bundle.sourceCatalog,
+    distinctSources: input.bundle.distinctSources
+  };
+  input.store.forumResearchStates.upsert({
+    sessionIdentity: nextState.sessionIdentity,
+    threadId: nextState.threadId,
+    lastMessageId: nextState.lastMessageId,
+    plannerBrief: nextState.plannerBrief,
+    evidenceGapsJson: JSON.stringify(nextState.evidenceGaps),
+    workerResultsJson: JSON.stringify(nextState.workerResults),
+    sourceCatalogJson: JSON.stringify(nextState.sourceCatalog),
+    distinctSourcesJson: JSON.stringify(nextState.distinctSources)
+  });
+  appendRuntimeTrace("codex-app-server", "forum_research_state_saved", {
+    sessionIdentity: nextState.sessionIdentity,
+    threadId: nextState.threadId,
+    distinctSourceCount: nextState.distinctSources.length
+  });
+  return nextState;
 }
 
 function buildFinalPayload(
   request: HarnessRequest,
   state: ForumResearchPipelineState,
-  retryKind: "initial" | "output_safety_retry"
+  retryKind: "initial" | "output_safety_retry",
+  deadlineRemainingMs: number
 ): Record<string, unknown> {
   return {
     ...request,
-    capabilities: {
-      ...request.capabilities,
-      allow_external_fetch: false
-    },
-    forum_research_plan: state.plan,
-    forum_research_bundle: {
+    forum_research_context: {
       retry_kind: retryKind,
-      research_observed: state.bundle.distinctSources.length > 0,
       distinct_source_target: state.bundle.distinctSourceTarget,
-      synthesis_brief: state.plan.synthesis_brief,
-      worker_results: state.bundle.workerResults,
-      source_catalog: state.bundle.sourceCatalog
+      planner_brief: state.plan.synthesis_brief,
+      evidence_gaps: state.plan.evidence_gaps,
+      current_worker_results: state.bundle.workerResults,
+      previous_research_state: state.persistedState,
+      source_catalog: state.bundle.sourceCatalog,
+      deadline_remaining_ms: deadlineRemainingMs
     }
   };
 }
 
 function buildStreamingRetryPayload(
   request: HarnessRequest,
-  state: ForumResearchPipelineState
+  state: ForumResearchPipelineState,
+  deadlineRemainingMs: number
 ): Record<string, unknown> {
   return {
     kind: "forum_research_streaming_final",
-    request: {
-      ...request,
-      capabilities: {
-        ...request.capabilities,
-        allow_external_fetch: false
-      }
-    },
-    forum_research_bundle: {
+    request,
+    forum_research_context: {
       retry_kind: "timeout_recovery",
-      research_observed: state.bundle.distinctSources.length > 0,
       distinct_source_target: state.bundle.distinctSourceTarget,
-      synthesis_brief: state.plan.synthesis_brief,
-      worker_results: state.bundle.workerResults,
-      source_catalog: state.bundle.sourceCatalog
+      planner_brief: state.plan.synthesis_brief,
+      evidence_gaps: state.plan.evidence_gaps,
+      current_worker_results: state.bundle.workerResults,
+      previous_research_state: state.persistedState,
+      source_catalog: state.bundle.sourceCatalog,
+      deadline_remaining_ms: deadlineRemainingMs
     }
   };
 }
 
 function synthesizeStreamingResponse(
   text: string | null,
-  sourceCatalog: ForumResearchSourceCatalogEntry[]
+  sourceCatalog: ForumResearchSourceCatalogEntry[],
+  observedPublicUrls: string[]
 ): HarnessResponse {
   const publicText = text?.trim() ?? "";
   const citedNumbers = extractCitationNumbers(publicText);
-  const sourcesUsed = citedNumbers
+  const numberedSources = citedNumbers
     .map((index) => sourceCatalog.find((entry) => entry.index === index)?.url ?? null)
     .filter((url): url is string => Boolean(url));
+  const observedSources = observedPublicUrls
+    .map((url) => normalizePublicUrl(url))
+    .filter((url): url is string => Boolean(url));
+  const sourcesUsed = dedupeStrings([...numberedSources, ...observedSources]);
 
   return {
     outcome: "chat_reply",
@@ -476,6 +717,66 @@ function normalizePublicUrl(url: string): string | null {
     return canonicalizeUrl(url);
   } catch {
     return null;
+  }
+}
+
+function dedupeStrings(values: string[]): string[] {
+  return [...new Set(values)];
+}
+
+function parseStringArray(value: string): string[] {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed)
+      ? parsed.filter((item): item is string => typeof item === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function parseWorkerResults(value: string): ForumResearchWorkerResult[] {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed)
+      ? parsed
+          .map((item) => forumResearchWorkerResultSchema.safeParse(item))
+          .filter((item) => item.success)
+          .map((item) => item.data)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function parseSourceCatalog(value: string): ForumResearchSourceCatalogEntry[] {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed
+      .map((item) => {
+        if (
+          typeof item !== "object" ||
+          item === null ||
+          typeof item.index !== "number" ||
+          typeof item.url !== "string" ||
+          !Array.isArray(item.claims)
+        ) {
+          return null;
+        }
+        return {
+          index: item.index,
+          url: item.url,
+          claims: item.claims.filter(
+            (claim: unknown): claim is string => typeof claim === "string"
+          )
+        } satisfies ForumResearchSourceCatalogEntry;
+      })
+      .filter((item): item is ForumResearchSourceCatalogEntry => item !== null);
+  } catch {
+    return [];
   }
 }
 

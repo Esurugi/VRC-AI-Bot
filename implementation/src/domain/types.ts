@@ -65,6 +65,8 @@ export type WeeklyMeetupAnnouncementConfig = {
   announceWeekday: "monday";
   announceTime: "18:00";
   eventTime: "21:00";
+  firstEventDate: string;
+  skipDates: string[];
   embedTemplatePath: string;
 };
 

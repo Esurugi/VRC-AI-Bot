@@ -19,10 +19,11 @@ export type ForumResearchWorkerTask = z.infer<
 export const forumResearchPlanSchema = z.object({
   progress_notice: z.string().min(1).nullable(),
   effective_user_text: z.string().min(1).nullable(),
-  worker_tasks: z.array(forumResearchWorkerTaskSchema).min(1).max(
+  worker_tasks: z.array(forumResearchWorkerTaskSchema).max(
     FORUM_RESEARCH_MAX_WORKERS
   ),
-  synthesis_brief: z.string().min(1)
+  synthesis_brief: z.string().min(1),
+  evidence_gaps: z.array(z.string().min(1)).max(8)
 });
 
 export type ForumResearchPlan = z.infer<typeof forumResearchPlanSchema>;
@@ -63,6 +64,17 @@ export type ForumResearchBundle = {
   sourceCatalog: ForumResearchSourceCatalogEntry[];
 };
 
+export type PersistedForumResearchState = {
+  sessionIdentity: string;
+  threadId: string;
+  lastMessageId: string;
+  plannerBrief: string | null;
+  evidenceGaps: string[];
+  workerResults: ForumResearchWorkerResult[];
+  sourceCatalog: ForumResearchSourceCatalogEntry[];
+  distinctSources: string[];
+};
+
 export const forumResearchPlanJsonSchema = {
   type: "object",
   additionalProperties: false,
@@ -70,7 +82,8 @@ export const forumResearchPlanJsonSchema = {
     "progress_notice",
     "effective_user_text",
     "worker_tasks",
-    "synthesis_brief"
+    "synthesis_brief",
+    "evidence_gaps"
   ],
   properties: {
     progress_notice: {
@@ -81,7 +94,7 @@ export const forumResearchPlanJsonSchema = {
     },
     worker_tasks: {
       type: "array",
-      minItems: 1,
+      minItems: 0,
       maxItems: FORUM_RESEARCH_MAX_WORKERS,
       items: {
         type: "object",
@@ -112,6 +125,13 @@ export const forumResearchPlanJsonSchema = {
     },
     synthesis_brief: {
       type: "string"
+    },
+    evidence_gaps: {
+      type: "array",
+      maxItems: 8,
+      items: {
+        type: "string"
+      }
     }
   }
 } as const;

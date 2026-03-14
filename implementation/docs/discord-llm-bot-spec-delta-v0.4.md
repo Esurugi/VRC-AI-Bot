@@ -149,10 +149,10 @@
 |---|---|
 | EVT.01-01 | system は単一 guild 固定の in-process scheduler として、毎週月曜 18:00 JST に当日 21:00 開始の AI 集会告知 embed を対象 channel へ 1 回投稿する。 |
 | EVT.01-02 | 月曜 18:00 JST を過ぎて bot が起動した場合でも、同じ月曜の 21:00 JST より前で、その週の告知が未配信なら 1 回だけ catch-up 投稿する。 |
-| EVT.01-03 | 告知本文は file-configurable embed template から組み立て、運用者がコード変更なしで差し替えられるようにする。 |
+| EVT.01-03 | 告知本文は file-configurable embed template から組み立て、運用者がコード変更なしで差し替えられるようにする。template は `{{meetup_count}}`、`{{event_date}}`、`{{event_time}}`、`{{event_datetime}}` の placeholder を文字列 field で使える。 |
 | EVT.01-04 | 告知先が `GUILD_ANNOUNCEMENT` でも、bot は embed 投稿だけを行い、自動 publish / crosspost を行わない。 |
 | EVT.01-05 | 告知の重複防止は `event_key + occurrence_date` 単位の delivery 記録で行い、成功時にその週の告知を delivered とする。 |
-| EVT.01-06 | 設定は `weekly_meetup_announcement` として保持し、少なくとも `guild_id`、`channel_id`、`timezone=Asia/Tokyo`、`announce_weekday=monday`、`announce_time=18:00`、`event_time=21:00`、`embed_template_path` を持つ。 |
+| EVT.01-06 | 設定は `weekly_meetup_announcement` として保持し、少なくとも `guild_id`、`channel_id`、`timezone=Asia/Tokyo`、`announce_weekday=monday`、`announce_time=18:00`、`event_time=21:00`、`first_event_date`、`skip_dates`、`embed_template_path` を持つ。 |
 | EVT.01-07 | system は configured `admin_control` root channel の管理者限定 command により、configured 告知先へ TEST 印付き embed を即時送信できるようにする。この test send は delivery dedupe を更新しない。 |
 
 ### 【機密区分】

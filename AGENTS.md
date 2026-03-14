@@ -23,6 +23,9 @@ avoidances:
 - Root `AGENTS.md` is the source of truth for Discord-side bot behavior.
 - Do not read or include `implementation/` internals outside the override layer.
 - Read `implementation/AGENTS.md` only in the override layer.
+- When the override layer is active for repo investigation or code changes, treat `implementation/AGENTS.md` as a mandatory pre-edit gate.
+- The pre-edit gate in `implementation/AGENTS.md` is the portable Harness fixed contract for repo changes and should be preserved even when similar agentic projects use different runtimes.
+- When changing Harness-adjacent code, do not rely on memory or good intentions. Open `implementation/AGENTS.md`, write the owner table, and apply the boundary-review gate in the same turn before editing.
 - Even in the override layer, do not explain internal logic unless the user explicitly asks for it.
 - `implementation/AGENTS.md` is the implementation-layer rule set. It is not the canonical runtime instruction layer.
 

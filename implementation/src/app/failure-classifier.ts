@@ -63,16 +63,6 @@ export class FailureClassifier {
     }
 
     if (isTransientFailure(details)) {
-      if (isForumPlannerTimeoutFailure(details)) {
-        return {
-          retryable: false,
-          publicCategory: "ai_processing_failed",
-          adminErrorPayload,
-          delayMs: null,
-          terminalReason: "forum_planner_timeout"
-        };
-      }
-
       const retryDelays =
         context.watchMode === "forum_longform" ? FORUM_RETRY_DELAYS_MS : RETRY_DELAYS_MS;
       const delayMs = retryDelays[context.attemptCount];
@@ -204,17 +194,6 @@ function isTimeoutFailure(error: NormalizedError): boolean {
     error.code === "ETIMEDOUT" ||
     lowered.includes("timeout") ||
     lowered.includes("timed out")
-  );
-}
-
-function isForumPlannerTimeoutFailure(error: NormalizedError): boolean {
-  if (!isTimeoutFailure(error)) {
-    return false;
-  }
-
-  return (
-    error.code === "FORUM_RESEARCH_PLANNER_TIMEOUT" ||
-    error.message.includes("forum research planner timed out")
   );
 }
 

@@ -507,6 +507,7 @@
 - scheduler は JST=`Asia/Tokyo` 固定とし、月曜 18:00 以降 21:00 前までの間だけ当週告知を送れる。
 - delivery dedupe は `scheduled_delivery(event_key, occurrence_date)` を使い、成功時だけ delivered にする。
 - 告知先は `GuildText` または `GuildAnnouncement` だけを許可し、auto publish / crosspost は行わない。
+- `weekly_meetup_announcement` は `firstEventDate` を第1回の開催日として持ち、`skipDates` に列挙された週は送信と回数計算の両方から除外する。
 - 出力契約:
 - 起動時 poll
 - 次回月曜 18:00 JST までの one-shot timer
@@ -514,8 +515,9 @@
 - `admin_control` root 限定の TEST command
 - 実装内容:
 - `runtime/scheduling/weekly-meetup-announcement-service` を実装し、bot 起動時 catch-up と次回火点までの one-shot timer から共通利用する。
-- `weekly_meetup_announcement.embed_template_path` から Discord API Embed 相当の単一 JSON object を読み、system が `EmbedBuilder.from(...)` 相当で送信する。
+- `weekly_meetup_announcement.embed_template_path` から Discord API Embed 相当の単一 JSON object を読み、`{{meetup_count}}`、`{{event_date}}`、`{{event_time}}`、`{{event_datetime}}` を動的展開して system が `EmbedBuilder.from(...)` 相当で送信する。
 - 月曜 18:00 を過ぎて 21:00 前に起動した場合は、その週の告知が未配信なら 1 回だけ catch-up する。
+- `skipDates` に入った週は本番送信を行わず、`scheduled_delivery` も更新しない。TEST 送信は次の非 skip 週の内容を使う。
 - `admin_control` root の管理者限定 command で、configured channel へ TEST 印付き embed を即時送信できるようにする。test send は `scheduled_delivery` を更新しない。
 - template 読み込み失敗や channel 不正は public へ出さず log のみに残す。
 - 完了条件:

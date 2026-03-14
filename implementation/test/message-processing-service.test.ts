@@ -3,22 +3,16 @@ import test from "node:test";
 
 import { MessageProcessingService } from "../src/runtime/message/message-processing-service.js";
 
-test("MessageProcessingService sends codex-derived forum bootstrap notice before dispatch", async () => {
-  const notices: string[] = [];
+test("MessageProcessingService passes forum starter facts into harness resolution", async () => {
   let receivedBootstrap: unknown = null;
   const service = createService({
-    replyDispatchService: {
-      async sendFollowupInSamePlace(_item: unknown, content: string) {
-        notices.push(content);
-      }
-    },
     forumFirstTurnPreprocessor: {
       async resolveEffectiveContentOverride() {
         return {
-          preparedPrompt: "prepared prompt",
-          progressNotice: "論点と前提を整理しながら考えています。少し待ってください。",
-          wasPreprocessed: true,
-          researchPlan: null
+          preparedPrompt: null,
+          progressNotice: null,
+          wasPreprocessed: false,
+          starterMessage: "thread starter"
         };
       }
     }
@@ -30,15 +24,12 @@ test("MessageProcessingService sends codex-derived forum bootstrap notice before
 
   await service.process(createQueuedMessage("live") as never);
 
-  assert.deepEqual(notices, [
-    "論点と前提を整理しながら考えています。少し待ってください。"
-  ]);
   assert.deepEqual(receivedBootstrap, {
-      preparedPrompt: "prepared prompt",
-      progressNotice: "論点と前提を整理しながら考えています。少し待ってください。",
-      wasPreprocessed: true,
-      researchPlan: null
-    });
+    preparedPrompt: null,
+    progressNotice: null,
+    wasPreprocessed: false,
+    starterMessage: "thread starter"
+  });
 });
 
 test("MessageProcessingService does not send forum bootstrap notice on retry jobs", async () => {
@@ -55,7 +46,7 @@ test("MessageProcessingService does not send forum bootstrap notice on retry job
           preparedPrompt: "prepared prompt",
           progressNotice: "論点と前提を整理しながら考えています。少し待ってください。",
           wasPreprocessed: true,
-          researchPlan: null
+          starterMessage: "thread starter"
         };
       }
     }
@@ -73,7 +64,7 @@ function createService(overrides: {
       preparedPrompt: string | null;
       progressNotice: string | null;
       wasPreprocessed: boolean;
-      researchPlan: null;
+      starterMessage: string | null;
     }>;
   };
   replyDispatchService?: {
@@ -107,7 +98,7 @@ function createService(overrides: {
           preparedPrompt: null,
           progressNotice: null,
           wasPreprocessed: false,
-          researchPlan: null
+          starterMessage: null
         };
       },
       ...overrides.forumFirstTurnPreprocessor

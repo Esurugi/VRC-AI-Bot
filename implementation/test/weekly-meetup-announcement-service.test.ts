@@ -15,7 +15,10 @@ import { SqliteStore } from "../src/storage/database.js";
 
 const REPO_ROOT = process.cwd();
 
-function createConfig(embedTemplatePath: string): AppConfig {
+function createConfig(
+  embedTemplatePath: string,
+  overrides?: Partial<NonNullable<AppConfig["weeklyMeetupAnnouncement"]>>
+): AppConfig {
   return {
     discordBotToken: "token",
     discordApplicationId: "app-id",
@@ -33,7 +36,10 @@ function createConfig(embedTemplatePath: string): AppConfig {
       announceWeekday: "monday",
       announceTime: "18:00",
       eventTime: "21:00",
-      embedTemplatePath
+      firstEventDate: "2025-09-01",
+      skipDates: [],
+      embedTemplatePath,
+      ...overrides
     }
   };
 }
@@ -45,16 +51,16 @@ test("WeeklyMeetupAnnouncementService sends once at Monday 18:00 JST and dedupli
   writeFileSync(
     templatePath,
     JSON.stringify({
-      title: "AI集会のお知らせ",
-      description: "毎週月曜 21:00 JST"
+      title: "【第{{meetup_count}}回】AI集会開催情報｜{{event_date}} {{event_time}}~",
+      description: "{{event_datetime}} 開始"
     })
   );
 
-  const sentPayloads: unknown[] = [];
+  const sentPayloads: Array<{ embeds: EmbedBuilder[] }> = [];
   const fakeChannel = {
     id: "announce-channel-1",
     type: ChannelType.GuildText,
-    send: async (payload: unknown) => {
+    send: async (payload: { embeds: EmbedBuilder[] }) => {
       sentPayloads.push(payload);
       return { id: "message-1" };
     }
@@ -81,6 +87,10 @@ test("WeeklyMeetupAnnouncementService sends once at Monday 18:00 JST and dedupli
     const delivery = store.scheduledDeliveries.get("weekly_meetup", "2026-03-16");
     assert.ok(delivery);
     assert.equal(delivery?.message_id, "message-1");
+
+    const embedJson = sentPayloads[0]?.embeds[0]?.toJSON();
+    assert.equal(embedJson?.title, "【第29回】AI集会開催情報｜2026/03/16 21:00~");
+    assert.equal(embedJson?.description, "2026/03/16 21:00 開始");
   } finally {
     store?.close();
     rmSync(tempDir, { recursive: true, force: true });
@@ -91,7 +101,7 @@ test("WeeklyMeetupAnnouncementService allows catch-up before 21:00 JST but not a
   const tempDir = mkdtempSync(join(tmpdir(), "vrc-ai-bot-weekly-meetup-"));
   const dbPath = join(tempDir, "bot.sqlite");
   const templatePath = join(tempDir, "weekly-meetup.json");
-  writeFileSync(templatePath, JSON.stringify({ title: "AI集会" }));
+  writeFileSync(templatePath, JSON.stringify({ title: "{{event_date}}" }));
 
   const sentAt: string[] = [];
   const fakeChannel = {
@@ -128,7 +138,62 @@ test("WeeklyMeetupAnnouncementService allows catch-up before 21:00 JST but not a
   }
 });
 
-test("WeeklyMeetupAnnouncementService sends test announcement without delivery dedupe and appends a TEST footer marker", async () => {
+test("WeeklyMeetupAnnouncementService skips suppressed weeks and TEST send moves to the next non-skipped event", async () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "vrc-ai-bot-weekly-meetup-"));
+  const dbPath = join(tempDir, "bot.sqlite");
+  const templatePath = join(tempDir, "weekly-meetup.json");
+  writeFileSync(
+    templatePath,
+    JSON.stringify({
+      title: "【第{{meetup_count}}回】{{event_date}}",
+      description: "{{event_datetime}}"
+    })
+  );
+
+  const sentPayloads: Array<{ embeds: EmbedBuilder[] }> = [];
+  const fakeChannel = {
+    id: "announce-channel-1",
+    type: ChannelType.GuildText,
+    send: async (payload: { embeds: EmbedBuilder[] }) => {
+      sentPayloads.push(payload);
+      return { id: `message-${sentPayloads.length}` };
+    }
+  };
+
+  let store: SqliteStore | undefined;
+  try {
+    store = new SqliteStore(dbPath, REPO_ROOT);
+    store.migrate();
+
+    const service = new WeeklyMeetupAnnouncementService(
+      createConfig(templatePath, {
+        skipDates: ["2026-03-16"]
+      }),
+      store,
+      undefined,
+      {
+        fetchChannel: async () => fakeChannel as never
+      }
+    );
+
+    await service.poll(new Date("2026-03-16T09:00:00.000Z"));
+    assert.equal(sentPayloads.length, 0);
+    assert.equal(store.scheduledDeliveries.get("weekly_meetup", "2026-03-16"), null);
+
+    const result = await service.sendTestAnnouncement(new Date("2026-03-16T09:00:00.000Z"));
+    assert.equal(result.ok, true);
+    assert.equal(sentPayloads.length, 1);
+
+    const embedJson = sentPayloads[0]?.embeds[0]?.toJSON();
+    assert.equal(embedJson?.title, "【第29回】2026/03/23");
+    assert.equal(embedJson?.description, "2026/03/23 21:00");
+  } finally {
+    store?.close();
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("WeeklyMeetupAnnouncementService sends test announcement without delivery dedupe and appends a TEST footer marker after placeholder rendering", async () => {
   const tempDir = mkdtempSync(join(tmpdir(), "vrc-ai-bot-weekly-meetup-"));
   const dbPath = join(tempDir, "bot.sqlite");
   const templatePath = join(tempDir, "weekly-meetup.json");
@@ -137,7 +202,7 @@ test("WeeklyMeetupAnnouncementService sends test announcement without delivery d
     JSON.stringify({
       title: "AI集会のお知らせ",
       footer: {
-        text: "LT 登壇〆切は毎週日曜 23:59 JST"
+        text: "{{event_datetime}} / LT 登壇〆切は毎週日曜 23:59 JST"
       }
     })
   );
@@ -167,17 +232,22 @@ test("WeeklyMeetupAnnouncementService sends test announcement without delivery d
     );
 
     const first = await service.sendTestAnnouncement(new Date("2026-03-16T09:00:00.000Z"));
-    const second = await service.sendTestAnnouncement(new Date("2026-03-16T09:01:00.000Z"));
+    const second = await service.sendTestAnnouncement(new Date("2026-03-16T13:00:00.000Z"));
 
     assert.equal(first.ok, true);
     assert.equal(second.ok, true);
     assert.equal(sentPayloads.length, 2);
     assert.equal(store.scheduledDeliveries.get("weekly_meetup", "2026-03-16"), null);
 
-    const embedJson = sentPayloads[0]?.embeds[0]?.toJSON();
+    const firstEmbedJson = sentPayloads[0]?.embeds[0]?.toJSON();
+    const secondEmbedJson = sentPayloads[1]?.embeds[0]?.toJSON();
     assert.equal(
-      embedJson?.footer?.text,
-      "LT 登壇〆切は毎週日曜 23:59 JST [TEST]"
+      firstEmbedJson?.footer?.text,
+      "2026/03/16 21:00 / LT 登壇〆切は毎週日曜 23:59 JST [TEST]"
+    );
+    assert.equal(
+      secondEmbedJson?.footer?.text,
+      "2026/03/23 21:00 / LT 登壇〆切は毎週日曜 23:59 JST [TEST]"
     );
   } finally {
     store?.close();
@@ -189,7 +259,7 @@ test("WeeklyMeetupAnnouncementService sends to GuildAnnouncement without auto pu
   const tempDir = mkdtempSync(join(tmpdir(), "vrc-ai-bot-weekly-meetup-"));
   const dbPath = join(tempDir, "bot.sqlite");
   const templatePath = join(tempDir, "weekly-meetup.json");
-  writeFileSync(templatePath, JSON.stringify({ title: "AI集会" }));
+  writeFileSync(templatePath, JSON.stringify({ title: "{{meetup_count}}" }));
 
   let publishCalled = false;
   let sendCount = 0;

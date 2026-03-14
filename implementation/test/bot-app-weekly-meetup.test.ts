@@ -102,6 +102,8 @@ function createTestApplication(overrides?: {
       announceWeekday: "monday",
       announceTime: "18:00",
       eventTime: "21:00",
+      firstEventDate: "2025-09-01",
+      skipDates: [],
       embedTemplatePath: join(process.cwd(), "config", "weekly-meetup-embed.template.json")
     }
   };

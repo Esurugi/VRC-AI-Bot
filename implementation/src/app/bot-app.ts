@@ -180,7 +180,6 @@ export class BotApplication {
       new ForumFirstTurnPreprocessor(
         this.store,
         this.sessionPolicyResolver,
-        this.forumResearchPlanner,
         this.logger
       );
     this.harnessRunner =

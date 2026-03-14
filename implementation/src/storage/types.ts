@@ -112,6 +112,19 @@ export type RetryJobRow = {
   updated_at: string;
 };
 
+export type ForumResearchStateRow = {
+  session_identity: string;
+  thread_id: string;
+  last_message_id: string;
+  planner_brief: string | null;
+  evidence_gaps_json: string;
+  worker_results_json: string;
+  source_catalog_json: string;
+  distinct_sources_json: string;
+  created_at: string;
+  updated_at: string;
+};
+
 export type AppRuntimeLockRow = {
   lock_name: string;
   instance_id: string;

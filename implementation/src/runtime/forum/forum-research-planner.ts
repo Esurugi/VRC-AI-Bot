@@ -7,7 +7,8 @@ import {
   FORUM_RESEARCH_MAX_WORKERS,
   forumResearchPlanJsonSchema,
   forumResearchPlanSchema,
-  type ForumResearchPlan
+  type ForumResearchPlan,
+  type PersistedForumResearchState
 } from "../../forum-research/types.js";
 
 export class ForumResearchPlanner {
@@ -22,6 +23,8 @@ export class ForumResearchPlanner {
     starterMessage: string | null;
     isInitialTurn: boolean;
     threadId: string;
+    previousResearchState?: PersistedForumResearchState | null;
+    timeoutMs?: number;
   }): Promise<ForumResearchPlan> {
     const threadId = await this.codexClient.startEphemeralThread(
       "read-only",
@@ -39,6 +42,7 @@ export class ForumResearchPlanner {
           reply_thread_id: input.threadId,
           current_message: input.currentMessage,
           starter_message: input.starterMessage,
+          previous_research_state: input.previousResearchState ?? null,
           max_workers: FORUM_RESEARCH_MAX_WORKERS,
           distinct_source_target: FORUM_RESEARCH_DISTINCT_SOURCE_TARGET
         },
@@ -46,38 +50,22 @@ export class ForumResearchPlanner {
         outputSchema: forumResearchPlanJsonSchema,
         parser: (value) => forumResearchPlanSchema.parse(value),
         modelProfile: FORUM_LONGFORM_CODEX_MODEL_PROFILE,
-        timeoutMs: 30_000
+        ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs })
       });
 
       return result.response;
     } catch (error) {
-      const normalizedError = wrapForumPlannerError(error);
       this.logger.warn(
         {
-          error: normalizedError.message,
+          error: error instanceof Error ? error.message : String(error),
           messageId: input.messageId,
           forumThreadId: input.threadId
         },
         "forum research planner failed"
       );
-      throw normalizedError;
+      throw error;
     } finally {
       await this.codexClient.closeEphemeralThread(threadId).catch(() => undefined);
     }
   }
-}
-
-function wrapForumPlannerError(error: unknown): Error {
-  const normalized =
-    error instanceof Error ? error : new Error(typeof error === "string" ? error : String(error));
-  if (!normalized.message.toLowerCase().includes("timed out")) {
-    return normalized;
-  }
-
-  const wrapped = new Error(`forum research planner timed out: ${normalized.message}`);
-  Object.assign(wrapped, {
-    code: "FORUM_RESEARCH_PLANNER_TIMEOUT",
-    cause: normalized
-  });
-  return wrapped;
 }

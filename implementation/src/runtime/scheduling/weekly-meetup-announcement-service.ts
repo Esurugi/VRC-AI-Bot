@@ -17,6 +17,8 @@ const WEEKLY_MEETUP_EVENT_KEY = "weekly_meetup";
 const JST_TIME_ZONE = "Asia/Tokyo";
 const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
 const TEST_MARKER = "[TEST]";
+const ANNOUNCE_TIME = "18:00";
+const EVENT_TIME = "21:00";
 
 type WeeklyMeetupAnnouncementDependencies = {
   fetchChannel?: (channelId: string) => Promise<Channel | null>;
@@ -88,10 +90,19 @@ export class WeeklyMeetupAnnouncementService {
       return;
     }
 
+    if (config.skipDates.includes(window.occurrenceDate)) {
+      this._logger?.debug?.(
+        { occurrenceDate: window.occurrenceDate },
+        "weekly meetup announcement suppressed by skipDates"
+      );
+      return;
+    }
+
     const result = await this.sendAnnouncement({
       now: nowJst,
       channelId: config.channelId,
       occurrenceDate: window.occurrenceDate,
+      eventDate: window.occurrenceDate,
       markDelivered: true,
       testMarker: false
     });
@@ -137,6 +148,7 @@ export class WeeklyMeetupAnnouncementService {
       now,
       channelId: config.channelId,
       occurrenceDate: null,
+      eventDate: resolveNextNonSkippedEventDate(now, config),
       markDelivered: false,
       testMarker: true
     });
@@ -179,6 +191,7 @@ export class WeeklyMeetupAnnouncementService {
     now: Date;
     channelId: string;
     occurrenceDate: string | null;
+    eventDate: string;
     markDelivered: boolean;
     testMarker: boolean;
   }): Promise<AnnouncementSendResult> {
@@ -213,7 +226,7 @@ export class WeeklyMeetupAnnouncementService {
 
     let embed: EmbedBuilder;
     try {
-      embed = this.readEmbedTemplate(input.testMarker);
+      embed = this.readEmbedTemplate(input.eventDate, input.testMarker);
     } catch (error) {
       return {
         kind: "failed",
@@ -252,7 +265,7 @@ export class WeeklyMeetupAnnouncementService {
     }
   }
 
-  private readEmbedTemplate(testMarker: boolean): EmbedBuilder {
+  private readEmbedTemplate(eventDate: string, testMarker: boolean): EmbedBuilder {
     const config = this._config.weeklyMeetupAnnouncement;
     if (!config) {
       throw new Error("weekly_meetup_announcement is not configured");
@@ -261,7 +274,11 @@ export class WeeklyMeetupAnnouncementService {
     const template = JSON.parse(
       this.readTemplateFile(config.embedTemplatePath, "utf8")
     ) as APIEmbed;
-    const resolvedTemplate = testMarker ? appendTestMarker(template) : template;
+    const renderedTemplate = applyTemplatePlaceholders(
+      template,
+      buildRenderReplacements(config, eventDate)
+    ) as APIEmbed;
+    const resolvedTemplate = testMarker ? appendTestMarker(renderedTemplate) : renderedTemplate;
     return EmbedBuilder.from(resolvedTemplate);
   }
 }
@@ -273,10 +290,12 @@ export function resolveAnnouncementWindow(now: Date): {
   const parts = getJstDateParts(now);
   const occurrenceDate = `${parts.year}-${parts.month}-${parts.day}`;
   const isMonday = parts.weekday === "Mon";
-  const hour = Number(parts.hour);
+  const currentMinutes = Number(parts.hour) * 60 + Number(parts.minute);
+  const announceMinutes = resolveMinutesFromTime(ANNOUNCE_TIME);
+  const eventMinutes = resolveMinutesFromTime(EVENT_TIME);
 
   return {
-    shouldSend: isMonday && hour >= 18 && hour < 21,
+    shouldSend: isMonday && currentMinutes >= announceMinutes && currentMinutes < eventMinutes,
     occurrenceDate
   };
 }
@@ -310,7 +329,7 @@ export function resolveNextWeeklyMeetupAnnouncementAt(now: Date): Date {
 }
 
 function getJstDateParts(now: Date): Record<
-  "weekday" | "year" | "month" | "day" | "hour",
+  "weekday" | "year" | "month" | "day" | "hour" | "minute",
   string
 > {
   const formatter = new Intl.DateTimeFormat("en-US", {
@@ -320,6 +339,7 @@ function getJstDateParts(now: Date): Record<
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
+    minute: "2-digit",
     hour12: false
   });
   const formatted = formatter.formatToParts(now);
@@ -330,8 +350,127 @@ function getJstDateParts(now: Date): Record<
     year: lookup.get("year") ?? "",
     month: lookup.get("month") ?? "",
     day: lookup.get("day") ?? "",
-    hour: lookup.get("hour") ?? ""
+    hour: lookup.get("hour") ?? "",
+    minute: lookup.get("minute") ?? ""
   };
+}
+
+function buildRenderReplacements(
+  config: NonNullable<AppConfig["weeklyMeetupAnnouncement"]>,
+  eventDate: string
+): ReadonlyMap<string, string> {
+  const meetupCount = resolveMeetupCount(config, eventDate);
+  const formattedDate = eventDate.replaceAll("-", "/");
+  const eventDateTime = `${formattedDate} ${config.eventTime}`;
+
+  return new Map<string, string>([
+    ["{{meetup_count}}", String(meetupCount)],
+    ["{{event_date}}", formattedDate],
+    ["{{event_time}}", config.eventTime],
+    ["{{event_datetime}}", eventDateTime]
+  ]);
+}
+
+function applyTemplatePlaceholders(value: unknown, replacements: ReadonlyMap<string, string>): unknown {
+  if (typeof value === "string") {
+    let resolved = value;
+    for (const [placeholder, replacement] of replacements) {
+      resolved = resolved.replaceAll(placeholder, replacement);
+    }
+    return resolved;
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((entry) => applyTemplatePlaceholders(entry, replacements));
+  }
+
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [
+        key,
+        applyTemplatePlaceholders(entry, replacements)
+      ])
+    );
+  }
+
+  return value;
+}
+
+function resolveNextNonSkippedEventDate(
+  now: Date,
+  config: NonNullable<AppConfig["weeklyMeetupAnnouncement"]>
+): string {
+  const parts = getJstDateParts(now);
+  const currentDate = `${parts.year}-${parts.month}-${parts.day}`;
+  const currentMinutes = Number(parts.hour) * 60 + Number(parts.minute);
+  const eventMinutes = resolveMinutesFromTime(config.eventTime);
+  let candidate =
+    parts.weekday === "Mon" && currentMinutes < eventMinutes
+      ? currentDate
+      : resolveNextMondayIsoDate(currentDate);
+
+  while (config.skipDates.includes(candidate)) {
+    candidate = addDays(candidate, 7);
+  }
+
+  return candidate;
+}
+
+function resolveMeetupCount(
+  config: NonNullable<AppConfig["weeklyMeetupAnnouncement"]>,
+  eventDate: string
+): number {
+  if (eventDate < config.firstEventDate) {
+    throw new Error(
+      `eventDate ${eventDate} is earlier than configured firstEventDate ${config.firstEventDate}`
+    );
+  }
+
+  const skipped = new Set(config.skipDates);
+  let count = 0;
+  let cursor = config.firstEventDate;
+  while (cursor <= eventDate) {
+    if (!skipped.has(cursor)) {
+      count += 1;
+    }
+    cursor = addDays(cursor, 7);
+  }
+
+  return count;
+}
+
+function resolveNextMondayIsoDate(currentDate: string): string {
+  const current = parseIsoDate(currentDate);
+  const dayDiff = (1 - current.getUTCDay() + 7) % 7;
+  const nextMonday = addDays(currentDate, dayDiff === 0 ? 7 : dayDiff);
+  return nextMonday;
+}
+
+function addDays(value: string, days: number): string {
+  const parsed = parseIsoDate(value);
+  parsed.setUTCDate(parsed.getUTCDate() + days);
+  return parsed.toISOString().slice(0, 10);
+}
+
+function parseIsoDate(value: string): Date {
+  const [yearText, monthText, dayText] = value.split("-");
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) {
+    throw new Error(`Invalid ISO date: ${value}`);
+  }
+  return new Date(Date.UTC(year, month - 1, day));
+}
+
+function resolveMinutesFromTime(value: string): number {
+  const [hourText, minuteText] = value.split(":");
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) {
+    throw new Error(`Invalid time value: ${value}`);
+  }
+  return hour * 60 + minute;
 }
 
 function appendTestMarker(template: APIEmbed): APIEmbed {

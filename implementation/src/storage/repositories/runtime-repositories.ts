@@ -4,6 +4,7 @@ import type { WatchLocationConfig } from "../../domain/types.js";
 import type {
   AppRuntimeLockRow,
   ChatChannelCounterRow,
+  ForumResearchStateRow,
   MessageProcessingRow,
   RetryJobRow,
   ScheduledDeliveryRow
@@ -362,6 +363,85 @@ export class RetryJobRepository {
         WHERE message_id = ?
       `)
       .run(messageId);
+  }
+}
+
+export class ForumResearchStateRepository {
+  constructor(private readonly db: Database.Database) {}
+
+  upsert(input: {
+    sessionIdentity: string;
+    threadId: string;
+    lastMessageId: string;
+    plannerBrief: string | null;
+    evidenceGapsJson: string;
+    workerResultsJson: string;
+    sourceCatalogJson: string;
+    distinctSourcesJson: string;
+  }): void {
+    this.db
+      .prepare(`
+        INSERT INTO forum_research_state (
+          session_identity,
+          thread_id,
+          last_message_id,
+          planner_brief,
+          evidence_gaps_json,
+          worker_results_json,
+          source_catalog_json,
+          distinct_sources_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(session_identity) DO UPDATE SET
+          thread_id = excluded.thread_id,
+          last_message_id = excluded.last_message_id,
+          planner_brief = excluded.planner_brief,
+          evidence_gaps_json = excluded.evidence_gaps_json,
+          worker_results_json = excluded.worker_results_json,
+          source_catalog_json = excluded.source_catalog_json,
+          distinct_sources_json = excluded.distinct_sources_json,
+          updated_at = CURRENT_TIMESTAMP
+      `)
+      .run(
+        input.sessionIdentity,
+        input.threadId,
+        input.lastMessageId,
+        input.plannerBrief,
+        input.evidenceGapsJson,
+        input.workerResultsJson,
+        input.sourceCatalogJson,
+        input.distinctSourcesJson
+      );
+  }
+
+  get(sessionIdentity: string): ForumResearchStateRow | null {
+    return (
+      (this.db
+        .prepare(`
+          SELECT
+            session_identity,
+            thread_id,
+            last_message_id,
+            planner_brief,
+            evidence_gaps_json,
+            worker_results_json,
+            source_catalog_json,
+            distinct_sources_json,
+            created_at,
+            updated_at
+          FROM forum_research_state
+          WHERE session_identity = ?
+        `)
+        .get(sessionIdentity) as ForumResearchStateRow | undefined) ?? null
+    );
+  }
+
+  delete(sessionIdentity: string): void {
+    this.db
+      .prepare(`
+        DELETE FROM forum_research_state
+        WHERE session_identity = ?
+      `)
+      .run(sessionIdentity);
   }
 }
 
