@@ -6,6 +6,7 @@ import {
   PermissionsBitField,
   SlashCommandBuilder,
   ThreadAutoArchiveDuration,
+  type AnyThreadChannel,
   type Channel,
   type ChatInputCommandInteraction,
   type Client,
@@ -14,12 +15,14 @@ import {
 } from "discord.js";
 import type { Logger } from "pino";
 
+import { splitPlainTextReplies } from "../../app/replies.js";
 import { SessionManager } from "../../codex/session-manager.js";
 import { SessionPolicyResolver } from "../../codex/session-policy.js";
 import { resolvePlaceType } from "../../discord/message-utils.js";
 import type { AppConfig, WatchLocationConfig } from "../../domain/types.js";
 import { DEFAULT_OVERRIDE_FLAGS, type OverrideFlags } from "../../override/types.js";
 import { SqliteStore } from "../../storage/database.js";
+import { WeeklyMeetupAnnouncementService } from "../scheduling/weekly-meetup-announcement-service.js";
 import { AdminOverrideBootstrapService } from "./admin-override-bootstrap-service.js";
 import { OverrideBootstrapPromptContextService } from "./override-bootstrap-prompt-context-service.js";
 
@@ -32,6 +35,7 @@ export class AdminCommandService {
     private readonly sessionPolicyResolver: SessionPolicyResolver,
     private readonly adminOverrideBootstrapService: AdminOverrideBootstrapService,
     private readonly overrideBootstrapPromptContextService: OverrideBootstrapPromptContextService,
+    private readonly weeklyMeetupAnnouncementService: WeeklyMeetupAnnouncementService,
     private readonly logger: Logger
   ) {}
 
@@ -61,7 +65,8 @@ export class AdminCommandService {
   async handle(interaction: ChatInputCommandInteraction): Promise<boolean> {
     if (
       interaction.commandName !== "override-start" &&
-      interaction.commandName !== "override-end"
+      interaction.commandName !== "override-end" &&
+      interaction.commandName !== "weekly-meetup-test"
     ) {
       return false;
     }
@@ -91,6 +96,31 @@ export class AdminCommandService {
       await replyToInteraction(
         interaction,
         "Administrator 権限を持つ owner/admin だけがこの command を使えます。"
+      );
+      return true;
+    }
+
+    if (interaction.commandName === "weekly-meetup-test") {
+      if (!isAdminControlRootPlace(interaction.channel, watchLocation)) {
+        await replyToInteraction(
+          interaction,
+          "この command は configured `admin_control` root channel でのみ使えます。"
+        );
+        return true;
+      }
+
+      const result = await this.weeklyMeetupAnnouncementService.sendTestAnnouncement();
+      if (!result.ok) {
+        await replyToInteraction(
+          interaction,
+          buildWeeklyMeetupTestFailureReply(result.reason)
+        );
+        return true;
+      }
+
+      await replyToInteraction(
+        interaction,
+        `weekly meetup 告知の TEST 送信を実行しました。target=<#${result.channelId}>`
       );
       return true;
     }
@@ -159,11 +189,13 @@ export class AdminCommandService {
             "終了するときはこの thread で `/override-end` を実行してください。",
           allowedMentions: { parse: [] }
         });
+      } else {
+        await sendVisiblePromptCopyToThread(overrideThread, initialPrompt);
       }
       await replyToInteraction(
         interaction,
         initialPrompt.length > 0
-          ? `override thread を開きました。thread=<#${overrideThread.id}> sandbox=workspace-write flags=${summarizeOverrideFlags(flags)} 最初の依頼を hidden bootstrap として投入します。`
+          ? `override thread を開きました。thread=<#${overrideThread.id}> sandbox=workspace-write flags=${summarizeOverrideFlags(flags)} 最初の依頼を thread 先頭にコピーし、bootstrap として投入します。`
           : `override thread を開きました。thread=<#${overrideThread.id}> sandbox=workspace-write flags=${summarizeOverrideFlags(flags)}`
       );
       if (initialPrompt.length > 0) {
@@ -315,6 +347,11 @@ export function buildOverrideCommandDefinitions(): ApplicationCommandDataResolva
       .setName("override-end")
       .setDescription("Close this override thread and return it to read-only mode")
       .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+      .toJSON(),
+    new SlashCommandBuilder()
+      .setName("weekly-meetup-test")
+      .setDescription("Send the configured weekly meetup announcement embed once as a TEST")
+      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
       .toJSON()
   ];
 }
@@ -380,6 +417,18 @@ function isConversationCapableOverrideStartPlace(
   }
 
   return true;
+}
+
+function isAdminControlRootPlace(
+  channel: Channel | null,
+  watchLocation: WatchLocationConfig
+): boolean {
+  return Boolean(
+    channel &&
+      !channel.isThread() &&
+      watchLocation.mode === "admin_control" &&
+      watchLocation.channelId === channel.id
+  );
 }
 
 function buildCommandOriginContext(
@@ -456,6 +505,42 @@ async function replyToInteraction(
     content,
     allowedMentions: { parse: [] }
   });
+}
+
+async function sendVisiblePromptCopyToThread(
+  thread: AnyThreadChannel,
+  prompt: string
+): Promise<void> {
+  const visibleCopy = `初回 prompt:\n${prompt.trim()}`;
+
+  for (const chunk of splitPlainTextReplies(visibleCopy)) {
+    await thread.send({
+      content: chunk,
+      allowedMentions: { parse: [] }
+    });
+  }
+}
+
+function buildWeeklyMeetupTestFailureReply(
+  reason:
+    | "not_configured"
+    | "channel_fetch_not_configured"
+    | "invalid_channel"
+    | "template_read_failed"
+    | "send_failed"
+): string {
+  switch (reason) {
+    case "not_configured":
+      return "weekly meetup 告知設定がありません。";
+    case "channel_fetch_not_configured":
+      return "weekly meetup 告知送信の channel fetch が未設定です。";
+    case "invalid_channel":
+      return "weekly meetup 告知先 channel が text/announcement ではありません。";
+    case "template_read_failed":
+      return "weekly meetup 告知 template の読み込みに失敗しました。";
+    case "send_failed":
+      return "weekly meetup 告知の TEST 送信に失敗しました。";
+  }
 }
 
 function isBaseWatchChannel(

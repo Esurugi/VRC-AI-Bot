@@ -15,7 +15,6 @@ import {
 import pino, { type Logger } from "pino";
 
 import { CodexAppServerClient } from "../codex/app-server-client.js";
-import { CodexExecPromptPreprocessorAdapter } from "../codex/codex-exec-prompt-preprocessor-adapter.js";
 import { SessionManager } from "../codex/session-manager.js";
 import { SessionPolicyResolver } from "../codex/session-policy.js";
 import { DiscordModerationExecutor } from "../discord/moderation-executor.js";
@@ -45,6 +44,7 @@ import { ChatEngagementPolicy } from "../runtime/chat/chat-engagement-policy.js"
 import { ChatRuntimeControlService } from "../runtime/chat/chat-runtime-control-service.js";
 import { RecentChatHistoryService } from "../runtime/chat/recent-chat-history-service.js";
 import { ForumFirstTurnPreprocessor } from "../runtime/forum/forum-first-turn-preprocessor.js";
+import { ForumResearchPlanner } from "../runtime/forum/forum-research-planner.js";
 import { ForumThreadService } from "../runtime/forum/forum-thread-service.js";
 import { MessageIntakeService } from "../runtime/message/message-intake-service.js";
 import { MessageProcessingService } from "../runtime/message/message-processing-service.js";
@@ -54,12 +54,14 @@ import {
   resolveKnowledgeIngestRouting
 } from "../runtime/message/reply-dispatch-service.js";
 import { RetryJobRunner } from "../runtime/scheduling/retry-job-runner.js";
-import { WeeklyMeetupAnnouncementService } from "../runtime/scheduling/weekly-meetup-announcement-service.js";
+import {
+  resolveNextWeeklyMeetupAnnouncementAt,
+  WeeklyMeetupAnnouncementService
+} from "../runtime/scheduling/weekly-meetup-announcement-service.js";
 import type { QueuedMessage, RoutedHarnessMessage } from "../runtime/types.js";
 
 const RUNTIME_LOCK_LEASE_MS = 30_000;
 const RUNTIME_LOCK_HEARTBEAT_MS = 10_000;
-const WEEKLY_MEETUP_POLL_MS = 60_000;
 
 export {
   buildOverrideCommandDefinitions,
@@ -92,8 +94,11 @@ type BotApplicationDependencies = {
   chatRuntimeControlService?: ChatRuntimeControlService;
   recentChatHistoryService?: RecentChatHistoryService;
   forumFirstTurnPreprocessor?: ForumFirstTurnPreprocessor;
+  forumResearchPlanner?: ForumResearchPlanner;
   forumThreadService?: ForumThreadService;
   weeklyMeetupAnnouncementService?: WeeklyMeetupAnnouncementService;
+  setTimeoutFn?: typeof setTimeout;
+  clearTimeoutFn?: typeof clearTimeout;
   queue?: OrderedMessageQueue<QueuedMessage>;
 };
 
@@ -121,8 +126,11 @@ export class BotApplication {
   private readonly chatRuntimeControlService: ChatRuntimeControlService;
   private readonly recentChatHistoryService: RecentChatHistoryService;
   private readonly forumFirstTurnPreprocessor: ForumFirstTurnPreprocessor;
+  private readonly forumResearchPlanner: ForumResearchPlanner;
   private readonly forumThreadService: ForumThreadService;
   private readonly weeklyMeetupAnnouncementService: WeeklyMeetupAnnouncementService;
+  private readonly setTimeoutFn: typeof setTimeout;
+  private readonly clearTimeoutFn: typeof clearTimeout;
   private readonly queue: OrderedMessageQueue<QueuedMessage>;
   private readonly runtimeInstanceId = randomUUID();
 
@@ -164,15 +172,15 @@ export class BotApplication {
     this.sessionManager =
       dependencies.sessionManager ??
       new SessionManager(this.store, this.codexClient, this.logger);
+    this.forumResearchPlanner =
+      dependencies.forumResearchPlanner ??
+      new ForumResearchPlanner(this.codexClient, this.logger);
     this.forumFirstTurnPreprocessor =
       dependencies.forumFirstTurnPreprocessor ??
       new ForumFirstTurnPreprocessor(
         this.store,
         this.sessionPolicyResolver,
-        new CodexExecPromptPreprocessorAdapter(
-          process.cwd(),
-          this.config.codexHomePath
-        ),
+        this.forumResearchPlanner,
         this.logger
       );
     this.harnessRunner =
@@ -182,6 +190,7 @@ export class BotApplication {
         this.codexClient,
         this.sessionPolicyResolver,
         this.sessionManager,
+        this.forumResearchPlanner,
         this.logger
       );
     this.recentChatHistoryService =
@@ -274,6 +283,11 @@ export class BotApplication {
         this.messageProcessingService,
         this.logger
       );
+    this.weeklyMeetupAnnouncementService =
+      dependencies.weeklyMeetupAnnouncementService ??
+      new WeeklyMeetupAnnouncementService(this.config, this.store, this.logger, {
+        fetchChannel: (channelId) => this.fetchChannel(channelId)
+      });
     this.adminCommandService =
       dependencies.adminCommandService ??
       new AdminCommandService(
@@ -284,13 +298,11 @@ export class BotApplication {
         this.sessionPolicyResolver,
         this.adminOverrideBootstrapService,
         this.overrideBootstrapPromptContextService,
+        this.weeklyMeetupAnnouncementService,
         this.logger
       );
-    this.weeklyMeetupAnnouncementService =
-      dependencies.weeklyMeetupAnnouncementService ??
-      new WeeklyMeetupAnnouncementService(this.config, this.store, this.logger, {
-        fetchChannel: (channelId) => this.fetchChannel(channelId)
-      });
+    this.setTimeoutFn = dependencies.setTimeoutFn ?? setTimeout;
+    this.clearTimeoutFn = dependencies.clearTimeoutFn ?? clearTimeout;
   }
 
   async start(): Promise<void> {
@@ -325,7 +337,7 @@ export class BotApplication {
       await this.retryJobRunner.drainDueJobs();
       await this.weeklyMeetupAnnouncementService.poll(new Date());
       this.retryJobRunner.start();
-      this.startWeeklyMeetupPolling();
+      this.scheduleNextWeeklyMeetupAnnouncement(new Date());
       this.started = true;
     } catch (error) {
       await this.stop().catch(() => undefined);
@@ -334,9 +346,10 @@ export class BotApplication {
   }
 
   async stop(): Promise<void> {
+    this.started = false;
     this.retryJobRunner.stop();
     if (this.weeklyMeetupTimer) {
-      clearInterval(this.weeklyMeetupTimer);
+      this.clearTimeoutFn(this.weeklyMeetupTimer);
       this.weeklyMeetupTimer = null;
     }
     if (this.leaseTimer) {
@@ -351,7 +364,6 @@ export class BotApplication {
     await this.codexClient.close().catch(() => undefined);
     this.client.destroy();
     this.store.close();
-    this.started = false;
   }
 
   private bindEvents(): void {
@@ -503,16 +515,34 @@ export class BotApplication {
     }, RUNTIME_LOCK_HEARTBEAT_MS);
   }
 
-  private startWeeklyMeetupPolling(): void {
+  private scheduleNextWeeklyMeetupAnnouncement(now: Date): void {
     if (this.weeklyMeetupTimer) {
-      clearInterval(this.weeklyMeetupTimer);
+      this.clearTimeoutFn(this.weeklyMeetupTimer);
+      this.weeklyMeetupTimer = null;
     }
 
-    this.weeklyMeetupTimer = setInterval(() => {
-      void this.weeklyMeetupAnnouncementService.poll(new Date()).catch((error) => {
-        this.logger.error({ error }, "failed to poll weekly meetup announcement service");
-      });
-    }, WEEKLY_MEETUP_POLL_MS);
+    if (!this.config.weeklyMeetupAnnouncement) {
+      return;
+    }
+
+    const nextAt = resolveNextWeeklyMeetupAnnouncementAt(now);
+    const delayMs = Math.max(0, nextAt.getTime() - now.getTime());
+
+    this.weeklyMeetupTimer = this.setTimeoutFn(() => {
+      void this.runScheduledWeeklyMeetupAnnouncement(new Date());
+    }, delayMs);
+  }
+
+  private async runScheduledWeeklyMeetupAnnouncement(now: Date): Promise<void> {
+    try {
+      await this.weeklyMeetupAnnouncementService.poll(now);
+    } catch (error) {
+      this.logger.error({ error }, "failed to poll weekly meetup announcement service");
+    } finally {
+      if (this.started) {
+        this.scheduleNextWeeklyMeetupAnnouncement(now);
+      }
+    }
   }
 
   private async seedInitialCursors(): Promise<void> {

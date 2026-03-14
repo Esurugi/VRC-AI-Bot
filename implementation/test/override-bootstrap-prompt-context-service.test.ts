@@ -7,25 +7,45 @@ import {
   buildVisibleOriginHistoryFacts
 } from "../src/runtime/admin/override-bootstrap-prompt-context-service.js";
 
-test("buildVisibleOriginHistoryFacts keeps human and bot messages in oldest-first order", () => {
+test("buildVisibleOriginHistoryFacts keeps the latest own-bot conversation window in oldest-first order", () => {
   const history = new Collection<string, never>();
+  history.set(
+    "message-6",
+    createMessage({
+      id: "message-6",
+      authorId: "user-6",
+      authorBot: false,
+      content: "これ治しといて",
+      createdAt: "2026-03-13T09:06:00.000Z"
+    }) as never
+  );
+  history.set(
+    "message-5",
+    createMessage({
+      id: "message-5",
+      authorId: "bot-1",
+      authorBot: true,
+      content: "候補は3つあります",
+      createdAt: "2026-03-13T09:05:00.000Z"
+    }) as never
+  );
   history.set(
     "message-4",
     createMessage({
       id: "message-4",
       authorId: "user-4",
       authorBot: false,
-      content: "",
-      webhookId: "webhook-1"
+      content: "この機能の実装計画を立てて",
+      createdAt: "2026-03-13T09:04:00.000Z"
     }) as never
   );
   history.set(
     "message-3",
     createMessage({
       id: "message-3",
-      authorId: "user-3",
-      authorBot: false,
-      content: "これ治しといて",
+      authorId: "other-bot-1",
+      authorBot: true,
+      content: "横入りbotです",
       createdAt: "2026-03-13T09:03:00.000Z"
     }) as never
   );
@@ -35,7 +55,7 @@ test("buildVisibleOriginHistoryFacts keeps human and bot messages in oldest-firs
       id: "message-2",
       authorId: "bot-1",
       authorBot: true,
-      content: "候補は3つあります",
+      content: "もっと前のbot応答です",
       createdAt: "2026-03-13T09:02:00.000Z"
     }) as never
   );
@@ -45,32 +65,32 @@ test("buildVisibleOriginHistoryFacts keeps human and bot messages in oldest-firs
       id: "message-1",
       authorId: "user-1",
       authorBot: false,
-      content: "この機能の実装計画を立てて",
+      content: "もっと前の相談です",
       createdAt: "2026-03-13T09:01:00.000Z"
     }) as never
   );
 
-  assert.deepEqual(buildVisibleOriginHistoryFacts(history as never), [
+  assert.deepEqual(buildVisibleOriginHistoryFacts(history as never, "bot-1"), [
     {
-      messageId: "message-1",
-      authorId: "user-1",
+      messageId: "message-4",
+      authorId: "user-4",
       authorKind: "human",
       content: "この機能の実装計画を立てて",
-      createdAt: "2026-03-13T09:01:00.000Z"
+      createdAt: "2026-03-13T09:04:00.000Z"
     },
     {
-      messageId: "message-2",
+      messageId: "message-5",
       authorId: "bot-1",
       authorKind: "bot",
       content: "候補は3つあります",
-      createdAt: "2026-03-13T09:02:00.000Z"
+      createdAt: "2026-03-13T09:05:00.000Z"
     },
     {
-      messageId: "message-3",
-      authorId: "user-3",
+      messageId: "message-6",
+      authorId: "user-6",
       authorKind: "human",
       content: "これ治しといて",
-      createdAt: "2026-03-13T09:03:00.000Z"
+      createdAt: "2026-03-13T09:06:00.000Z"
     }
   ]);
 });

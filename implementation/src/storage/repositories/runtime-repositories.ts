@@ -251,8 +251,9 @@ export class RetryJobRepository {
 
   upsert(input: {
     messageId: string;
-    channelId: string;
     guildId: string;
+    messageChannelId: string;
+    watchChannelId: string;
     attemptCount: number;
     nextAttemptAt: string;
     lastFailureCategory: string;
@@ -265,8 +266,9 @@ export class RetryJobRepository {
       .prepare(`
         INSERT INTO retry_job (
           message_id,
-          channel_id,
           guild_id,
+          message_channel_id,
+          watch_channel_id,
           attempt_count,
           next_attempt_at,
           last_failure_category,
@@ -274,10 +276,11 @@ export class RetryJobRepository {
           reply_thread_id,
           place_mode,
           stage
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(message_id) DO UPDATE SET
-          channel_id = excluded.channel_id,
           guild_id = excluded.guild_id,
+          message_channel_id = excluded.message_channel_id,
+          watch_channel_id = excluded.watch_channel_id,
           attempt_count = excluded.attempt_count,
           next_attempt_at = excluded.next_attempt_at,
           last_failure_category = excluded.last_failure_category,
@@ -289,8 +292,9 @@ export class RetryJobRepository {
       `)
       .run(
         input.messageId,
-        input.channelId,
         input.guildId,
+        input.messageChannelId,
+        input.watchChannelId,
         input.attemptCount,
         input.nextAttemptAt,
         input.lastFailureCategory,
@@ -307,8 +311,9 @@ export class RetryJobRepository {
         .prepare(`
           SELECT
             message_id,
-            channel_id,
             guild_id,
+            message_channel_id,
+            watch_channel_id,
             attempt_count,
             next_attempt_at,
             last_failure_category,
@@ -330,8 +335,9 @@ export class RetryJobRepository {
       .prepare(`
         SELECT
           message_id,
-          channel_id,
           guild_id,
+          message_channel_id,
+          watch_channel_id,
           attempt_count,
           next_attempt_at,
           last_failure_category,

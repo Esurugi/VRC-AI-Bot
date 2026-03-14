@@ -6,8 +6,9 @@ import {
   resolveScopedPlaceId,
   type ResolvedSessionIdentity
 } from "../codex/session-policy.js";
-import type { CodexAppServerClient } from "../codex/app-server-client.js";
-import type { TurnObservations } from "../codex/app-server-client.js";
+import type {
+  CodexAppServerClient
+} from "../codex/app-server-client.js";
 import type {
   ActorRole,
   MessageEnvelope,
@@ -15,6 +16,7 @@ import type {
   Scope,
   WatchLocationConfig
 } from "../domain/types.js";
+import type { ForumResearchPlan } from "../forum-research/types.js";
 import { KnowledgePersistenceService } from "../knowledge/knowledge-persistence-service.js";
 import {
   DEFAULT_OVERRIDE_FLAGS,
@@ -22,6 +24,7 @@ import {
 } from "../override/types.js";
 import type { SqliteStore } from "../storage/database.js";
 import { appendRuntimeTrace } from "../observability/runtime-trace.js";
+import type { ForumResearchPlanner } from "../runtime/forum/forum-research-planner.js";
 import { buildHarnessRequest } from "./build-harness-request.js";
 import { resolveHarnessCapabilities } from "./capability-resolver.js";
 import type {
@@ -31,11 +34,9 @@ import type {
   ThreadContextKind
 } from "./contracts.js";
 import {
-  createInitialForumLoopState,
-  runForumExplorationLoop,
-  runForumFinalizeTurn,
-  type ForumLoopTraceContext
-} from "./forum-exploration-loop.js";
+  ForumResearchPipeline,
+  type ForumResearchRetryCallbacks
+} from "./forum-research-pipeline.js";
 import { OutputSafetyGuard } from "./output-safety-guard.js";
 
 export type HarnessMessageContext = {
@@ -46,6 +47,8 @@ export type HarnessMessageContext = {
   discordRuntimeFactsPath?: string | null;
   effectiveContentOverride?: string | null;
   recentMessages?: RecentChatMessageFact[];
+  forumResearchPlan?: ForumResearchPlan | null;
+  forumRetryCallbacks?: ForumResearchRetryCallbacks;
 };
 
 type KnowledgeThreadEntry = {
@@ -77,16 +80,23 @@ export type HarnessResolvedSession = {
 export class HarnessRunner {
   private readonly knowledgePersistence: KnowledgePersistenceService;
   private readonly outputSafetyGuard: OutputSafetyGuard;
+  private readonly forumResearchPipeline: ForumResearchPipeline;
 
   constructor(
     private readonly store: SqliteStore,
     private readonly codexClient: CodexAppServerClient,
     private readonly sessionPolicyResolver: SessionPolicyResolver,
     private readonly sessionManager: SessionManager,
+    private readonly forumResearchPlanner: ForumResearchPlanner,
     private readonly logger: Logger
   ) {
     this.knowledgePersistence = new KnowledgePersistenceService(store, logger);
     this.outputSafetyGuard = new OutputSafetyGuard(store);
+    this.forumResearchPipeline = new ForumResearchPipeline(
+      codexClient,
+      forumResearchPlanner,
+      logger
+    );
   }
 
   async routeMessage(input: HarnessMessageContext): Promise<{
@@ -95,6 +105,7 @@ export class HarnessRunner {
     knowledgePersistenceScope: Scope | null;
     moderationSignal: HarnessIntentResponse["moderation_signal"];
     violationCounterSuspended: boolean;
+    primaryReplyAlreadySent: boolean;
   }> {
     const normalizedInput = {
       ...input,
@@ -164,6 +175,7 @@ export class HarnessRunner {
         session: resolvedSession,
         knowledgePersistenceScope: null,
         moderationSignal: intent.moderation_signal,
+        primaryReplyAlreadySent: false,
         violationCounterSuspended: Boolean(
           overrideContext.active &&
             overrideContext.sameActor &&
@@ -194,7 +206,7 @@ export class HarnessRunner {
       discordRuntimeFactsPath: normalizedInput.discordRuntimeFactsPath ?? null,
       recentMessages: normalizedInput.recentMessages ?? []
     });
-    const normalizedResponse = await this.runAnswerFlow({
+    const answerFlow = await this.runAnswerFlow({
       input: normalizedInput,
       threadContext,
       request: answerRequest,
@@ -208,24 +220,25 @@ export class HarnessRunner {
         codexThreadId: resolvedSession.threadId,
         sessionIdentity: sessionIdentity.sessionIdentity,
         workloadKind: sessionIdentity.workloadKind,
-        outcome: normalizedResponse.outcome,
-        replyMode: normalizedResponse.reply_mode,
-        hasPublicText: Boolean(normalizedResponse.public_text?.trim())
+        outcome: answerFlow.response.outcome,
+        replyMode: answerFlow.response.reply_mode,
+        hasPublicText: Boolean(answerFlow.response.public_text?.trim())
       },
       "harness produced response"
     );
 
     return {
-      response: normalizedResponse,
+      response: answerFlow.response,
       session: resolvedSession,
       knowledgePersistenceScope: resolveKnowledgePersistenceScope(
         normalizedInput.scope,
         normalizedInput.watchLocation,
         threadContext,
-        normalizedResponse,
+        answerFlow.response,
         fetchablePublicUrlCount
       ),
       moderationSignal: intent.moderation_signal,
+      primaryReplyAlreadySent: answerFlow.primaryReplyAlreadySent,
       violationCounterSuspended: Boolean(
         overrideContext.active &&
           overrideContext.sameActor &&
@@ -240,23 +253,37 @@ export class HarnessRunner {
     request: HarnessRequest;
     session: HarnessResolvedSession;
     fetchablePublicUrlCount: number;
-  }): Promise<HarnessResponse> {
+  }): Promise<{
+    response: HarnessResponse;
+    primaryReplyAlreadySent: boolean;
+  }> {
     const linkedKnowledgeSources = input.threadContext.knowledgeEntries.map((entry) => ({
       sourceId: entry.sourceId,
       scope: entry.scope,
       canonicalUrl: entry.canonicalUrl
     }));
-    const firstTurn =
-      input.input.watchLocation.mode === "forum_longform"
-        ? await this.runForumExplorationLoop(input)
-        : {
-            ...(await this.codexClient.runHarnessRequest(
-              input.session.threadId,
-              input.request,
-              toSessionMetadata(input.session)
-            )),
-            loopState: null
-          };
+    const isForumResearch =
+      input.input.watchLocation.mode === "forum_longform" &&
+      input.request.capabilities.allow_external_fetch;
+    const firstTurn = isForumResearch
+      ? await this.forumResearchPipeline.run({
+          request: input.request,
+          threadId: input.session.threadId,
+          sessionMetadata: toSessionMetadata(input.session),
+          precomputedPlan: input.input.forumResearchPlan ?? null,
+          ...(input.input.forumRetryCallbacks
+            ? { callbacks: input.input.forumRetryCallbacks }
+            : {})
+        })
+      : {
+          ...(await this.codexClient.runHarnessRequest(
+            input.session.threadId,
+            input.request,
+            toSessionMetadata(input.session)
+          )),
+          state: null,
+          primaryReplyAlreadySent: false
+        };
     let response = normalizeProductResponse(
       input.input,
       input.threadContext,
@@ -323,7 +350,10 @@ export class HarnessRunner {
       );
       observations = knowledgeRetryTurn.observations;
       if (shouldRetryKnowledgeThreadFollowUp(input.input, input.threadContext, response)) {
-        return buildKnowledgeThreadFailure(input.input);
+        return {
+          response: buildKnowledgeThreadFailure(input.input),
+          primaryReplyAlreadySent: false
+        };
       }
     }
 
@@ -341,11 +371,17 @@ export class HarnessRunner {
       0
     );
     if (firstEvaluation.decision === "allow") {
-      return response;
+      return {
+        response,
+        primaryReplyAlreadySent: firstTurn.primaryReplyAlreadySent
+      };
     }
 
     if (firstEvaluation.decision === "refuse") {
-      return buildOutputSafetyRefusal(input.input, firstEvaluation.reason);
+      return {
+        response: buildOutputSafetyRefusal(input.input, firstEvaluation.reason),
+        primaryReplyAlreadySent: false
+      };
     }
 
     const retryRequest = buildHarnessRequest({
@@ -389,13 +425,12 @@ export class HarnessRunner {
       recentMessages: input.request.available_context.recent_messages
     });
     const secondTurn =
-      input.input.watchLocation.mode === "forum_longform"
-        ? await this.runForumFinalizeTurn({
+      isForumResearch && firstTurn.state
+        ? await this.forumResearchPipeline.runOutputSafetyRetry({
             request: retryRequest,
-            state: firstTurn.loopState ?? createInitialForumLoopState(),
             threadId: input.session.threadId,
-            session: input.session,
-            retryKind: "output_safety_retry"
+            sessionMetadata: toSessionMetadata(input.session),
+            state: firstTurn.state
           })
         : await this.codexClient.runHarnessRequest(
             input.session.threadId,
@@ -425,73 +460,20 @@ export class HarnessRunner {
     );
     if (secondEvaluation.decision === "allow") {
       if (shouldRetryKnowledgeThreadFollowUp(input.input, input.threadContext, secondPass)) {
-        return buildKnowledgeThreadFailure(input.input);
+        return {
+          response: buildKnowledgeThreadFailure(input.input),
+          primaryReplyAlreadySent: false
+        };
       }
-      return secondPass;
+      return {
+        response: secondPass,
+        primaryReplyAlreadySent: false
+      };
     }
 
-    return buildOutputSafetyRefusal(input.input, secondEvaluation.reason);
-  }
-
-  private async runForumExplorationLoop(input: {
-    input: HarnessMessageContext;
-    threadContext: ResolvedThreadContext;
-    request: HarnessRequest;
-    session: HarnessResolvedSession;
-    fetchablePublicUrlCount: number;
-  }): Promise<{
-    response: HarnessResponse;
-    observations: { observed_public_urls: string[] };
-    loopState: ReturnType<typeof createInitialForumLoopState> | null;
-  }> {
-    return runForumExplorationLoop({
-      logger: this.logger,
-      codexClient: this.codexClient,
-      request: input.request,
-      threadId: input.session.threadId,
-      sessionMetadata: toSessionMetadata(input.session),
-      trace: this.buildForumLoopTraceContext(
-        input.input.envelope.messageId,
-        input.session
-      )
-    });
-  }
-
-  private async runForumFinalizeTurn(input: {
-    request: HarnessRequest;
-    state: ReturnType<typeof createInitialForumLoopState>;
-    threadId: string;
-    session: HarnessResolvedSession;
-    retryKind?: "initial" | "output_safety_retry";
-  }): Promise<{
-    response: HarnessResponse;
-    observations: TurnObservations;
-  }> {
-    return runForumFinalizeTurn({
-      codexClient: this.codexClient,
-      request: input.request,
-      state: input.state,
-      threadId: input.threadId,
-      sessionMetadata: toSessionMetadata(input.session),
-      trace: this.buildForumLoopTraceContext(
-        input.request.message.id,
-        input.session
-      ),
-      ...(input.retryKind === undefined ? {} : { retryKind: input.retryKind })
-    });
-  }
-
-  private buildForumLoopTraceContext(
-    messageId: string,
-    session: HarnessResolvedSession
-  ): ForumLoopTraceContext {
     return {
-      messageId,
-      threadId: session.threadId,
-      sessionIdentity: session.identity.sessionIdentity,
-      workloadKind: session.identity.workloadKind,
-      modelProfile: session.identity.modelProfile,
-      runtimeContractVersion: session.identity.runtimeContractVersion
+      response: buildOutputSafetyRefusal(input.input, secondEvaluation.reason),
+      primaryReplyAlreadySent: false
     };
   }
 

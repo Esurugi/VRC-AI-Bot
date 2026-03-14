@@ -20,16 +20,33 @@ test("buildFailureNotice formats retry and terminal categories", () => {
   assert.equal(
     buildFailureNotice({
       category: "fetch_timeout",
-      delayMs: 5 * 60_000
+      delayMs: 5 * 60_000,
+      retryable: true
     }),
     "取得がタイムアウトしたため、5分後に再試行します。"
   );
   assert.equal(
     buildFailureNotice({
       category: "ai_processing_failed",
-      delayMs: 2 * 60 * 60_000
+      delayMs: 2 * 60 * 60_000,
+      retryable: true
     }),
     "AI処理に失敗したため、2時間後に再試行します。"
+  );
+  assert.equal(
+    buildFailureNotice({
+      category: "fetch_timeout",
+      delayMs: 0,
+      retryable: true
+    }),
+    "取得がタイムアウトしたため、すぐに再試行します。"
+  );
+  assert.equal(
+    buildFailureNotice({
+      category: "ai_processing_failed",
+      retryable: false
+    }),
+    "AI処理に失敗したため処理できません。"
   );
   assert.equal(
     buildFailureNotice({

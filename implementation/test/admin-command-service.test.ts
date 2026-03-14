@@ -43,6 +43,15 @@ test("AdminCommandService accepts /override-start from chat root and bootstraps 
         return "hidden bootstrap prompt";
       }
     } as never,
+    {
+      async sendTestAnnouncement() {
+        return {
+          ok: true,
+          channelId: "admin-root-1",
+          messageId: "message-1"
+        };
+      }
+    } as never,
     pino({ level: "silent" })
   );
 
@@ -53,9 +62,13 @@ test("AdminCommandService accepts /override-start from chat root and bootstraps 
   assert.equal(interaction.replies.length, 1);
   assert.match(
     interaction.replies[0] ?? "",
-    /thread=<#override-thread-1>.*hidden bootstrap/
+    /thread=<#override-thread-1>.*thread 先頭にコピー/
   );
-  assert.deepEqual(overrideThread.sent, []);
+  assert.equal(overrideThread.sent.length, 1);
+  assert.match(
+    overrideThread.sent[0] ?? "",
+    /初回 prompt:\nこの機能の実装計画立てておいて/
+  );
   assert.equal(contextCalls.length, 1);
   assert.deepEqual(contextCalls[0], {
     prompt: "この機能の実装計画立てておいて",
@@ -136,6 +149,15 @@ test("AdminCommandService accepts /override-start from forum post thread", async
         return "hidden forum bootstrap prompt";
       }
     } as never,
+    {
+      async sendTestAnnouncement() {
+        return {
+          ok: true,
+          channelId: "admin-root-1",
+          messageId: "message-2"
+        };
+      }
+    } as never,
     pino({ level: "silent" })
   );
 
@@ -155,6 +177,89 @@ test("AdminCommandService accepts /override-start from forum post thread", async
     },
     historyChannel: forumThread
   });
+});
+
+test("AdminCommandService sends weekly meetup test from admin_control root only", async () => {
+  const testCalls: unknown[] = [];
+  const interaction = createInteraction({
+    commandName: "weekly-meetup-test",
+    channel: createBaseChannel("admin-root-1"),
+    channelId: "admin-root-1",
+    guildId: "guild-1",
+    prompt: ""
+  });
+  const service = new AdminCommandService(
+    {
+      channels: {
+        async fetch() {
+          throw new Error("channel fetch should not be used");
+        }
+      }
+    } as never,
+    createConfig(),
+    createStore() as never,
+    {} as never,
+    {} as never,
+    {} as never,
+    {} as never,
+    {
+      async sendTestAnnouncement() {
+        testCalls.push("called");
+        return {
+          ok: true,
+          channelId: "admin-root-1",
+          messageId: "message-3"
+        };
+      }
+    } as never,
+    pino({ level: "silent" })
+  );
+
+  const handled = await service.handle(interaction as never);
+
+  assert.equal(handled, true);
+  assert.equal(testCalls.length, 1);
+  assert.deepEqual(interaction.replies, [
+    "weekly meetup 告知の TEST 送信を実行しました。target=<#admin-root-1>"
+  ]);
+});
+
+test("AdminCommandService rejects weekly meetup test outside admin_control root", async () => {
+  const interaction = createInteraction({
+    commandName: "weekly-meetup-test",
+    channel: createBaseChannel("chat-root-1"),
+    channelId: "chat-root-1",
+    guildId: "guild-1",
+    prompt: ""
+  });
+  const service = new AdminCommandService(
+    {
+      channels: {
+        async fetch() {
+          throw new Error("channel fetch should not be used");
+        }
+      }
+    } as never,
+    createConfig(),
+    createStore() as never,
+    {} as never,
+    {} as never,
+    {} as never,
+    {} as never,
+    {
+      async sendTestAnnouncement() {
+        throw new Error("sendTestAnnouncement should not be called");
+      }
+    } as never,
+    pino({ level: "silent" })
+  );
+
+  const handled = await service.handle(interaction as never);
+
+  assert.equal(handled, true);
+  assert.deepEqual(interaction.replies, [
+    "この command は configured `admin_control` root channel でのみ使えます。"
+  ]);
 });
 
 function createConfig(): AppConfig {
@@ -205,6 +310,7 @@ function createStore() {
 }
 
 function createInteraction(input: {
+  commandName?: "override-start" | "override-end" | "weekly-meetup-test";
   channel: ReturnType<typeof createBaseChannel> | ReturnType<typeof createThread>;
   channelId: string;
   guildId: string;
@@ -212,7 +318,7 @@ function createInteraction(input: {
 }) {
   return {
     id: "interaction-1",
-    commandName: "override-start",
+    commandName: input.commandName ?? "override-start",
     guildId: input.guildId,
     channelId: input.channelId,
     channel: input.channel,

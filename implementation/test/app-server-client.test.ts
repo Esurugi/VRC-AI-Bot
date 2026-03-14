@@ -3,6 +3,7 @@ import test from "node:test";
 
 import type { HarnessRequest } from "../src/harness/contracts.js";
 import {
+  CodexAppServerClient,
   HARNESS_DEVELOPER_INSTRUCTIONS,
   __testOnly
 } from "../src/codex/app-server-client.js";
@@ -216,16 +217,76 @@ test("extractWebSearchActionTypeFromNotificationParams returns search action typ
   );
 });
 
-test("HARNESS_DEVELOPER_INSTRUCTIONS keeps forum_loop guidance minimal while allowing fresh public research on retry", () => {
+test("HARNESS_DEVELOPER_INSTRUCTIONS describes forum research planner, workers, and bundled synthesis", () => {
   assert.match(
     HARNESS_DEVELOPER_INSTRUCTIONS,
     /output_safety and place\.mode is forum_longform .* fresh public research now/i
   );
   assert.match(
     HARNESS_DEVELOPER_INSTRUCTIONS,
-    /forum_loop, treat it as hidden control-plane metadata/i
+    /input kind is forum_research_planner/i
   );
-  assert.doesNotMatch(HARNESS_DEVELOPER_INSTRUCTIONS, /exploration_work/i);
+  assert.match(
+    HARNESS_DEVELOPER_INSTRUCTIONS,
+    /input kind is forum_research_worker/i
+  );
+  assert.match(
+    HARNESS_DEVELOPER_INSTRUCTIONS,
+    /forum_research_bundle is present, the bundled evidence already satisfies the public-research requirement/i
+  );
+  assert.match(
+    HARNESS_DEVELOPER_INSTRUCTIONS,
+    /input kind is forum_research_streaming_final, return only the final user-facing japanese answer body as plain text/i
+  );
+  assert.doesNotMatch(HARNESS_DEVELOPER_INSTRUCTIONS, /forum_loop/i);
+  assert.doesNotMatch(HARNESS_DEVELOPER_INSTRUCTIONS, /min_body_chars/i);
+});
+
+test("interruptTurn times out best-effort control requests and clears pending state", async () => {
+  const client = new CodexAppServerClient(
+    "codex app-server",
+    REPO_CWD,
+    null,
+    {
+      debug() {},
+      warn() {},
+      info() {},
+      error() {}
+    } as never
+  );
+  const writes: string[] = [];
+  (client as unknown as { process: unknown }).process = {
+    stdin: {
+      write(chunk: string) {
+        writes.push(chunk);
+      }
+    }
+  };
+
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  globalThis.setTimeout = ((callback: (...args: unknown[]) => void) => {
+    queueMicrotask(() => callback());
+    return 0 as never;
+  }) as unknown as typeof globalThis.setTimeout;
+  globalThis.clearTimeout =
+    (() => {}) as unknown as typeof globalThis.clearTimeout;
+
+  try {
+    await assert.rejects(
+      client.interruptTurn("thread-1", "turn-1"),
+      /turn\/interrupt timed out/i
+    );
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
+  }
+
+  assert.equal(writes.length, 1);
+  assert.equal(
+    (client as unknown as { pending: Map<number, unknown> }).pending.size,
+    0
+  );
 });
 
 function createAgentMessage(text: string) {

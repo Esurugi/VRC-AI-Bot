@@ -1,9 +1,4 @@
-import type {
-  AnyThreadChannel,
-  Client,
-  NewsChannel,
-  TextChannel
-} from "discord.js";
+import type { Client } from "discord.js";
 import type { Logger } from "pino";
 
 import type { RetrySchedulerService } from "../../app/retry-scheduler-service.js";
@@ -29,7 +24,7 @@ export class RetryJobRunner {
     private readonly replyDispatchService: ReplyDispatchService,
     private readonly messageProcessingService: MessageProcessingService,
     private readonly logger: Logger,
-    private readonly intervalMs = 30_000
+    private readonly intervalMs = 5_000
   ) {}
 
   start(): void {
@@ -37,6 +32,9 @@ export class RetryJobRunner {
       clearInterval(this.timer);
     }
 
+    void this.drainDueJobs().catch((error) => {
+      this.logger.error({ error }, "failed to drain due retry jobs");
+    });
     this.timer = setInterval(() => {
       void this.drainDueJobs().catch((error) => {
         this.logger.error({ error }, "failed to drain due retry jobs");
@@ -66,7 +64,7 @@ export class RetryJobRunner {
         this.logger.debug(
           {
             messageId: job.message_id,
-            channelId: job.channel_id
+            channelId: job.message_channel_id
           },
           "retry job already enqueued"
         );
@@ -77,7 +75,7 @@ export class RetryJobRunner {
   }
 
   private async fetchRetryQueuedMessage(job: RetryJobRow): Promise<QueuedMessage> {
-    const channel = await this.replyDispatchService.fetchReplyChannel(job.channel_id);
+    const channel = await this.replyDispatchService.fetchReplyChannel(job.message_channel_id);
     if (!channel) {
       throw new Error("channel no longer available");
     }
@@ -90,7 +88,7 @@ export class RetryJobRunner {
     const typedMessage = message as typeof message & { guildId: string };
     const watchLocation = resolveRetryWatchLocation(this.config, {
       guildId: job.guild_id,
-      channelId: job.channel_id,
+      watchChannelId: job.watch_channel_id,
       mode: job.place_mode
     });
 

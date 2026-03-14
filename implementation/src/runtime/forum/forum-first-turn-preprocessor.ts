@@ -1,47 +1,48 @@
 import type { Message, ThreadChannel } from "discord.js";
 import type { Logger } from "pino";
 
-import type { ForumPromptPreparationExecutor } from "../../codex/codex-exec-prompt-preprocessor-adapter.js";
 import { SessionPolicyResolver } from "../../codex/session-policy.js";
 import type { ActorRole, MessageEnvelope, Scope, WatchLocationConfig } from "../../domain/types.js";
+import type { ForumResearchPlan } from "../../forum-research/types.js";
 import type { SqliteStore } from "../../storage/database.js";
+import type { ForumResearchPlanner } from "./forum-research-planner.js";
 
 export type ForumFirstTurnPreparation = {
   preparedPrompt: string | null;
   progressNotice: string | null;
   wasPreprocessed: boolean;
+  researchPlan: ForumResearchPlan | null;
 };
 
 export class ForumFirstTurnPreprocessor {
   constructor(
     private readonly store: SqliteStore,
     private readonly sessionPolicyResolver: SessionPolicyResolver,
-    private readonly executor: ForumPromptPreparationExecutor,
+    private readonly planner: ForumResearchPlanner,
     private readonly logger: Pick<Logger, "warn">
   ) {}
 
   async prepare(
     thread: Pick<ThreadChannel, "id">,
+    currentMessage: string,
     starterMessage: string
   ): Promise<ForumFirstTurnPreparation> {
-    const result = await this.executor.prepareForumFirstTurnPrompt({
-      threadId: thread.id,
-      starterMessage
+    const result = await this.planner.plan({
+      messageId: thread.id,
+      currentMessage,
+      starterMessage,
+      isInitialTurn: true,
+      threadId: thread.id
     });
-    const preparedPrompt = result.preparedPrompt.trim();
-
-    if (!preparedPrompt) {
-      return {
-        preparedPrompt: null,
-        progressNotice: null,
-        wasPreprocessed: false
-      };
-    }
+    const preparedPrompt = result.effective_user_text?.trim() || null;
 
     return {
       preparedPrompt,
-      progressNotice: result.progressNotice?.trim() ? result.progressNotice.trim() : null,
-      wasPreprocessed: true
+      progressNotice: result.progress_notice?.trim()
+        ? result.progress_notice.trim()
+        : null,
+      wasPreprocessed: Boolean(preparedPrompt),
+      researchPlan: result
     };
   }
 
@@ -53,24 +54,20 @@ export class ForumFirstTurnPreprocessor {
     scope: Scope;
   }): Promise<ForumFirstTurnPreparation> {
     if (!(await this.needsPreparation(input))) {
-      return {
-        preparedPrompt: null,
-        progressNotice: null,
-        wasPreprocessed: false
-      };
+      return emptyPreparation();
     }
 
     const starterMessage = await this.fetchStarterMessage(input.message);
     if (!starterMessage?.trim()) {
-      return {
-        preparedPrompt: null,
-        progressNotice: null,
-        wasPreprocessed: false
-      };
+      return emptyPreparation();
     }
 
     try {
-      return await this.prepare(input.message.channel, starterMessage);
+      return await this.prepare(
+        input.message.channel,
+        input.message.content.trim(),
+        starterMessage
+      );
     } catch (error) {
       this.logger.warn(
         {
@@ -78,13 +75,9 @@ export class ForumFirstTurnPreprocessor {
           threadId: input.message.channel.id,
           messageId: input.message.id
         },
-        "forum first-turn preprocessing failed; falling back to raw message content"
+        "forum first-turn planner failed"
       );
-      return {
-        preparedPrompt: null,
-        progressNotice: null,
-        wasPreprocessed: false
-      };
+      return emptyPreparation();
     }
   }
 
@@ -122,4 +115,13 @@ export class ForumFirstTurnPreprocessor {
     const starter = await message.channel.fetchStarterMessage().catch(() => null);
     return starter?.content?.trim() ? starter.content.trim() : null;
   }
+}
+
+function emptyPreparation(): ForumFirstTurnPreparation {
+  return {
+    preparedPrompt: null,
+    progressNotice: null,
+    wasPreprocessed: false,
+    researchPlan: null
+  };
 }

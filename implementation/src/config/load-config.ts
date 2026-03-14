@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
 import { z } from "zod";
@@ -51,6 +51,9 @@ const chatRuntimeControlsSchema = z.object({
   enabledChannelIds: z.array(z.string().min(1))
 });
 
+const DEFAULT_WEEKLY_MEETUP_ANNOUNCEMENT_PATH =
+  "./config/weekly-meetup-announcement.json";
+
 export function loadConfig(cwd = process.cwd()): AppConfig {
   const env = envSchema.parse(process.env);
   const watchLocationPath = resolve(cwd, env.BOT_WATCH_LOCATIONS_PATH);
@@ -102,11 +105,14 @@ function readWeeklyMeetupAnnouncement(
   cwd: string,
   configPath: string | undefined
 ): WeeklyMeetupAnnouncementConfig | null {
-  if (!configPath) {
+  const resolvedPath = resolve(
+    cwd,
+    configPath ?? DEFAULT_WEEKLY_MEETUP_ANNOUNCEMENT_PATH
+  );
+  if (!configPath && !existsSync(resolvedPath)) {
     return null;
   }
 
-  const resolvedPath = resolve(cwd, configPath);
   const parsed = weeklyMeetupAnnouncementSchema.parse(
     JSON.parse(readFileSync(resolvedPath, "utf8"))
   );

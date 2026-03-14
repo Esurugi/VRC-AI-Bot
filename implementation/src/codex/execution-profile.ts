@@ -2,7 +2,8 @@ import type { ReasoningEffort } from "./generated/ReasoningEffort.js";
 import {
   DEFAULT_CODEX_MODEL,
   DEFAULT_CODEX_MODEL_PROFILE,
-  FORUM_LONGFORM_CODEX_MODEL_PROFILE
+  FORUM_LONGFORM_CODEX_MODEL_PROFILE,
+  FORUM_LONGFORM_LOW_CODEX_MODEL_PROFILE
 } from "./session-policy.js";
 
 export type CodexExecutionProfile = {
@@ -23,6 +24,11 @@ export function resolveCodexExecutionProfile(
       return {
         model: DEFAULT_CODEX_MODEL,
         reasoningEffort: "high"
+      };
+    case FORUM_LONGFORM_LOW_CODEX_MODEL_PROFILE:
+      return {
+        model: DEFAULT_CODEX_MODEL,
+        reasoningEffort: "low"
       };
     default:
       return {

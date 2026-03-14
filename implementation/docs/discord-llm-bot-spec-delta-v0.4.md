@@ -153,6 +153,7 @@
 | EVT.01-04 | 告知先が `GUILD_ANNOUNCEMENT` でも、bot は embed 投稿だけを行い、自動 publish / crosspost を行わない。 |
 | EVT.01-05 | 告知の重複防止は `event_key + occurrence_date` 単位の delivery 記録で行い、成功時にその週の告知を delivered とする。 |
 | EVT.01-06 | 設定は `weekly_meetup_announcement` として保持し、少なくとも `guild_id`、`channel_id`、`timezone=Asia/Tokyo`、`announce_weekday=monday`、`announce_time=18:00`、`event_time=21:00`、`embed_template_path` を持つ。 |
+| EVT.01-07 | system は configured `admin_control` root channel の管理者限定 command により、configured 告知先へ TEST 印付き embed を即時送信できるようにする。この test send は delivery dedupe を更新しない。 |
 
 ### 【機密区分】
 
@@ -186,7 +187,7 @@
 | AUTH.03-02-02 | bot は command 実行時にも actor role を再評価し、`owner` または `admin` 以外の実行を拒否する。 |
 | AUTH.03-02-03 | 開始 command は configured `chat`, `admin_control`, `forum_longform` の会話可能な place で有効とし、`forum_longform` では post thread 内でのみ受理する。対応 scope は常に `conversation_only` とする。 |
 | AUTH.03-02-04 | 開始 command 実行時、bot は configured `admin_control` root channel 配下に dedicated override thread を 1 本作成し、override session は `guild_id + override_thread_id + actor_id` 単位で保存する。 |
-| AUTH.03-02-04a | 開始 command の optional `prompt` は command 実行元 place の直前可視履歴を含む hidden bootstrap input に束ね、created override thread の初回 turn にだけ投入する。`prompt` 本文は visible に転載しない。 |
+| AUTH.03-02-04a | 開始 command の optional `prompt` は created override thread の先頭に visible copy として 1 回表示しつつ、command 実行元 place の直前可視履歴を含む bootstrap input に束ね、created override thread の初回 turn に投入する。 |
 | AUTH.03-02-05 | 通常の `chat_reply`, `knowledge_ingest`, knowledge thread follow-up, `admin_diagnostics` は、active override thread に入っていない場所では Codex `read-only` sandbox で動かす。 |
 | AUTH.03-02-06 | active override thread では、override を開始した同一管理者の turn 全体を、その dedicated override thread に対応する `workload=admin_override + binding_kind=thread + actor_id=開始者` の session identity で `workspace-write` sandbox として開始または resume し、global `config.toml` を書き換えて常設化しない。 |
 | AUTH.03-02-06a | active override thread では、override を開始した同一管理者に渡す Harness capability を `allow_external_fetch`, `allow_knowledge_write`, `allow_moderation` の全てで true とする。Discord thread 作成は capability ではなく system の reply-routing 責務とする。 |

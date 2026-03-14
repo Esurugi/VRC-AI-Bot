@@ -56,7 +56,7 @@ export class OverrideBootstrapPromptContextService {
       const history = await channel.messages.fetch({
         limit: HISTORY_SCAN_LIMIT
       });
-      return buildVisibleOriginHistoryFacts(history);
+      return buildVisibleOriginHistoryFacts(history, channel.client.user?.id ?? null);
     } catch (error) {
       this.logger.warn(
         {
@@ -71,12 +71,19 @@ export class OverrideBootstrapPromptContextService {
 }
 
 export function buildVisibleOriginHistoryFacts(
-  history: Collection<Snowflake, Message<true>>
+  history: Collection<Snowflake, Message<true>>,
+  botUserId: string | null
 ): OverrideBootstrapOriginMessage[] {
   const collected: OverrideBootstrapOriginMessage[] = [];
+  let seenOwnBotReply = false;
 
   for (const message of history.values()) {
     if (message.webhookId || message.system) {
+      continue;
+    }
+
+    const isOwnBotReply = Boolean(botUserId && message.author.id === botUserId);
+    if (message.author.bot && !isOwnBotReply) {
       continue;
     }
 
@@ -85,13 +92,21 @@ export function buildVisibleOriginHistoryFacts(
       continue;
     }
 
+    if (isOwnBotReply && seenOwnBotReply) {
+      break;
+    }
+
     collected.push({
       messageId: message.id,
       authorId: message.author.id,
-      authorKind: message.author.bot ? "bot" : "human",
+      authorKind: isOwnBotReply ? "bot" : "human",
       content,
       createdAt: message.createdAt.toISOString()
     });
+
+    if (isOwnBotReply) {
+      seenOwnBotReply = true;
+    }
   }
 
   return collected.slice(0, HISTORY_CONTEXT_LIMIT).reverse();
@@ -136,6 +151,11 @@ function canFetchMessageHistory(
   channel: Channel | null
 ): channel is Channel & {
   id: string;
+  client: {
+    user: {
+      id: string;
+    } | null;
+  };
   messages: {
     fetch(input: { limit: number }): Promise<Collection<Snowflake, Message<true>>>;
   };

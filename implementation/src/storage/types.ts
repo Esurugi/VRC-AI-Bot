@@ -98,8 +98,9 @@ export type MessageProcessingRow = {
 
 export type RetryJobRow = {
   message_id: string;
-  channel_id: string;
   guild_id: string;
+  message_channel_id: string;
+  watch_channel_id: string;
   attempt_count: number;
   next_attempt_at: string;
   last_failure_category: string;

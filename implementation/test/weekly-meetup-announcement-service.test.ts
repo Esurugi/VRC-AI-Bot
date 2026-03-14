@@ -4,10 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { ChannelType } from "discord.js";
+import { ChannelType, EmbedBuilder } from "discord.js";
 
 import type { AppConfig } from "../src/domain/types.js";
-import { WeeklyMeetupAnnouncementService } from "../src/runtime/scheduling/weekly-meetup-announcement-service.js";
+import {
+  resolveNextWeeklyMeetupAnnouncementAt,
+  WeeklyMeetupAnnouncementService
+} from "../src/runtime/scheduling/weekly-meetup-announcement-service.js";
 import { SqliteStore } from "../src/storage/database.js";
 
 const REPO_ROOT = process.cwd();
@@ -22,6 +25,7 @@ function createConfig(embedTemplatePath: string): AppConfig {
     codexAppServerCommand: "codex app-server",
     codexHomePath: null,
     watchLocations: [],
+    chatRuntimeControls: null,
     weeklyMeetupAnnouncement: {
       guildId: "guild-1",
       channelId: "announce-channel-1",
@@ -124,6 +128,63 @@ test("WeeklyMeetupAnnouncementService allows catch-up before 21:00 JST but not a
   }
 });
 
+test("WeeklyMeetupAnnouncementService sends test announcement without delivery dedupe and appends a TEST footer marker", async () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "vrc-ai-bot-weekly-meetup-"));
+  const dbPath = join(tempDir, "bot.sqlite");
+  const templatePath = join(tempDir, "weekly-meetup.json");
+  writeFileSync(
+    templatePath,
+    JSON.stringify({
+      title: "AI集会のお知らせ",
+      footer: {
+        text: "LT 登壇〆切は毎週日曜 23:59 JST"
+      }
+    })
+  );
+
+  const sentPayloads: Array<{ embeds: EmbedBuilder[] }> = [];
+  const fakeChannel = {
+    id: "announce-channel-1",
+    type: ChannelType.GuildText,
+    send: async (payload: { embeds: EmbedBuilder[] }) => {
+      sentPayloads.push(payload);
+      return { id: `message-${sentPayloads.length}` };
+    }
+  };
+
+  let store: SqliteStore | undefined;
+  try {
+    store = new SqliteStore(dbPath, REPO_ROOT);
+    store.migrate();
+
+    const service = new WeeklyMeetupAnnouncementService(
+      createConfig(templatePath),
+      store,
+      undefined,
+      {
+        fetchChannel: async () => fakeChannel as never
+      }
+    );
+
+    const first = await service.sendTestAnnouncement(new Date("2026-03-16T09:00:00.000Z"));
+    const second = await service.sendTestAnnouncement(new Date("2026-03-16T09:01:00.000Z"));
+
+    assert.equal(first.ok, true);
+    assert.equal(second.ok, true);
+    assert.equal(sentPayloads.length, 2);
+    assert.equal(store.scheduledDeliveries.get("weekly_meetup", "2026-03-16"), null);
+
+    const embedJson = sentPayloads[0]?.embeds[0]?.toJSON();
+    assert.equal(
+      embedJson?.footer?.text,
+      "LT 登壇〆切は毎週日曜 23:59 JST [TEST]"
+    );
+  } finally {
+    store?.close();
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("WeeklyMeetupAnnouncementService sends to GuildAnnouncement without auto publish", async () => {
   const tempDir = mkdtempSync(join(tmpdir(), "vrc-ai-bot-weekly-meetup-"));
   const dbPath = join(tempDir, "bot.sqlite");
@@ -210,9 +271,35 @@ test("WeeklyMeetupAnnouncementService skips invalid channel types and invalid te
     );
 
     await validChannelBrokenTemplateService.poll(new Date("2026-03-16T09:00:00.000Z"));
+    const testSend = await validChannelBrokenTemplateService.sendTestAnnouncement(
+      new Date("2026-03-16T09:00:00.000Z")
+    );
+    assert.equal(testSend.ok, false);
+    assert.equal(testSend.reason, "template_read_failed");
     assert.equal(store.scheduledDeliveries.get("weekly_meetup", "2026-03-16"), null);
   } finally {
     store?.close();
     rmSync(tempDir, { recursive: true, force: true });
   }
+});
+
+test("resolveNextWeeklyMeetupAnnouncementAt uses the same Monday before 18:00 JST and next week after 18:00 JST", () => {
+  assert.equal(
+    resolveNextWeeklyMeetupAnnouncementAt(
+      new Date("2026-03-16T08:59:00.000Z")
+    ).toISOString(),
+    "2026-03-16T09:00:00.000Z"
+  );
+  assert.equal(
+    resolveNextWeeklyMeetupAnnouncementAt(
+      new Date("2026-03-16T09:00:00.000Z")
+    ).toISOString(),
+    "2026-03-23T09:00:00.000Z"
+  );
+  assert.equal(
+    resolveNextWeeklyMeetupAnnouncementAt(
+      new Date("2026-03-16T09:30:00.000Z")
+    ).toISOString(),
+    "2026-03-23T09:00:00.000Z"
+  );
 });

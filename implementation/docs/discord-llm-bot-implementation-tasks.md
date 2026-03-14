@@ -509,12 +509,14 @@
 - 告知先は `GuildText` または `GuildAnnouncement` だけを許可し、auto publish / crosspost は行わない。
 - 出力契約:
 - 起動時 poll
-- 1 分ごとの定期 poll
+- 次回月曜 18:00 JST までの one-shot timer
 - file-configurable embed template による単一 embed 投稿
+- `admin_control` root 限定の TEST command
 - 実装内容:
-- `runtime/scheduling/weekly-meetup-announcement-service` を実装し、bot 起動時 poll と 1 分ごとの poll から共通利用する。
+- `runtime/scheduling/weekly-meetup-announcement-service` を実装し、bot 起動時 catch-up と次回火点までの one-shot timer から共通利用する。
 - `weekly_meetup_announcement.embed_template_path` から Discord API Embed 相当の単一 JSON object を読み、system が `EmbedBuilder.from(...)` 相当で送信する。
 - 月曜 18:00 を過ぎて 21:00 前に起動した場合は、その週の告知が未配信なら 1 回だけ catch-up する。
+- `admin_control` root の管理者限定 command で、configured channel へ TEST 印付き embed を即時送信できるようにする。test send は `scheduled_delivery` を更新しない。
 - template 読み込み失敗や channel 不正は public へ出さず log のみに残す。
 - 完了条件:
 - 月曜 18:00 JST に bot が起動中なら告知 embed が 1 回投稿される。
@@ -605,7 +607,7 @@
 - 管理者限定 application command を登録し、Discord 側の default permissions と runtime の role 再判定を二重で適用する。
 - owner/admin の command だけを制御命令として受理する。
 - 開始 command では configured `admin_control` root channel 配下に dedicated override thread を作り、その thread ID を override scope とする。
-- 開始 command の `prompt` は command 実行元 place の直前履歴を hidden bootstrap input に束ね、照応を解決した初回依頼として created override thread へ投入できるようにする。
+- 開始 command の `prompt` は created override thread の先頭に visible copy として出しつつ、command 実行元 place の直近 bot 応答を含む最近の会話塊を bootstrap input に束ね、照応を解決した初回依頼として created override thread へ投入できるようにする。
 - override を dedicated override thread 単位に限定し、bot 全体へ波及させない。
 - active override thread では開始者本人の turn を常に Codex `workspace-write` sandbox に載せ、同時に Harness capability のうち `allow_external_fetch`, `allow_knowledge_write`, `allow_moderation` を true にする。Discord thread 作成は system 側の reply-routing で扱い、通常場所と非該当 actor の turn は `read-only` に保つ。
 - 明示終了 command で active override を閉じ、対応する Codex write thread を archive し、Discord thread も archive する。

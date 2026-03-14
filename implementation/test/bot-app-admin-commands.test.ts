@@ -8,20 +8,35 @@ import {
 
 test("buildOverrideCommandDefinitions registers admin-only override commands", () => {
   const commands = buildOverrideCommandDefinitions();
-  const startCommand = commands[0] as {
+  const startCommand = commands.find(
+    (command) => (command as { name?: string }).name === "override-start"
+  ) as {
     name: string;
     default_member_permissions: string | null;
     options?: Array<{ name: string }>;
   };
-  const endCommand = commands[1] as {
+  const endCommand = commands.find(
+    (command) => (command as { name?: string }).name === "override-end"
+  ) as {
+    name: string;
+    default_member_permissions: string | null;
+  };
+  const weeklyTestCommand = commands.find(
+    (command) => (command as { name?: string }).name === "weekly-meetup-test"
+  ) as {
     name: string;
     default_member_permissions: string | null;
   };
 
   assert.equal(startCommand.name, "override-start");
   assert.equal(endCommand.name, "override-end");
+  assert.equal(weeklyTestCommand.name, "weekly-meetup-test");
   assert.ok(startCommand.default_member_permissions);
   assert.equal(startCommand.default_member_permissions, endCommand.default_member_permissions);
+  assert.equal(
+    startCommand.default_member_permissions,
+    weeklyTestCommand.default_member_permissions
+  );
   assert.deepEqual(
     startCommand.options?.map((option) => option.name),
     [
@@ -63,5 +78,6 @@ test("mergeOverrideCommandDefinitions preserves unrelated guild commands", () =>
   assert.equal(merged.filter((command) => command.name === "ping").length, 1);
   assert.equal(merged.filter((command) => command.name === "override-start").length, 1);
   assert.equal(merged.filter((command) => command.name === "override-end").length, 1);
+  assert.equal(merged.filter((command) => command.name === "weekly-meetup-test").length, 1);
   assert.ok(merged.find((command) => command.name === "override-start")?.description);
 });

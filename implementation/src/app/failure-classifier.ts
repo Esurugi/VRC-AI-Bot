@@ -25,6 +25,7 @@ type FailureContext = {
 };
 
 const RETRY_DELAYS_MS = [5 * 60_000, 30 * 60_000, 2 * 60 * 60_000] as const;
+const FORUM_RETRY_DELAYS_MS = [0, 15_000] as const;
 
 export class FailureClassifier {
   classify(error: unknown, context: FailureContext): FailureDecision {
@@ -62,7 +63,19 @@ export class FailureClassifier {
     }
 
     if (isTransientFailure(details)) {
-      const delayMs = RETRY_DELAYS_MS[context.attemptCount];
+      if (isForumPlannerTimeoutFailure(details)) {
+        return {
+          retryable: false,
+          publicCategory: "ai_processing_failed",
+          adminErrorPayload,
+          delayMs: null,
+          terminalReason: "forum_planner_timeout"
+        };
+      }
+
+      const retryDelays =
+        context.watchMode === "forum_longform" ? FORUM_RETRY_DELAYS_MS : RETRY_DELAYS_MS;
+      const delayMs = retryDelays[context.attemptCount];
       if (delayMs == null || context.stage === "post_response") {
         return {
           retryable: false,
@@ -191,6 +204,17 @@ function isTimeoutFailure(error: NormalizedError): boolean {
     error.code === "ETIMEDOUT" ||
     lowered.includes("timeout") ||
     lowered.includes("timed out")
+  );
+}
+
+function isForumPlannerTimeoutFailure(error: NormalizedError): boolean {
+  if (!isTimeoutFailure(error)) {
+    return false;
+  }
+
+  return (
+    error.code === "FORUM_RESEARCH_PLANNER_TIMEOUT" ||
+    error.message.includes("forum research planner timed out")
   );
 }
 

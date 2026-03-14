@@ -160,7 +160,11 @@ export class MessageProcessingService {
       scope: item.scope,
       discordRuntimeFactsPath: runtimeFacts.snapshotPath,
       effectiveContentOverride: resolvedForumBootstrap.preparedPrompt,
-      recentMessages
+      recentMessages,
+      forumResearchPlan: resolvedForumBootstrap.researchPlan,
+      ...(item.watchLocation.mode === "forum_longform"
+        ? { forumRetryCallbacks: this.buildForumRetryCallbacks(item) }
+        : {})
     });
   }
 
@@ -187,6 +191,41 @@ export class MessageProcessingService {
         "failed to send forum bootstrap notice"
       );
     }
+  }
+
+  private buildForumRetryCallbacks(item: QueuedMessage) {
+    let streamWriterPromise:
+      | Promise<{
+          append: (delta: string) => Promise<void>;
+          complete: () => Promise<void>;
+        }>
+      | null = null;
+    let statusSent = false;
+
+    return {
+      onRetryStatus: async (content: string) => {
+        if (statusSent) {
+          return;
+        }
+        statusSent = true;
+        await this.replyDispatchService.sendFollowupInSamePlace(item, content);
+      },
+      onRetryStream: {
+        onAgentMessageDelta: async (delta: string) => {
+          streamWriterPromise ??=
+            this.replyDispatchService.createStreamingReplyInSamePlace(item);
+          const writer = await streamWriterPromise;
+          await writer.append(delta);
+        }
+      },
+      onRetryCompleted: async () => {
+        if (!streamWriterPromise) {
+          return;
+        }
+        const writer = await streamWriterPromise;
+        await writer.complete();
+      }
+    };
   }
 
   private async runSoftBlockPreflight(item: QueuedMessage): Promise<boolean> {
@@ -247,6 +286,7 @@ export class MessageProcessingService {
     });
     const notice = buildFailureNotice({
       category: decision.publicCategory,
+      retryable: decision.retryable,
       ...(decision.delayMs == null ? {} : { delayMs: decision.delayMs })
     });
 
@@ -310,6 +350,7 @@ export class MessageProcessingService {
     });
     const notice = buildFailureNotice({
       category: decision.publicCategory,
+      retryable: decision.retryable,
       ...(decision.delayMs == null ? {} : { delayMs: decision.delayMs })
     });
 
@@ -332,13 +373,13 @@ export class MessageProcessingService {
       this.retryScheduler.schedule({
         envelope: buildRetrySchedulerEnvelope({
           guildId: item.guild_id,
-          channelId: item.channel_id,
+          messageChannelId: item.message_channel_id,
           messageId: item.message_id,
           replyThreadId: item.reply_thread_id
         }),
         watchLocation: resolveRetryWatchLocation(this.config, {
           guildId: item.guild_id,
-          channelId: item.channel_id,
+          watchChannelId: item.watch_channel_id,
           mode: item.place_mode
         }),
         stage: "fetch_or_resolve",
@@ -353,12 +394,12 @@ export class MessageProcessingService {
       guildId: item.guild_id,
       messageId: item.message_id,
       placeMode: item.place_mode,
-      channelId: item.channel_id,
+      channelId: item.message_channel_id,
       error,
       stage: "fetch_or_resolve",
       category: decision.publicCategory
     });
-    this.markMessageCompletedById(item.message_id, item.channel_id);
+    this.markMessageCompletedById(item.message_id, item.message_channel_id);
   }
 
   private startTypingIndicator(channel: GuildTextBasedChannel): () => void {

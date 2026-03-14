@@ -31,6 +31,7 @@ import {
 import type { SqliteStore, RetryJobRow } from "../../storage/database.js";
 import type { FailurePublicCategory, FailureStage } from "../../app/failure-classifier.js";
 import type { SanctionNotificationPayload } from "../../app/moderation-integration.js";
+import { appendRuntimeTrace } from "../../observability/runtime-trace.js";
 import type {
   FailureReplyTarget,
   QueuedMessage,
@@ -63,6 +64,27 @@ export class ReplyDispatchService {
     routed: RoutedHarnessMessage | null
   ): Promise<FailureReplyTarget> {
     if (!routed) {
+      return buildSamePlaceReplyTarget(item);
+    }
+
+    if (
+      routed.primaryReplyAlreadySent &&
+      routed.response.outcome === "chat_reply" &&
+      routed.response.public_text?.trim()
+    ) {
+      await this.sendReferenceAppendixIfNeeded(
+        {
+          sendFollowupInSamePlace: async (content) =>
+            this.sendFollowupInSamePlace(item, content)
+        },
+        {
+          envelope: item.envelope,
+          watchLocation: item.watchLocation,
+          actorRole: item.actorRole,
+          scope: item.scope
+        },
+        routed.response
+      );
       return buildSamePlaceReplyTarget(item);
     }
 
@@ -381,10 +403,18 @@ export class ReplyDispatchService {
         }
       });
     }
+    appendRuntimeTrace("codex-app-server", "discord_reply_sent", {
+      messageId: item.envelope.messageId,
+      channelId: item.envelope.channelId,
+      watchMode: item.watchLocation.mode,
+      chunkCount: chunks.length,
+      firstChunkLength: (firstChunk ?? "").length
+    });
   }
 
   async sendFollowupInSamePlace(item: QueuedMessage, content: string): Promise<void> {
-    for (const chunk of splitPlainTextReplies(content)) {
+    const chunks = splitPlainTextReplies(content);
+    for (const chunk of chunks) {
       await item.message.channel.send({
         content: chunk,
         allowedMentions: {
@@ -392,6 +422,78 @@ export class ReplyDispatchService {
         }
       });
     }
+    appendRuntimeTrace("codex-app-server", "discord_followup_sent", {
+      messageId: item.envelope.messageId,
+      channelId: item.envelope.channelId,
+      watchMode: item.watchLocation.mode,
+      chunkCount: chunks.length
+    });
+  }
+
+  async createStreamingReplyInSamePlace(item: QueuedMessage): Promise<{
+    append: (delta: string) => Promise<void>;
+    complete: () => Promise<void>;
+  }> {
+    const sentMessages: Array<{
+      edit: (input: { content: string; allowedMentions: { parse: [] } }) => Promise<unknown>;
+    }> = [];
+    const sentContents: string[] = [];
+    let accumulated = "";
+    let flushPromise = Promise.resolve();
+    let flushTimer: NodeJS.Timeout | null = null;
+
+    const flushNow = async (): Promise<void> => {
+      const chunks = splitPlainTextReplies(accumulated || " ");
+      for (let index = 0; index < chunks.length; index += 1) {
+        const chunk = chunks[index] ?? "";
+        if (sentMessages[index]) {
+          if (sentContents[index] === chunk) {
+            continue;
+          }
+          await sentMessages[index]?.edit({
+            content: chunk,
+            allowedMentions: { parse: [] }
+          });
+          sentContents[index] = chunk;
+          continue;
+        }
+
+        const message = await item.message.channel.send({
+          content: chunk,
+          allowedMentions: {
+            parse: []
+          }
+        });
+        sentMessages.push(message);
+        sentContents.push(chunk);
+      }
+    };
+
+    const scheduleFlush = (): void => {
+      if (flushTimer) {
+        return;
+      }
+
+      flushTimer = setTimeout(() => {
+        flushTimer = null;
+        flushPromise = flushPromise.then(() => flushNow());
+      }, 300);
+    };
+
+    return {
+      append: async (delta: string) => {
+        accumulated += delta;
+        scheduleFlush();
+      },
+      complete: async () => {
+        if (flushTimer) {
+          clearTimeout(flushTimer);
+          flushTimer = null;
+        }
+        flushPromise = flushPromise.then(() => flushNow());
+        await flushPromise;
+      }
+    };
   }
 
   private async sendReferenceAppendixIfNeeded(
@@ -411,6 +513,13 @@ export class ReplyDispatchService {
     }
 
     await dispatchTarget.sendFollowupInSamePlace(referenceReply);
+    appendRuntimeTrace("codex-app-server", "discord_reference_appendix_sent", {
+      messageId: messageContext.envelope.messageId,
+      channelId: messageContext.envelope.channelId,
+      watchMode: messageContext.watchLocation.mode,
+      sourceCount: extractReferenceUrls(response.sources_used).length,
+      chunkCount: splitPlainTextReplies(referenceReply).length
+    });
   }
 
   private async processKnowledgeIngest(
@@ -590,7 +699,7 @@ export function attachReplyTarget(
 export function buildSchedulerEnvelope(job: RetryJobRow): MessageEnvelope {
   return {
     guildId: job.guild_id,
-    channelId: job.channel_id,
+    channelId: job.message_channel_id,
     messageId: job.message_id,
     authorId: "retry-scheduler",
     placeType: job.reply_thread_id ? "public_thread" : "chat_channel",

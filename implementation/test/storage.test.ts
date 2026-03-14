@@ -585,8 +585,9 @@ test("message processing pending_retry requires explicit reacquire and retry job
 
     store.retryJobs.upsert({
       messageId: "message-1",
-      channelId: "channel-1",
       guildId: "guild-1",
+      messageChannelId: "channel-1",
+      watchChannelId: "channel-1",
       attemptCount: 1,
       nextAttemptAt: "2026-03-12T00:05:00.000Z",
       lastFailureCategory: "fetch_timeout",
@@ -597,8 +598,9 @@ test("message processing pending_retry requires explicit reacquire and retry job
     });
     store.retryJobs.upsert({
       messageId: "message-2",
-      channelId: "channel-2",
       guildId: "guild-1",
+      messageChannelId: "channel-2",
+      watchChannelId: "channel-2",
       attemptCount: 2,
       nextAttemptAt: "2026-03-12T01:00:00.000Z",
       lastFailureCategory: "ai_processing_failed",

@@ -4,39 +4,23 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import type { ForumPromptPreparationExecutor } from "../src/codex/codex-exec-prompt-preprocessor-adapter.js";
 import { SessionPolicyResolver } from "../src/codex/session-policy.js";
+import type { ForumResearchPlan } from "../src/forum-research/types.js";
 import { ForumFirstTurnPreprocessor } from "../src/runtime/forum/forum-first-turn-preprocessor.js";
 import { SqliteStore } from "../src/storage/database.js";
 
-test("ForumFirstTurnPreprocessor prepares starter text only for the first forum session turn", async () => {
+test("ForumFirstTurnPreprocessor uses planner output on the first forum session turn", async () => {
   const fixture = createFixture();
-  const message = createForumMessage({
-    messageId: "message-2",
-    content: "follow-up",
-    starterContent: "thread starter"
-  });
 
   try {
     const result = await fixture.preprocessor.resolveEffectiveContentOverride({
-      message,
-      envelope: {
-        guildId: "guild-1",
-        channelId: "forum-thread-1",
+      message: createForumMessage({
         messageId: "message-2",
-        authorId: "user-1",
-        placeType: "forum_post_thread",
-        rawPlaceType: "PublicThread",
         content: "follow-up",
-        urls: [],
-        receivedAt: "2026-03-10T00:00:00.000Z"
-      },
-      watchLocation: {
-        guildId: "guild-1",
-        channelId: "forum-parent-1",
-        mode: "forum_longform",
-        defaultScope: "conversation_only"
-      },
+        starterContent: "thread starter"
+      }),
+      envelope: createEnvelope("message-2", "follow-up"),
+      watchLocation: createWatchLocation(),
       actorRole: "user",
       scope: "conversation_only"
     });
@@ -44,12 +28,16 @@ test("ForumFirstTurnPreprocessor prepares starter text only for the first forum 
     assert.deepEqual(result, {
       preparedPrompt: "prepared::thread starter",
       progressNotice: "論点と前提を整理しながら考えています。少し待ってください。",
-      wasPreprocessed: true
+      wasPreprocessed: true,
+      researchPlan: createResearchPlan()
     });
-    assert.deepEqual(fixture.executor.calls, [
+    assert.deepEqual(fixture.planner.calls, [
       {
-        threadId: "forum-thread-1",
-        starterMessage: "thread starter"
+        messageId: "forum-thread-1",
+        currentMessage: "follow-up",
+        starterMessage: "thread starter",
+        isInitialTurn: true,
+        threadId: "forum-thread-1"
       }
     ]);
   } finally {
@@ -65,26 +53,11 @@ test("ForumFirstTurnPreprocessor reports preparation needed only before the firs
       content: "follow-up",
       starterContent: "thread starter"
     }),
-    envelope: {
-      guildId: "guild-1",
-      channelId: "forum-thread-1",
-      messageId: "message-2",
-      authorId: "user-1",
-      placeType: "forum_post_thread",
-      rawPlaceType: "PublicThread",
-      content: "follow-up",
-      urls: [] as string[],
-      receivedAt: "2026-03-10T00:00:00.000Z"
-    },
-    watchLocation: {
-      guildId: "guild-1",
-      channelId: "forum-parent-1",
-      mode: "forum_longform",
-      defaultScope: "conversation_only"
-    },
+    envelope: createEnvelope("message-2", "follow-up"),
+    watchLocation: createWatchLocation(),
     actorRole: "user" as const,
     scope: "conversation_only" as const
-  } as const;
+  };
 
   try {
     assert.equal(await fixture.preprocessor.needsPreparation(input), true);
@@ -115,26 +88,11 @@ test("ForumFirstTurnPreprocessor reports preparation needed only before the firs
   }
 });
 
-test("ForumFirstTurnPreprocessor skips preprocessing when a forum session binding already exists", async () => {
+test("ForumFirstTurnPreprocessor skips planner when a forum session binding already exists", async () => {
   const fixture = createFixture();
   const identity = fixture.sessionPolicyResolver.resolveForMessage({
-    envelope: {
-      guildId: "guild-1",
-      channelId: "forum-thread-1",
-      messageId: "message-1",
-      authorId: "user-1",
-      placeType: "forum_post_thread",
-      rawPlaceType: "PublicThread",
-      content: "starter",
-      urls: [],
-      receivedAt: "2026-03-10T00:00:00.000Z"
-    },
-    watchLocation: {
-      guildId: "guild-1",
-      channelId: "forum-parent-1",
-      mode: "forum_longform",
-      defaultScope: "conversation_only"
-    },
+    envelope: createEnvelope("message-1", "starter"),
+    watchLocation: createWatchLocation(),
     actorRole: "user",
     scope: "conversation_only",
     workspaceWriteActive: false
@@ -159,23 +117,8 @@ test("ForumFirstTurnPreprocessor skips preprocessing when a forum session bindin
         content: "follow-up",
         starterContent: "thread starter"
       }),
-      envelope: {
-        guildId: "guild-1",
-        channelId: "forum-thread-1",
-        messageId: "message-2",
-        authorId: "user-1",
-        placeType: "forum_post_thread",
-        rawPlaceType: "PublicThread",
-        content: "follow-up",
-        urls: [],
-        receivedAt: "2026-03-10T00:00:00.000Z"
-      },
-      watchLocation: {
-        guildId: "guild-1",
-        channelId: "forum-parent-1",
-        mode: "forum_longform",
-        defaultScope: "conversation_only"
-      },
+      envelope: createEnvelope("message-2", "follow-up"),
+      watchLocation: createWatchLocation(),
       actorRole: "user",
       scope: "conversation_only"
     });
@@ -183,17 +126,18 @@ test("ForumFirstTurnPreprocessor skips preprocessing when a forum session bindin
     assert.deepEqual(result, {
       preparedPrompt: null,
       progressNotice: null,
-      wasPreprocessed: false
+      wasPreprocessed: false,
+      researchPlan: null
     });
-    assert.deepEqual(fixture.executor.calls, []);
+    assert.deepEqual(fixture.planner.calls, []);
   } finally {
     fixture.close();
   }
 });
 
-test("ForumFirstTurnPreprocessor falls back to raw content when preprocessing fails", async () => {
+test("ForumFirstTurnPreprocessor falls back cleanly when planner fails", async () => {
   const fixture = createFixture({
-    executorError: new Error("codex exec failed")
+    plannerError: new Error("forum planner failed")
   });
 
   try {
@@ -203,23 +147,8 @@ test("ForumFirstTurnPreprocessor falls back to raw content when preprocessing fa
         content: "follow-up",
         starterContent: "thread starter"
       }),
-      envelope: {
-        guildId: "guild-1",
-        channelId: "forum-thread-1",
-        messageId: "message-2",
-        authorId: "user-1",
-        placeType: "forum_post_thread",
-        rawPlaceType: "PublicThread",
-        content: "follow-up",
-        urls: [],
-        receivedAt: "2026-03-10T00:00:00.000Z"
-      },
-      watchLocation: {
-        guildId: "guild-1",
-        channelId: "forum-parent-1",
-        mode: "forum_longform",
-        defaultScope: "conversation_only"
-      },
+      envelope: createEnvelope("message-2", "follow-up"),
+      watchLocation: createWatchLocation(),
       actorRole: "user",
       scope: "conversation_only"
     });
@@ -227,7 +156,8 @@ test("ForumFirstTurnPreprocessor falls back to raw content when preprocessing fa
     assert.deepEqual(result, {
       preparedPrompt: null,
       progressNotice: null,
-      wasPreprocessed: false
+      wasPreprocessed: false,
+      researchPlan: null
     });
     assert.equal(fixture.warns.length, 1);
   } finally {
@@ -235,35 +165,53 @@ test("ForumFirstTurnPreprocessor falls back to raw content when preprocessing fa
   }
 });
 
-function createFixture(input: { executorError?: Error } = {}) {
+function createFixture(input: { plannerError?: Error } = {}) {
   const tempDir = mkdtempSync(join(tmpdir(), "vrc-ai-bot-forum-pre-"));
   const dbPath = join(tempDir, "bot.sqlite");
   const store = new SqliteStore(dbPath, process.cwd());
   store.migrate();
   const sessionPolicyResolver = new SessionPolicyResolver();
-  const executor = new FakeExecutor(input.executorError);
+  const planner = new FakePlanner(input.plannerError);
   const warns: Array<Record<string, unknown>> = [];
-  const preprocessor = new ForumFirstTurnPreprocessor(
-    store,
-    sessionPolicyResolver,
-    executor,
-    {
-      warn(context: unknown) {
-        warns.push(context as Record<string, unknown>);
-      }
-    } as never
-  );
+  const preprocessor = new ForumFirstTurnPreprocessor(store, sessionPolicyResolver, planner as never, {
+    warn(context: unknown) {
+      warns.push(context as Record<string, unknown>);
+    }
+  } as never);
 
   return {
     store,
     sessionPolicyResolver,
-    executor,
+    planner,
     warns,
     preprocessor,
     close() {
       store.close();
       rmSync(tempDir, { recursive: true, force: true });
     }
+  };
+}
+
+function createWatchLocation() {
+  return {
+    guildId: "guild-1",
+    channelId: "forum-parent-1",
+    mode: "forum_longform" as const,
+    defaultScope: "conversation_only" as const
+  };
+}
+
+function createEnvelope(messageId: string, content: string) {
+  return {
+    guildId: "guild-1",
+    channelId: "forum-thread-1",
+    messageId,
+    authorId: "user-1",
+    placeType: "forum_post_thread" as const,
+    rawPlaceType: "PublicThread",
+    content,
+    urls: [],
+    receivedAt: "2026-03-10T00:00:00.000Z"
   };
 }
 
@@ -274,6 +222,7 @@ function createForumMessage(input: {
 }) {
   return {
     id: input.messageId,
+    content: input.content,
     channel: {
       id: "forum-thread-1",
       isThread: () => true,
@@ -284,26 +233,47 @@ function createForumMessage(input: {
   } as never;
 }
 
-class FakeExecutor implements ForumPromptPreparationExecutor {
-  readonly calls: Array<{ threadId: string; starterMessage: string }> = [];
+function createResearchPlan(): ForumResearchPlan {
+  return {
+    progress_notice: "論点と前提を整理しながら考えています。少し待ってください。",
+    effective_user_text: "prepared::thread starter",
+    worker_tasks: [
+      {
+        worker_id: "worker-1",
+        question: "subquestion",
+        search_focus: "focus",
+        must_cover: ["point-a"],
+        min_sources: 2,
+        max_sources: 3
+      }
+    ],
+    synthesis_brief: "brief"
+  };
+}
 
-  constructor(private readonly executorError?: Error) {}
-
-  async prepareForumFirstTurnPrompt(input: {
+class FakePlanner {
+  readonly calls: Array<{
+    messageId: string;
+    currentMessage: string;
+    starterMessage: string | null;
+    isInitialTurn: boolean;
     threadId: string;
-    starterMessage: string;
-  }): Promise<{
-    preparedPrompt: string;
-    progressNotice: string | null;
-  }> {
+  }> = [];
+
+  constructor(private readonly plannerError?: Error) {}
+
+  async plan(input: {
+    messageId: string;
+    currentMessage: string;
+    starterMessage: string | null;
+    isInitialTurn: boolean;
+    threadId: string;
+  }): Promise<ForumResearchPlan> {
     this.calls.push(input);
-    if (this.executorError) {
-      throw this.executorError;
+    if (this.plannerError) {
+      throw this.plannerError;
     }
 
-    return {
-      preparedPrompt: `prepared::${input.starterMessage}`,
-      progressNotice: "論点と前提を整理しながら考えています。少し待ってください。"
-    };
+    return createResearchPlan();
   }
 }

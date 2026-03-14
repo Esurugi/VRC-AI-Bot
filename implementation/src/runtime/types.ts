@@ -38,13 +38,13 @@ export function buildSamePlaceReplyTarget(item: QueuedMessage): FailureReplyTarg
 
 export function buildRetrySchedulerEnvelope(input: {
   guildId: string;
-  channelId: string;
+  messageChannelId: string;
   messageId: string;
   replyThreadId: string | null;
 }): MessageEnvelope {
   return {
     guildId: input.guildId,
-    channelId: input.channelId,
+    channelId: input.messageChannelId,
     messageId: input.messageId,
     authorId: "retry-scheduler",
     placeType: input.replyThreadId ? "public_thread" : "chat_channel",
@@ -59,19 +59,19 @@ export function resolveRetryWatchLocation(
   config: AppConfig,
   input: {
     guildId: string;
-    channelId: string;
+    watchChannelId: string;
     mode: WatchLocationConfig["mode"];
   }
 ): WatchLocationConfig {
   const resolved = config.watchLocations.find(
     (location) =>
       location.guildId === input.guildId &&
-      location.channelId === input.channelId &&
+      location.channelId === input.watchChannelId &&
       location.mode === input.mode
   );
   if (!resolved) {
     throw new Error(
-      `watch location not found for retry job: ${input.guildId}:${input.channelId}:${input.mode}`
+      `watch location not found for retry job: ${input.guildId}:${input.watchChannelId}:${input.mode}`
     );
   }
   return resolved;

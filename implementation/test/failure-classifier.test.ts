@@ -26,6 +26,15 @@ test("FailureClassifier marks timeout and service errors as transient with stage
   assert.equal(serviceDecision.retryable, true);
   assert.equal(serviceDecision.publicCategory, "ai_processing_failed");
   assert.equal(serviceDecision.delayMs, 30 * 60_000);
+
+  const forumTimeoutDecision = classifier.classify(new Error("request timed out"), {
+    stage: "fetch_or_resolve",
+    attemptCount: 0,
+    watchMode: "forum_longform"
+  });
+  assert.equal(forumTimeoutDecision.retryable, true);
+  assert.equal(forumTimeoutDecision.publicCategory, "fetch_timeout");
+  assert.equal(forumTimeoutDecision.delayMs, 0);
 });
 
 test("FailureClassifier marks blocked or missing resources as permanent", () => {
@@ -77,4 +86,23 @@ test("FailureClassifier stops retrying after three attempts or in post_response 
   });
   assert.equal(postResponse.retryable, false);
   assert.equal(postResponse.publicCategory, "retry_limit_reached");
+});
+
+test("FailureClassifier makes forum planner timeout terminal", () => {
+  const classifier = new FailureClassifier();
+
+  const decision = classifier.classify(
+    Object.assign(new Error("forum research planner timed out: request timed out"), {
+      code: "FORUM_RESEARCH_PLANNER_TIMEOUT"
+    }),
+    {
+      stage: "fetch_or_resolve",
+      attemptCount: 0,
+      watchMode: "forum_longform"
+    }
+  );
+
+  assert.equal(decision.retryable, false);
+  assert.equal(decision.publicCategory, "ai_processing_failed");
+  assert.equal(decision.terminalReason, "forum_planner_timeout");
 });

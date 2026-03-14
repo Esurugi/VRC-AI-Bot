@@ -69,6 +69,7 @@ type TurnCompletion = {
   lastAgentMessage: string | null;
   observedPublicUrls: Set<string>;
   control: ActiveTurnControlState;
+  stream: TurnStreamState | null;
 };
 
 export type HarnessTurnSessionMetadata = {
@@ -80,6 +81,11 @@ export type HarnessTurnSessionMetadata = {
 
 export type TurnObservations = {
   observed_public_urls: string[];
+};
+
+export type StreamingTextTurnCallbacks = {
+  onAgentMessageDelta?: (delta: string) => void | Promise<void>;
+  onReasoningSummaryDelta?: (delta: string) => void | Promise<void>;
 };
 
 export type TurnControlPolicy = {
@@ -103,6 +109,12 @@ type ActiveTurnControlState = {
   broadeningSearchSteerIssued: boolean;
 };
 
+type TurnStreamState = StreamingTextTurnCallbacks & {
+  streamedText: string;
+};
+
+const BEST_EFFORT_CONTROL_REQUEST_TIMEOUT_MS = 5_000;
+
 export const HARNESS_DEVELOPER_INSTRUCTIONS = [
   "You are the harness core for a Discord assistant running inside a local repository.",
   "Repository harness artifacts are defined by the repository-root AGENTS.md. Treat it as the canonical runtime harness document.",
@@ -124,7 +136,14 @@ export const HARNESS_DEVELOPER_INSTRUCTIONS = [
   "If place.mode is forum_longform and you rely on searched public sources, add inline numeric citations such as [1], [2] in public_text at the supported statements.",
   "If place.mode is forum_longform, keep sources_used as the cited public URLs in first-citation order so System can emit a separate reference message.",
   "task.phase tells you whether this turn is intent-only, answer generation, or retry generation.",
-  "If the input includes forum_loop, treat it as hidden control-plane metadata. Follow its kind and embedded instructions exactly, and never expose forum_loop metadata in the final user-facing answer.",
+  "If the input kind is forum_research_planner, return only the requested JSON object. Create up to four atomic worker tasks that each investigate one clear subquestion. Do not perform external research in the planner turn.",
+  "If the input kind is forum_research_worker, investigate only the assigned subquestion. Return structured findings and public citations. Do not split the task further.",
+  "If the input kind is forum_research_streaming_final, return only the final user-facing Japanese answer body as plain text. Do not return JSON, markdown wrappers, or meta commentary.",
+  "If the input includes forum_research_bundle, treat it as hidden control-plane metadata. Never expose it directly in user-facing text.",
+  "If forum_research_bundle is present, the bundled evidence already satisfies the public-research requirement for this answer. Prefer that bundled evidence over fresh searching.",
+  "If forum_research_bundle.retry_kind is timeout_recovery, do not start new research. Rebuild the answer only from the bundled evidence and the current request.",
+  "If forum_research_bundle.source_catalog is present, cite those sources with inline numeric citations such as [1], [2] using the provided numbering.",
+  "If forum_research_bundle.distinct_source_target is present, aim to ground the answer with at least that many distinct public sources when the bundled evidence supports it.",
   "On task.phase=intent, decide requested capabilities and return moderation_signal based on the user's dangerous or prohibited control request. For normal requests, set moderation_signal.violation_category to none.",
   "task.retry_context is control-plane metadata, not user input. Follow it exactly when present.",
   "If task.retry_context.kind is output_safety and place.mode is forum_longform and capabilities.allow_external_fetch is true, you may perform fresh public research now. Exclude blocked, private, and non-public sources, then answer from public grounding plus your reasoning.",
@@ -263,6 +282,16 @@ export class CodexAppServerClient {
     return threadId;
   }
 
+  async startEphemeralThread(
+    sandbox: CodexSandboxMode,
+    modelProfile: string
+  ): Promise<string> {
+    return this.startThread(
+      sandbox,
+      resolveCodexExecutionProfile(modelProfile)
+    );
+  }
+
   async resumeThread(threadId: string, sandbox: CodexSandboxMode): Promise<void> {
     await this.request("thread/resume", {
       threadId,
@@ -284,6 +313,11 @@ export class CodexAppServerClient {
     });
   }
 
+  async closeEphemeralThread(threadId: string): Promise<void> {
+    await this.archiveThread(threadId);
+    await this.unsubscribeThread(threadId).catch(() => undefined);
+  }
+
   async compactThread(threadId: string): Promise<void> {
     await this.request("thread/compact/start", {
       threadId
@@ -295,10 +329,14 @@ export class CodexAppServerClient {
   }
 
   async interruptTurn(threadId: string, turnId: string): Promise<void> {
-    await this.request("turn/interrupt", {
-      threadId,
-      turnId
-    });
+    await this.requestWithTimeout(
+      "turn/interrupt",
+      {
+        threadId,
+        turnId
+      },
+      BEST_EFFORT_CONTROL_REQUEST_TIMEOUT_MS
+    );
   }
 
   async steerTurn(
@@ -306,11 +344,15 @@ export class CodexAppServerClient {
     turnId: string,
     prompt: string
   ): Promise<void> {
-    await this.request("turn/steer", buildTurnSteerParams({
-      threadId,
-      turnId,
-      prompt
-    }));
+    await this.requestWithTimeout(
+      "turn/steer",
+      buildTurnSteerParams({
+        threadId,
+        turnId,
+        prompt
+      }),
+      BEST_EFFORT_CONTROL_REQUEST_TIMEOUT_MS
+    );
   }
 
   async runHarnessRequest(
@@ -352,6 +394,7 @@ export class CodexAppServerClient {
     outputSchema: object;
     parser: (value: unknown) => T;
     sessionMetadata?: HarnessTurnSessionMetadata;
+    modelProfile?: string;
     timeoutMs?: number;
     controlPolicy?: TurnControlPolicy | null;
   }): Promise<{
@@ -367,6 +410,7 @@ export class CodexAppServerClient {
       ...(input.sessionMetadata === undefined
         ? {}
         : { sessionMetadata: input.sessionMetadata }),
+      ...(input.modelProfile === undefined ? {} : { modelProfile: input.modelProfile }),
       ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
       ...(input.controlPolicy === undefined
         ? {}
@@ -384,6 +428,7 @@ export class CodexAppServerClient {
     inputPayload: unknown;
     allowExternalFetch: boolean;
     sessionMetadata?: HarnessTurnSessionMetadata;
+    modelProfile?: string;
     timeoutMs?: number;
     controlPolicy?: TurnControlPolicy | null;
   }): Promise<{
@@ -397,10 +442,45 @@ export class CodexAppServerClient {
       ...(input.sessionMetadata === undefined
         ? {}
         : { sessionMetadata: input.sessionMetadata }),
+      ...(input.modelProfile === undefined ? {} : { modelProfile: input.modelProfile }),
       ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
       ...(input.controlPolicy === undefined
         ? {}
         : { controlPolicy: input.controlPolicy })
+    });
+
+    return {
+      response: result.lastAgentMessage,
+      observations: result.observations
+    };
+  }
+
+  async runStreamingTextTurn(input: {
+    threadId: string;
+    inputPayload: unknown;
+    allowExternalFetch: boolean;
+    sessionMetadata?: HarnessTurnSessionMetadata;
+    modelProfile?: string;
+    timeoutMs?: number;
+    controlPolicy?: TurnControlPolicy | null;
+    callbacks?: StreamingTextTurnCallbacks;
+  }): Promise<{
+    response: string | null;
+    observations: TurnObservations;
+  }> {
+    const result = await this.runTurnAndReadMessage({
+      threadId: input.threadId,
+      inputPayload: input.inputPayload,
+      allowExternalFetch: input.allowExternalFetch,
+      ...(input.sessionMetadata === undefined
+        ? {}
+        : { sessionMetadata: input.sessionMetadata }),
+      ...(input.modelProfile === undefined ? {} : { modelProfile: input.modelProfile }),
+      ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
+      ...(input.controlPolicy === undefined
+        ? {}
+        : { controlPolicy: input.controlPolicy }),
+      ...(input.callbacks === undefined ? {} : { streamingCallbacks: input.callbacks })
     });
 
     return {
@@ -525,8 +605,10 @@ export class CodexAppServerClient {
     allowExternalFetch: boolean;
     outputSchema?: object;
     sessionMetadata?: HarnessTurnSessionMetadata;
+    modelProfile?: string;
     timeoutMs?: number;
     controlPolicy?: TurnControlPolicy | null;
+    streamingCallbacks?: StreamingTextTurnCallbacks;
   }): Promise<{
     lastAgentMessage: string | null;
     observations: TurnObservations;
@@ -535,10 +617,11 @@ export class CodexAppServerClient {
     const completionHandle = this.waitForTurnCompletion({
       threadId: input.threadId,
       allowExternalFetch: input.allowExternalFetch,
-      controlPolicy: input.controlPolicy ?? null
+      controlPolicy: input.controlPolicy ?? null,
+      streamingCallbacks: input.streamingCallbacks ?? null
     });
     const executionProfile = resolveCodexExecutionProfile(
-      input.sessionMetadata?.modelProfile ?? "default:gpt-5.4"
+      input.modelProfile ?? input.sessionMetadata?.modelProfile ?? "default:gpt-5.4"
     );
 
     const turnStartResult = (await this.request(
@@ -582,6 +665,7 @@ export class CodexAppServerClient {
     threadId: string;
     allowExternalFetch: boolean;
     controlPolicy: TurnControlPolicy | null;
+    streamingCallbacks: StreamingTextTurnCallbacks | null;
   }): {
     promise: Promise<{
       lastAgentMessage: string | null;
@@ -615,7 +699,13 @@ export class CodexAppServerClient {
           findInPageActionCount: 0,
           idleSteerIssued: false,
           broadeningSearchSteerIssued: false
-        }
+        },
+        stream: input.streamingCallbacks
+          ? {
+              ...input.streamingCallbacks,
+              streamedText: ""
+            }
+          : null
       };
       queue.push(completion);
       this.pendingTurnCompletions.set(input.threadId, queue);
@@ -710,7 +800,7 @@ export class CodexAppServerClient {
 
       return tracked.state.value;
     } catch (error) {
-      const activeTurnId = input.turnId ?? input.completion.completion.turnId;
+      const activeTurnId = input.completion.completion.turnId ?? input.turnId;
       if (activeTurnId) {
         try {
           await this.interruptTurn(input.threadId, activeTurnId);
@@ -752,6 +842,67 @@ export class CodexAppServerClient {
         params: summarizeTraceParams(method, params)
       });
       this.pending.set(id, { method, resolve, reject });
+      this.process?.stdin.write(`${JSON.stringify(payload)}\n`);
+    });
+  }
+
+  private requestWithTimeout(
+    method: string,
+    params: unknown,
+    timeoutMs: number
+  ): Promise<unknown> {
+    if (!this.process) {
+      throw new Error("codex app-server is not running");
+    }
+
+    const id = this.nextRequestId++;
+    const payload: JsonRpcRequest = {
+      jsonrpc: "2.0",
+      id,
+      method,
+      params
+    };
+
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        this.pending.delete(id);
+        appendRuntimeTrace("codex-app-server", "jsonrpc_request_timeout", {
+          id,
+          method,
+          timeoutMs
+        });
+        reject(new Error(`codex ${method} timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+
+      appendRuntimeTrace("codex-app-server", "jsonrpc_request", {
+        id,
+        method,
+        params: summarizeTraceParams(method, params)
+      });
+      this.pending.set(id, {
+        method,
+        resolve: (value) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          clearTimeout(timer);
+          resolve(value);
+        },
+        reject: (error) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          clearTimeout(timer);
+          reject(error);
+        }
+      });
       this.process?.stdin.write(`${JSON.stringify(payload)}\n`);
     });
   }
@@ -848,6 +999,7 @@ export class CodexAppServerClient {
       method === "item/started" ||
       method === "item/completed" ||
       method === "codex/event/item_completed" ||
+      method === "item/agentMessage/delta" ||
       method === "item/reasoning/summaryTextDelta" ||
       method === "codex/event/reasoning_summary_delta" ||
       method === "codex/event/agent_message"
@@ -887,6 +1039,40 @@ export class CodexAppServerClient {
       }
 
       completion.lastAgentMessage = lastAgentMessage;
+      return;
+    }
+
+    if (method === "item/agentMessage/delta") {
+      const completion = this.findTurnCompletion(params);
+      if (!completion) {
+        return;
+      }
+
+      const delta = getAgentMessageDelta(params);
+      if (!delta) {
+        return;
+      }
+
+      completion.lastAgentMessage = `${completion.lastAgentMessage ?? ""}${delta}`;
+      this.emitAgentMessageDelta(completion, delta);
+      return;
+    }
+
+    if (
+      method === "item/reasoning/summaryTextDelta" ||
+      method === "codex/event/reasoning_summary_delta"
+    ) {
+      const completion = this.findTurnCompletion(params);
+      if (!completion) {
+        return;
+      }
+
+      const delta = getReasoningSummaryDelta(params);
+      if (!delta) {
+        return;
+      }
+
+      this.emitReasoningSummaryDelta(completion, delta);
       return;
     }
 
@@ -932,7 +1118,11 @@ export class CodexAppServerClient {
         return;
       }
       completion.resolve({
-        lastAgentMessage: completion.lastAgentMessage,
+        lastAgentMessage:
+          completion.lastAgentMessage ??
+          (completion.stream?.streamedText.trim()
+            ? completion.stream.streamedText
+            : null),
         turnId: completion.turnId,
         observedPublicUrls: sortStrings(completion.observedPublicUrls)
       });
@@ -1039,6 +1229,47 @@ export class CodexAppServerClient {
     for (const url of observedUrls) {
       completion.observedPublicUrls.add(url);
     }
+  }
+
+  private emitAgentMessageDelta(
+    completion: TurnCompletion,
+    delta: string
+  ): void {
+    if (!completion.stream?.onAgentMessageDelta) {
+      return;
+    }
+
+    completion.stream.streamedText += delta;
+    void Promise.resolve(completion.stream.onAgentMessageDelta(delta)).catch((error) => {
+      this.logger.debug(
+        {
+          error: error instanceof Error ? error.message : String(error),
+          threadId: completion.threadId,
+          turnId: completion.turnId
+        },
+        "streaming agent-message callback failed"
+      );
+    });
+  }
+
+  private emitReasoningSummaryDelta(
+    completion: TurnCompletion,
+    delta: string
+  ): void {
+    if (!completion.stream?.onReasoningSummaryDelta) {
+      return;
+    }
+
+    void Promise.resolve(completion.stream.onReasoningSummaryDelta(delta)).catch((error) => {
+      this.logger.debug(
+        {
+          error: error instanceof Error ? error.message : String(error),
+          threadId: completion.threadId,
+          turnId: completion.turnId
+        },
+        "streaming reasoning-summary callback failed"
+      );
+    });
   }
 
   private recordTurnActivity(
@@ -1688,6 +1919,24 @@ function getEventAgentMessageText(params: unknown): string | null {
     : null;
 }
 
+function getAgentMessageDelta(params: unknown): string | null {
+  return typeof params === "object" &&
+    params !== null &&
+    "delta" in params &&
+    typeof params.delta === "string"
+    ? params.delta
+    : null;
+}
+
+function getReasoningSummaryDelta(params: unknown): string | null {
+  return typeof params === "object" &&
+    params !== null &&
+    "delta" in params &&
+    typeof params.delta === "string"
+    ? params.delta
+    : null;
+}
+
 function getLegacyCompletedAgentMessageText(params: unknown): string | null {
   if (
     typeof params !== "object" ||
@@ -1843,6 +2092,7 @@ function trackPromise<T>(promise: Promise<T>): {
 }
 
 export const __testOnly = {
+  BEST_EFFORT_CONTROL_REQUEST_TIMEOUT_MS,
   buildThreadStartParams,
   buildTurnStartParams,
   buildTurnSteerParams,

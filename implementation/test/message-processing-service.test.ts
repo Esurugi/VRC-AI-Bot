@@ -17,7 +17,8 @@ test("MessageProcessingService sends codex-derived forum bootstrap notice before
         return {
           preparedPrompt: "prepared prompt",
           progressNotice: "論点と前提を整理しながら考えています。少し待ってください。",
-          wasPreprocessed: true
+          wasPreprocessed: true,
+          researchPlan: null
         };
       }
     }
@@ -33,10 +34,11 @@ test("MessageProcessingService sends codex-derived forum bootstrap notice before
     "論点と前提を整理しながら考えています。少し待ってください。"
   ]);
   assert.deepEqual(receivedBootstrap, {
-    preparedPrompt: "prepared prompt",
-    progressNotice: "論点と前提を整理しながら考えています。少し待ってください。",
-    wasPreprocessed: true
-  });
+      preparedPrompt: "prepared prompt",
+      progressNotice: "論点と前提を整理しながら考えています。少し待ってください。",
+      wasPreprocessed: true,
+      researchPlan: null
+    });
 });
 
 test("MessageProcessingService does not send forum bootstrap notice on retry jobs", async () => {
@@ -52,7 +54,8 @@ test("MessageProcessingService does not send forum bootstrap notice on retry job
         return {
           preparedPrompt: "prepared prompt",
           progressNotice: "論点と前提を整理しながら考えています。少し待ってください。",
-          wasPreprocessed: true
+          wasPreprocessed: true,
+          researchPlan: null
         };
       }
     }
@@ -70,6 +73,7 @@ function createService(overrides: {
       preparedPrompt: string | null;
       progressNotice: string | null;
       wasPreprocessed: boolean;
+      researchPlan: null;
     }>;
   };
   replyDispatchService?: {
@@ -102,7 +106,8 @@ function createService(overrides: {
         return {
           preparedPrompt: null,
           progressNotice: null,
-          wasPreprocessed: false
+          wasPreprocessed: false,
+          researchPlan: null
         };
       },
       ...overrides.forumFirstTurnPreprocessor

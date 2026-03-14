@@ -106,26 +106,42 @@ export function buildPermanentFailureReply(input: {
 export function buildFailureNotice(input: {
   category: FailurePublicCategory;
   delayMs?: number | null;
+  retryable?: boolean;
 }): string {
   switch (input.category) {
     case "public_page_unavailable":
       return "公開ページではないため処理できません。";
     case "fetch_timeout":
-      return `取得がタイムアウトしたため、${formatRetryDelay(input.delayMs)}後に再試行します。`;
+      if (input.retryable === false || input.delayMs == null) {
+        return "取得がタイムアウトしたため処理できません。";
+      }
+      return buildRetryNotice("取得がタイムアウトしたため", input.delayMs);
     case "permission_denied":
       return "権限不足で読めないため処理できません。";
     case "unsupported_place":
       return "この場所では扱えないため処理できません。";
     case "ai_processing_failed":
-      return `AI処理に失敗したため、${formatRetryDelay(input.delayMs)}後に再試行します。`;
+      if (input.retryable === false || input.delayMs == null) {
+        return "AI処理に失敗したため処理できません。";
+      }
+      return buildRetryNotice("AI処理に失敗したため", input.delayMs);
     case "retry_limit_reached":
       return "再試行上限に達したため処理を終了します。";
   }
 }
 
 function formatRetryDelay(delayMs?: number | null): string {
-  if (!delayMs) {
+  if (delayMs == null) {
     return "しばらく";
+  }
+
+  if (delayMs <= 0) {
+    return "すぐ";
+  }
+
+  const seconds = Math.round(delayMs / 1_000);
+  if (seconds < 60) {
+    return `${seconds}秒`;
   }
 
   const minutes = Math.round(delayMs / 60_000);
@@ -133,6 +149,14 @@ function formatRetryDelay(delayMs?: number | null): string {
     return `${minutes}分`;
   }
   return `${Math.round(minutes / 60)}時間`;
+}
+
+function buildRetryNotice(prefix: string, delayMs: number): string {
+  if (delayMs <= 0) {
+    return `${prefix}、すぐに再試行します。`;
+  }
+
+  return `${prefix}、${formatRetryDelay(delayMs)}後に再試行します。`;
 }
 
 function buildJsonCodeBlock(payload: unknown): string {

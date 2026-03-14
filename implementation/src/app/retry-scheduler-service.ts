@@ -30,8 +30,9 @@ export class RetrySchedulerService {
 
     this.store.retryJobs.upsert({
       messageId: input.envelope.messageId,
-      channelId: input.envelope.channelId,
       guildId: input.envelope.guildId,
+      messageChannelId: input.envelope.channelId,
+      watchChannelId: input.watchLocation.channelId,
       attemptCount,
       nextAttemptAt,
       lastFailureCategory: input.decision.publicCategory,
