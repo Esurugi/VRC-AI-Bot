@@ -1,26 +1,32 @@
 {
   "locations": [
     {
-      "guildId": "756088878749712434",
-      "channelId": "756089034153132063",
+      "guildId": "1365199027322486856",
+      "channelId": "1365210270661869618",
       "mode": "url_watch",
       "defaultScope": "server_public"
     },
     {
-      "guildId": "756088878749712434",
-      "channelId": "756088878749712437",
+      "guildId": "1365199027322486856",
+      "channelId": "1365210184657670207",
       "mode": "chat",
       "defaultScope": "channel_family"
     },
     {
-      "guildId": "756088878749712434",
-      "channelId": "1481860158736040098",
+      "guildId": "1365199027322486856",
+      "channelId": "1365209960396361738",
       "mode": "forum_longform",
       "defaultScope": "conversation_only"
     },
     {
-      "guildId": "756088878749712434",
-      "channelId": "1480608987618607165",
+      "guildId": "1365199027322486856",
+      "channelId": "1365210135324135497",
+      "mode": "forum_longform",
+      "defaultScope": "conversation_only"
+    },
+    {
+      "guildId": "1365199027322486856",
+      "channelId": "1365201887095427166",
       "mode": "admin_control",
       "defaultScope": "conversation_only"
     }
