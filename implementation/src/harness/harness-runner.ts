@@ -23,7 +23,8 @@ import {
 } from "../override/types.js";
 import type { SqliteStore } from "../storage/database.js";
 import { appendRuntimeTrace } from "../observability/runtime-trace.js";
-import type { ForumResearchPlanner } from "../runtime/forum/forum-research-planner.js";
+import type { ForumResearchPromptRefiner } from "../runtime/forum/forum-research-prompt-refiner.js";
+import type { ForumResearchSupervisor } from "../runtime/forum/forum-research-supervisor.js";
 import { buildHarnessRequest } from "./build-harness-request.js";
 import { resolveHarnessCapabilities } from "./capability-resolver.js";
 import type {
@@ -86,7 +87,8 @@ export class HarnessRunner {
     private readonly codexClient: CodexAppServerClient,
     private readonly sessionPolicyResolver: SessionPolicyResolver,
     private readonly sessionManager: SessionManager,
-    private readonly forumResearchPlanner: ForumResearchPlanner,
+    private readonly forumResearchPromptRefiner: ForumResearchPromptRefiner,
+    private readonly forumResearchSupervisor: ForumResearchSupervisor,
     private readonly logger: Logger
   ) {
     this.knowledgePersistence = new KnowledgePersistenceService(store, logger);
@@ -94,7 +96,8 @@ export class HarnessRunner {
     this.forumResearchPipeline = new ForumResearchPipeline(
       store,
       codexClient,
-      forumResearchPlanner,
+      forumResearchPromptRefiner,
+      forumResearchSupervisor,
       logger
     );
   }
@@ -377,6 +380,17 @@ export class HarnessRunner {
       };
     }
 
+    if (isForumResearch && firstTurn.primaryReplyAlreadySent) {
+      appendRuntimeTrace("codex-app-server", "forum_output_safety_retry_skipped", {
+        messageId: input.input.envelope.messageId,
+        reason: firstEvaluation.reason
+      });
+      return {
+        response,
+        primaryReplyAlreadySent: true
+      };
+    }
+
     if (firstEvaluation.decision === "refuse") {
       return {
         response: buildOutputSafetyRefusal(input.input, firstEvaluation.reason),
@@ -430,7 +444,8 @@ export class HarnessRunner {
             request: retryRequest,
             threadId: input.session.threadId,
             sessionMetadata: toSessionMetadata(input.session),
-            state: firstTurn.state
+            state: firstTurn.state,
+            callbacks: input.input.forumRetryCallbacks
           })
         : await this.codexClient.runHarnessRequest(
             input.session.threadId,
@@ -673,16 +688,6 @@ function buildOutputSafetyRetryContext(
   request: HarnessRequest,
   evaluation: ReturnType<OutputSafetyGuard["evaluate"]>
 ): NonNullable<Parameters<typeof buildHarnessRequest>[0]["retryContext"]> {
-  if (request.place.mode === "forum_longform") {
-    return {
-      kind: "output_safety",
-      retryCount: 1,
-      reason: evaluation.reason ?? "unsafe source boundary",
-      allowedSources: [],
-      disallowedSources: evaluation.disallowedSources
-    };
-  }
-
   return {
     kind: "output_safety",
     retryCount: 1,

@@ -5,27 +5,38 @@ import { FORUM_LONGFORM_CODEX_MODEL_PROFILE } from "../../codex/session-policy.j
 import {
   FORUM_RESEARCH_DISTINCT_SOURCE_TARGET,
   FORUM_RESEARCH_MAX_WORKERS,
-  forumResearchPlanJsonSchema,
-  forumResearchPlanSchema,
-  type ForumResearchPlan,
+  forumResearchSupervisorDecisionJsonSchema,
+  forumResearchSupervisorDecisionSchema,
+  type ForumResearchEvidenceItem,
+  type ForumResearchSourceCatalogEntry,
+  type ForumResearchSupervisorDecision,
   type PersistedForumResearchState
 } from "../../forum-research/types.js";
 
-export class ForumResearchPlanner {
+export class ForumResearchSupervisor {
   constructor(
     private readonly codexClient: CodexAppServerClient,
     private readonly logger: Pick<Logger, "warn">
   ) {}
 
-  async plan(input: {
+  async decide(input: {
     messageId: string;
-    currentMessage: string;
-    starterMessage: string | null;
-    isInitialTurn: boolean;
     threadId: string;
+    refinedPrompt: string;
+    activeWorkers: Array<{
+      worker_id: string;
+      question: string;
+      search_focus: string;
+      state: "running" | "failed" | "interrupted";
+    }>;
+    completedWorkers: Array<{
+      worker_id: string;
+      subquestion: string;
+    }>;
+    currentEvidenceItems: ForumResearchEvidenceItem[];
+    currentSourceCatalog: ForumResearchSourceCatalogEntry[];
     previousResearchState?: PersistedForumResearchState | null;
-    timeoutMs?: number;
-  }): Promise<ForumResearchPlan> {
+  }): Promise<ForumResearchSupervisorDecision> {
     const threadId = await this.codexClient.startEphemeralThread(
       "read-only",
       FORUM_LONGFORM_CODEX_MODEL_PROFILE
@@ -35,22 +46,23 @@ export class ForumResearchPlanner {
       const result = await this.codexClient.runJsonTurn({
         threadId,
         inputPayload: {
-          kind: "forum_research_planner",
+          kind: "forum_research_supervisor",
           place_mode: "forum_longform",
           message_id: input.messageId,
-          initial_turn: input.isInitialTurn,
           reply_thread_id: input.threadId,
-          current_message: input.currentMessage,
-          starter_message: input.starterMessage,
+          refined_prompt: input.refinedPrompt,
+          active_workers: input.activeWorkers,
+          completed_workers: input.completedWorkers,
+          current_evidence_items: input.currentEvidenceItems,
+          current_source_catalog: input.currentSourceCatalog,
           previous_research_state: input.previousResearchState ?? null,
           max_workers: FORUM_RESEARCH_MAX_WORKERS,
           distinct_source_target: FORUM_RESEARCH_DISTINCT_SOURCE_TARGET
         },
         allowExternalFetch: false,
-        outputSchema: forumResearchPlanJsonSchema,
-        parser: (value) => forumResearchPlanSchema.parse(value),
-        modelProfile: FORUM_LONGFORM_CODEX_MODEL_PROFILE,
-        ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs })
+        outputSchema: forumResearchSupervisorDecisionJsonSchema,
+        parser: (value) => forumResearchSupervisorDecisionSchema.parse(value),
+        modelProfile: FORUM_LONGFORM_CODEX_MODEL_PROFILE
       });
 
       return result.response;
@@ -61,7 +73,7 @@ export class ForumResearchPlanner {
           messageId: input.messageId,
           forumThreadId: input.threadId
         },
-        "forum research planner failed"
+        "forum research supervisor failed"
       );
       throw error;
     } finally {

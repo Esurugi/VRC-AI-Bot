@@ -16,17 +16,38 @@ export type ForumResearchWorkerTask = z.infer<
   typeof forumResearchWorkerTaskSchema
 >;
 
-export const forumResearchPlanSchema = z.object({
+export const forumResearchSupervisorActionSchema = z.enum([
+  "launch_workers",
+  "finalize"
+]);
+
+export type ForumResearchSupervisorAction = z.infer<
+  typeof forumResearchSupervisorActionSchema
+>;
+
+export const promptRefinementArtifactSchema = z.object({
+  refined_prompt: z.string().min(1),
   progress_notice: z.string().min(1).nullable(),
-  effective_user_text: z.string().min(1).nullable(),
+  prompt_rationale_summary: z.string().min(1).nullable()
+});
+
+export type PromptRefinementArtifact = z.infer<
+  typeof promptRefinementArtifactSchema
+>;
+
+export const forumResearchSupervisorDecisionSchema = z.object({
+  progress_notice: z.string().min(1).nullable(),
   worker_tasks: z.array(forumResearchWorkerTaskSchema).max(
     FORUM_RESEARCH_MAX_WORKERS
   ),
-  synthesis_brief: z.string().min(1),
-  evidence_gaps: z.array(z.string().min(1)).max(8)
+  interrupts: z.array(z.string().min(1)).max(FORUM_RESEARCH_MAX_WORKERS),
+  next_action: forumResearchSupervisorActionSchema,
+  final_brief: z.string().min(1).nullable()
 });
 
-export type ForumResearchPlan = z.infer<typeof forumResearchPlanSchema>;
+export type ForumResearchSupervisorDecision = z.infer<
+  typeof forumResearchSupervisorDecisionSchema
+>;
 
 export const forumResearchWorkerCitationSchema = z.object({
   url: z.string().url(),
@@ -37,17 +58,24 @@ export type ForumResearchWorkerCitation = z.infer<
   typeof forumResearchWorkerCitationSchema
 >;
 
-export const forumResearchWorkerResultSchema = z.object({
-  worker_id: z.string().min(1),
-  subquestion: z.string().min(1),
-  findings: z.array(z.string().min(1)),
-  citations: z.array(forumResearchWorkerCitationSchema),
-  unresolved: z.array(z.string().min(1)),
-  confidence: z.enum(["high", "medium", "low"])
+export const forumResearchEvidenceItemSchema = z.object({
+  claim: z.string().min(1),
+  source_urls: z.array(z.string().url()).min(1).max(5)
 });
 
-export type ForumResearchWorkerResult = z.infer<
-  typeof forumResearchWorkerResultSchema
+export type ForumResearchEvidenceItem = z.infer<
+  typeof forumResearchEvidenceItemSchema
+>;
+
+export const forumResearchWorkerPacketSchema = z.object({
+  worker_id: z.string().min(1),
+  subquestion: z.string().min(1),
+  evidence_items: z.array(forumResearchEvidenceItemSchema),
+  citations: z.array(forumResearchWorkerCitationSchema)
+});
+
+export type ForumResearchWorkerPacket = z.infer<
+  typeof forumResearchWorkerPacketSchema
 >;
 
 export type ForumResearchSourceCatalogEntry = {
@@ -57,8 +85,8 @@ export type ForumResearchSourceCatalogEntry = {
 };
 
 export type ForumResearchBundle = {
-  plan: ForumResearchPlan;
-  workerResults: ForumResearchWorkerResult[];
+  evidenceItems: ForumResearchEvidenceItem[];
+  currentWorkerPackets: ForumResearchWorkerPacket[];
   distinctSourceTarget: number;
   distinctSources: string[];
   sourceCatalog: ForumResearchSourceCatalogEntry[];
@@ -68,28 +96,49 @@ export type PersistedForumResearchState = {
   sessionIdentity: string;
   threadId: string;
   lastMessageId: string;
-  plannerBrief: string | null;
-  evidenceGaps: string[];
-  workerResults: ForumResearchWorkerResult[];
+  evidenceItems: ForumResearchEvidenceItem[];
   sourceCatalog: ForumResearchSourceCatalogEntry[];
   distinctSources: string[];
 };
 
-export const forumResearchPlanJsonSchema = {
+export type PersistedPromptRefinementArtifact = {
+  sessionIdentity: string;
+  threadId: string;
+  lastMessageId: string;
+  refinedPrompt: string;
+  progressNotice: string | null;
+  promptRationaleSummary: string | null;
+};
+
+export const promptRefinementArtifactJsonSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["refined_prompt", "progress_notice", "prompt_rationale_summary"],
+  properties: {
+    refined_prompt: {
+      type: "string"
+    },
+    progress_notice: {
+      type: ["string", "null"]
+    },
+    prompt_rationale_summary: {
+      type: ["string", "null"]
+    }
+  }
+} as const;
+
+export const forumResearchSupervisorDecisionJsonSchema = {
   type: "object",
   additionalProperties: false,
   required: [
     "progress_notice",
-    "effective_user_text",
     "worker_tasks",
-    "synthesis_brief",
-    "evidence_gaps"
+    "interrupts",
+    "next_action",
+    "final_brief"
   ],
   properties: {
     progress_notice: {
-      type: ["string", "null"]
-    },
-    effective_user_text: {
       type: ["string", "null"]
     },
     worker_tasks: {
@@ -123,37 +172,48 @@ export const forumResearchPlanJsonSchema = {
         }
       }
     },
-    synthesis_brief: {
-      type: "string"
-    },
-    evidence_gaps: {
+    interrupts: {
       type: "array",
-      maxItems: 8,
+      minItems: 0,
+      maxItems: FORUM_RESEARCH_MAX_WORKERS,
       items: {
         type: "string"
       }
+    },
+    next_action: {
+      type: "string",
+      enum: ["launch_workers", "finalize"]
+    },
+    final_brief: {
+      type: ["string", "null"]
     }
   }
 } as const;
 
-export const forumResearchWorkerResultJsonSchema = {
+export const forumResearchWorkerPacketJsonSchema = {
   type: "object",
   additionalProperties: false,
-  required: [
-    "worker_id",
-    "subquestion",
-    "findings",
-    "citations",
-    "unresolved",
-    "confidence"
-  ],
+  required: ["worker_id", "subquestion", "evidence_items", "citations"],
   properties: {
     worker_id: { type: "string" },
     subquestion: { type: "string" },
-    findings: {
+    evidence_items: {
       type: "array",
       items: {
-        type: "string"
+        type: "object",
+        additionalProperties: false,
+        required: ["claim", "source_urls"],
+        properties: {
+          claim: { type: "string" },
+          source_urls: {
+            type: "array",
+            minItems: 1,
+            maxItems: 5,
+            items: {
+              type: "string"
+            }
+          }
+        }
       }
     },
     citations: {
@@ -167,16 +227,6 @@ export const forumResearchWorkerResultJsonSchema = {
           claim: { type: "string" }
         }
       }
-    },
-    unresolved: {
-      type: "array",
-      items: {
-        type: "string"
-      }
-    },
-    confidence: {
-      type: "string",
-      enum: ["high", "medium", "low"]
     }
   }
 } as const;

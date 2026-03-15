@@ -217,14 +217,18 @@ test("extractWebSearchActionTypeFromNotificationParams returns search action typ
   );
 });
 
-test("HARNESS_DEVELOPER_INSTRUCTIONS describes forum research planner, workers, and forum research context", () => {
+test("HARNESS_DEVELOPER_INSTRUCTIONS describes forum prompt refiner, supervisor, workers, and forum research context", () => {
   assert.match(
     HARNESS_DEVELOPER_INSTRUCTIONS,
     /output_safety and place\.mode is forum_longform .* fresh public research now/i
   );
   assert.match(
     HARNESS_DEVELOPER_INSTRUCTIONS,
-    /input kind is forum_research_planner/i
+    /input kind is forum_research_prompt_refiner/i
+  );
+  assert.match(
+    HARNESS_DEVELOPER_INSTRUCTIONS,
+    /input kind is forum_research_supervisor/i
   );
   assert.match(
     HARNESS_DEVELOPER_INSTRUCTIONS,
@@ -234,6 +238,7 @@ test("HARNESS_DEVELOPER_INSTRUCTIONS describes forum research planner, workers, 
     HARNESS_DEVELOPER_INSTRUCTIONS,
     /forum_research_context.*persisted evidence facts/i
   );
+  assert.match(HARNESS_DEVELOPER_INSTRUCTIONS, /forum_research_context\.refined_prompt/i);
   assert.match(
     HARNESS_DEVELOPER_INSTRUCTIONS,
     /input kind is forum_research_streaming_final, return only the final user-facing japanese answer body as plain text/i

@@ -268,8 +268,8 @@ test("createBotModerationIntegration suppresses repeated soft-block notices in t
       action: "soft_block",
       deliveryStatus: "fallback",
       triggerEventId: "event-1",
-      startedAt: "2026-03-11T00:00:00.000Z",
-      endsAt: "2026-03-13T00:00:00.000Z",
+      startedAt: "2026-03-15T00:00:00.000Z",
+      endsAt: "2026-03-17T00:00:00.000Z",
       reason: "timeout-failed"
     });
 

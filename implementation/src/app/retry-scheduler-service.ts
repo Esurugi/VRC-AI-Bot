@@ -61,4 +61,8 @@ export class RetrySchedulerService {
   clear(messageId: string): void {
     this.store.retryJobs.delete(messageId);
   }
+
+  clearByPlaceMode(mode: WatchLocationConfig["mode"]): void {
+    this.store.retryJobs.deleteByPlaceMode(mode);
+  }
 }

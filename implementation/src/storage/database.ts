@@ -20,6 +20,7 @@ export { OverrideSessionRepository } from "./repositories/override-repository.js
 export {
   AppRuntimeLockRepository,
   ChatChannelCounterRepository,
+  ForumResearchPromptArtifactRepository,
   ForumResearchStateRepository,
   MessageProcessingRepository,
   RetryJobRepository,
@@ -30,6 +31,7 @@ export type {
   AppRuntimeLockRow,
   ChannelCursorRow,
   ChatChannelCounterRow,
+  ForumResearchPromptArtifactRow,
   ForumResearchStateRow,
   CodexSessionBindingRow,
   KnowledgeArtifactRow,

@@ -4,6 +4,7 @@ import type { WatchLocationConfig } from "../../domain/types.js";
 import type {
   AppRuntimeLockRow,
   ChatChannelCounterRow,
+  ForumResearchPromptArtifactRow,
   ForumResearchStateRow,
   MessageProcessingRow,
   RetryJobRow,
@@ -364,6 +365,15 @@ export class RetryJobRepository {
       `)
       .run(messageId);
   }
+
+  deleteByPlaceMode(placeMode: WatchLocationConfig["mode"]): void {
+    this.db
+      .prepare(`
+        DELETE FROM retry_job
+        WHERE place_mode = ?
+      `)
+      .run(placeMode);
+  }
 }
 
 export class ForumResearchStateRepository {
@@ -373,9 +383,7 @@ export class ForumResearchStateRepository {
     sessionIdentity: string;
     threadId: string;
     lastMessageId: string;
-    plannerBrief: string | null;
-    evidenceGapsJson: string;
-    workerResultsJson: string;
+    evidenceItemsJson: string;
     sourceCatalogJson: string;
     distinctSourcesJson: string;
   }): void {
@@ -385,18 +393,14 @@ export class ForumResearchStateRepository {
           session_identity,
           thread_id,
           last_message_id,
-          planner_brief,
-          evidence_gaps_json,
-          worker_results_json,
+          evidence_items_json,
           source_catalog_json,
           distinct_sources_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT(session_identity) DO UPDATE SET
           thread_id = excluded.thread_id,
           last_message_id = excluded.last_message_id,
-          planner_brief = excluded.planner_brief,
-          evidence_gaps_json = excluded.evidence_gaps_json,
-          worker_results_json = excluded.worker_results_json,
+          evidence_items_json = excluded.evidence_items_json,
           source_catalog_json = excluded.source_catalog_json,
           distinct_sources_json = excluded.distinct_sources_json,
           updated_at = CURRENT_TIMESTAMP
@@ -405,9 +409,7 @@ export class ForumResearchStateRepository {
         input.sessionIdentity,
         input.threadId,
         input.lastMessageId,
-        input.plannerBrief,
-        input.evidenceGapsJson,
-        input.workerResultsJson,
+        input.evidenceItemsJson,
         input.sourceCatalogJson,
         input.distinctSourcesJson
       );
@@ -421,9 +423,7 @@ export class ForumResearchStateRepository {
             session_identity,
             thread_id,
             last_message_id,
-            planner_brief,
-            evidence_gaps_json,
-            worker_results_json,
+            evidence_items_json,
             source_catalog_json,
             distinct_sources_json,
             created_at,
@@ -439,6 +439,75 @@ export class ForumResearchStateRepository {
     this.db
       .prepare(`
         DELETE FROM forum_research_state
+        WHERE session_identity = ?
+      `)
+      .run(sessionIdentity);
+  }
+}
+
+export class ForumResearchPromptArtifactRepository {
+  constructor(private readonly db: Database.Database) {}
+
+  upsert(input: {
+    sessionIdentity: string;
+    threadId: string;
+    lastMessageId: string;
+    refinedPrompt: string;
+    progressNotice: string | null;
+    promptRationaleSummary: string | null;
+  }): void {
+    this.db
+      .prepare(`
+        INSERT INTO forum_research_prompt_artifact (
+          session_identity,
+          thread_id,
+          last_message_id,
+          refined_prompt,
+          progress_notice,
+          prompt_rationale_summary
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(session_identity) DO UPDATE SET
+          thread_id = excluded.thread_id,
+          last_message_id = excluded.last_message_id,
+          refined_prompt = excluded.refined_prompt,
+          progress_notice = excluded.progress_notice,
+          prompt_rationale_summary = excluded.prompt_rationale_summary,
+          updated_at = CURRENT_TIMESTAMP
+      `)
+      .run(
+        input.sessionIdentity,
+        input.threadId,
+        input.lastMessageId,
+        input.refinedPrompt,
+        input.progressNotice,
+        input.promptRationaleSummary
+      );
+  }
+
+  get(sessionIdentity: string): ForumResearchPromptArtifactRow | null {
+    return (
+      (this.db
+        .prepare(`
+          SELECT
+            session_identity,
+            thread_id,
+            last_message_id,
+            refined_prompt,
+            progress_notice,
+            prompt_rationale_summary,
+            created_at,
+            updated_at
+          FROM forum_research_prompt_artifact
+          WHERE session_identity = ?
+        `)
+        .get(sessionIdentity) as ForumResearchPromptArtifactRow | undefined) ?? null
+    );
+  }
+
+  delete(sessionIdentity: string): void {
+    this.db
+      .prepare(`
+        DELETE FROM forum_research_prompt_artifact
         WHERE session_identity = ?
       `)
       .run(sessionIdentity);

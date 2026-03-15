@@ -50,6 +50,7 @@ export class RetryJobRunner {
   }
 
   async drainDueJobs(): Promise<void> {
+    this.retryScheduler.clearByPlaceMode("forum_longform");
     const dueJobs = this.retryScheduler.pollDueJobs();
     for (const job of dueJobs) {
       await this.enqueueRetryJob(job);

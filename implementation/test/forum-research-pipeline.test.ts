@@ -5,10 +5,12 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { ForumResearchPipeline } from "../src/harness/forum-research-pipeline.js";
-import type { HarnessRequest, HarnessResponse } from "../src/harness/contracts.js";
+import type { HarnessRequest } from "../src/harness/contracts.js";
 import {
-  forumResearchPlanJsonSchema,
-  forumResearchPlanSchema
+  promptRefinementArtifactJsonSchema,
+  promptRefinementArtifactSchema,
+  forumResearchSupervisorDecisionJsonSchema,
+  forumResearchSupervisorDecisionSchema
 } from "../src/forum-research/types.js";
 import { SqliteStore } from "../src/storage/database.js";
 import type {
@@ -16,37 +18,59 @@ import type {
   TurnObservations
 } from "../src/codex/app-server-client.js";
 
-test("forumResearchPlan schema and JSON schema both allow zero worker tasks", () => {
-  const parsed = forumResearchPlanSchema.parse({
+test("forumResearchSupervisorDecision schema and JSON schema both allow zero worker tasks", () => {
+  const parsed = forumResearchSupervisorDecisionSchema.parse({
     progress_notice: null,
-    effective_user_text: null,
     worker_tasks: [],
-    synthesis_brief: "brief",
-    evidence_gaps: []
+    interrupts: [],
+    next_action: "finalize",
+    final_brief: "brief"
   });
 
   assert.deepEqual(parsed.worker_tasks, []);
-  assert.equal(forumResearchPlanJsonSchema.properties.worker_tasks.minItems, 0);
+  assert.equal(
+    forumResearchSupervisorDecisionJsonSchema.properties.worker_tasks.minItems,
+    0
+  );
+});
+
+test("promptRefinementArtifact schema and JSON schema require refined prompt output", () => {
+  const parsed = promptRefinementArtifactSchema.parse({
+    refined_prompt: "supervisor 用の hidden prompt",
+    progress_notice: null,
+    prompt_rationale_summary: "要件を整理した"
+  });
+
+  assert.equal(parsed.refined_prompt, "supervisor 用の hidden prompt");
+  assert.deepEqual(promptRefinementArtifactJsonSchema.required, [
+    "refined_prompt",
+    "progress_notice",
+    "prompt_rationale_summary"
+  ]);
 });
 
 test("ForumResearchPipeline keeps external fetch capability on streaming retry and appends observed public URLs", async () => {
   const fixture = createFixture({
-    plan: {
-      progress_notice: null,
-      effective_user_text: null,
-      worker_tasks: [],
-      synthesis_brief: "brief",
-      evidence_gaps: []
-    },
-    finalTurn: {
-      error: "codex turn timed out after 1000ms"
-    },
-    streamingTurn: {
-      response: "本文です。[1]\n補足します。",
-      observations: {
-        observed_public_urls: ["https://example.com/fresh-source"]
+    supervisorDecisions: [
+      {
+        progress_notice: null,
+        worker_tasks: [],
+        interrupts: [],
+        next_action: "finalize",
+        final_brief: "brief"
       }
-    }
+    ],
+    streamingTurns: [
+      {
+        error: "codex turn timed out after 1000ms"
+      },
+      {
+        response: "本文です。[1]\n補足します。",
+        observations: {
+          observed_public_urls: ["https://example.com/fresh-source"]
+        }
+      }
+    ]
   });
 
   try {
@@ -57,7 +81,7 @@ test("ForumResearchPipeline keeps external fetch capability on streaming retry a
     });
 
     assert.equal(result.primaryReplyAlreadySent, true);
-    assert.equal(fixture.codexClient.streamingCalls.length, 1);
+    assert.equal(fixture.codexClient.streamingCalls.length, 2);
     assert.equal(fixture.codexClient.streamingCalls[0]?.allowExternalFetch, true);
     assert.deepEqual(result.response.sources_used, ["https://example.com/fresh-source"]);
   } finally {
@@ -65,46 +89,242 @@ test("ForumResearchPipeline keeps external fetch capability on streaming retry a
   }
 });
 
+test("ForumResearchPipeline treats final protocol errors as visible recovery and returns failure when streaming recovery is empty", async () => {
+  const statuses: string[] = [];
+  const fixture = createFixture({
+    supervisorDecisions: [
+      {
+        progress_notice: null,
+        worker_tasks: [],
+        interrupts: [],
+        next_action: "finalize",
+        final_brief: "brief"
+      }
+    ],
+    streamingTurns: [
+      {
+        error: "codex thread/read did not contain an agent message"
+      },
+      {
+        response: null,
+        observations: {
+          observed_public_urls: []
+        }
+      }
+    ]
+  });
+
+  try {
+    const result = await fixture.pipeline.run({
+      request: createForumRequest(),
+      threadId: "thread-main",
+      sessionMetadata: createSessionMetadata(),
+      callbacks: {
+        onRetryStatus(content) {
+          statuses.push(content);
+        }
+      }
+    });
+
+    assert.equal(result.primaryReplyAlreadySent, false);
+    assert.equal(result.response.outcome, "failure");
+    assert.match(result.response.public_text ?? "", /再試行は完了できませんでした/);
+    assert.equal(fixture.codexClient.streamingCalls.length, 2);
+    assert.deepEqual(statuses, [
+      "再試行しています。生成結果の受け取りで問題が起きたため、整理し直しています。"
+    ]);
+  } finally {
+    fixture.close();
+  }
+});
+
+test("ForumResearchPipeline surfaces terminal failure instead of throwing when output-safety retry hits a recoverable final-turn error", async () => {
+  const statuses: string[] = [];
+  const fixture = createFixture({
+    supervisorDecisions: [
+      {
+        progress_notice: null,
+        worker_tasks: [],
+        interrupts: [],
+        next_action: "finalize",
+        final_brief: "brief"
+      }
+    ],
+    streamingTurns: [
+      {
+        response: "本文です。",
+        observations: {
+          observed_public_urls: []
+        }
+      }
+    ]
+  });
+  fixture.codexClient.streamingTurnError = "codex turn timed out after 1000ms";
+
+  try {
+    const result = await fixture.pipeline.runOutputSafetyRetry({
+      request: createForumRequest(),
+      threadId: "thread-main",
+      sessionMetadata: createSessionMetadata(),
+      state: {
+        bundle: {
+          evidenceItems: [],
+          currentWorkerPackets: [],
+          distinctSourceTarget: 8,
+          distinctSources: [],
+          sourceCatalog: []
+        },
+        persistedState: null,
+        promptArtifact: {
+          sessionIdentity: "forum:guild-1:thread-main",
+          threadId: "thread-main",
+          lastMessageId: "message-1",
+          refinedPrompt: "forum supervisor hidden prompt",
+          progressNotice: null,
+          promptRationaleSummary: null
+        },
+        finalBrief: null
+      },
+      callbacks: {
+        onRetryStatus(content) {
+          statuses.push(content);
+        }
+      }
+    });
+
+    assert.equal(result.response.outcome, "failure");
+    assert.match(result.response.public_text ?? "", /再生成は完了できませんでした/);
+    assert.deepEqual(statuses, [
+      "公開可能な根拠だけで答え直しています。少し待ってください。"
+    ]);
+    assert.equal(fixture.codexClient.streamingCalls.length, 1);
+  } finally {
+    fixture.close();
+  }
+});
+
+test("ForumResearchPipeline persists prompt artifacts separately and reuses them on the same session", async () => {
+  const fixture = createFixture({
+    supervisorDecisions: [
+      {
+        progress_notice: null,
+        worker_tasks: [],
+        interrupts: [],
+        next_action: "finalize",
+        final_brief: "brief"
+      },
+      {
+        progress_notice: null,
+        worker_tasks: [],
+        interrupts: [],
+        next_action: "finalize",
+        final_brief: "brief"
+      }
+    ],
+    streamingTurns: [
+      {
+        response: "本文です。"
+      },
+      {
+        response: "本文です。"
+      }
+    ]
+  });
+
+  try {
+    const first = await fixture.pipeline.run({
+      request: createForumRequest(),
+      threadId: "thread-main",
+      sessionMetadata: createSessionMetadata()
+    });
+    const second = await fixture.pipeline.run({
+      request: createForumRequest(),
+      threadId: "thread-main",
+      sessionMetadata: createSessionMetadata()
+    });
+
+    assert.equal(first.primaryReplyAlreadySent, true);
+    assert.equal(second.primaryReplyAlreadySent, true);
+    assert.equal(first.state.promptArtifact.refinedPrompt, "forum supervisor hidden prompt");
+    assert.equal(second.state.promptArtifact.refinedPrompt, "forum supervisor hidden prompt");
+    assert.equal(fixture.promptRefiner.calls.length, 1);
+
+    const savedArtifact = fixture.store.forumResearchPromptArtifacts.get(
+      createSessionMetadata().sessionIdentity
+    );
+    assert.equal(savedArtifact?.refined_prompt, "forum supervisor hidden prompt");
+
+    const evidenceState = fixture.store.forumResearchStates.get(
+      createSessionMetadata().sessionIdentity
+    );
+    assert.equal(evidenceState, null);
+  } finally {
+    fixture.close();
+  }
+});
+
 function createFixture(input: {
-  plan: {
+  promptRefinement?:
+    | {
+        refined_prompt: string;
+        progress_notice: string | null;
+        prompt_rationale_summary: string | null;
+      }
+    | undefined;
+  supervisorDecisions: Array<{
     progress_notice: string | null;
-    effective_user_text: string | null;
     worker_tasks: unknown[];
-    synthesis_brief: string;
-    evidence_gaps: string[];
-  };
-  finalTurn: {
-    response?: HarnessResponse;
-    observations?: TurnObservations;
-    error?: string;
-  };
-  streamingTurn: {
+    interrupts: string[];
+    next_action: "launch_workers" | "finalize";
+    final_brief: string | null;
+  }>;
+  streamingTurns: Array<{
     response?: string | null;
     observations?: TurnObservations;
     error?: string;
-  };
+  }>;
 }) {
   const tempDir = mkdtempSync(join(tmpdir(), "vrc-ai-bot-forum-pipeline-"));
   const dbPath = join(tempDir, "bot.sqlite");
   const store = new SqliteStore(dbPath, process.cwd());
   store.migrate();
 
-  const codexClient = new FakeCodexClient(input.finalTurn, input.streamingTurn);
-  const planner = {
-    async plan() {
-      return input.plan;
+  const codexClient = new FakeCodexClient(input.streamingTurns);
+  const promptRefiner = {
+    calls: [] as unknown[],
+    async refine(refinerInput: unknown) {
+      this.calls.push(refinerInput);
+      return (
+        input.promptRefinement ?? {
+          refined_prompt: "forum supervisor hidden prompt",
+          progress_notice: "論点を整えています。",
+          prompt_rationale_summary: "raw request を supervisor 向けに再構成"
+        }
+      );
+    }
+  };
+  const supervisor = {
+    async decide() {
+      const decision = input.supervisorDecisions.shift();
+      if (!decision) {
+        throw new Error("missing fake supervisor decision");
+      }
+      return decision;
     }
   };
   const pipeline = new ForumResearchPipeline(
     store,
     codexClient as never,
-    planner as never,
+    promptRefiner as never,
+    supervisor as never,
     { warn() {}, debug() {} } as never
   );
 
   return {
     pipeline,
     codexClient,
+    promptRefiner,
+    store,
     close() {
       store.close();
       rmSync(tempDir, { recursive: true, force: true });
@@ -114,18 +334,14 @@ function createFixture(input: {
 
 class FakeCodexClient {
   readonly streamingCalls: Array<{ allowExternalFetch: boolean; payload: unknown }> = [];
+  streamingTurnError: string | null = null;
 
   constructor(
-    private readonly finalTurn: {
-      response?: HarnessResponse;
-      observations?: TurnObservations;
-      error?: string;
-    },
-    private readonly streamingTurn: {
+    private readonly streamingTurns: Array<{
       response?: string | null;
       observations?: TurnObservations;
       error?: string;
-    }
+    }>
   ) {}
 
   async startEphemeralThread(): Promise<string> {
@@ -137,32 +353,11 @@ class FakeCodexClient {
   }
 
   async runJsonTurn<T>(input: {
-    inputPayload: unknown;
     parser: (value: unknown) => T;
   }): Promise<{ response: T; observations: TurnObservations }> {
-    const payload = input.inputPayload as { kind?: string };
-    if (payload.kind === "forum_research_planner") {
-      return {
-        response: input.parser({
-          progress_notice: null,
-          effective_user_text: null,
-          worker_tasks: [],
-          synthesis_brief: "brief",
-          evidence_gaps: []
-        }),
-        observations: {
-          observed_public_urls: []
-        }
-      };
-    }
-
-    if (this.finalTurn.error) {
-      throw new Error(this.finalTurn.error);
-    }
-
     return {
       response: input.parser(
-        this.finalTurn.response ?? {
+        {
           outcome: "chat_reply",
           repo_write_intent: false,
           public_text: "fallback",
@@ -177,9 +372,44 @@ class FakeCodexClient {
           sensitivity_raise: "none"
         }
       ),
-      observations: this.finalTurn.observations ?? {
+      observations: {
         observed_public_urls: []
       }
+    };
+  }
+
+  async startJsonTurn<T>(_input: {
+    parser: (value: unknown) => T;
+  }): Promise<{
+    turnId: string | null;
+    completion: Promise<{ response: T; observations: TurnObservations; turnId: string | null }>;
+    interrupt: () => Promise<void>;
+  }> {
+    return {
+      turnId: "turn-1",
+      completion: Promise.resolve({
+        response: _input.parser({
+          worker_id: "worker-1",
+          subquestion: "subquestion",
+          evidence_items: [
+            {
+              claim: "claim",
+              source_urls: ["https://example.com/source"]
+            }
+          ],
+          citations: [
+            {
+              url: "https://example.com/source",
+              claim: "claim"
+            }
+          ]
+        }),
+        observations: {
+          observed_public_urls: []
+        },
+        turnId: "turn-1"
+      }),
+      interrupt: async () => undefined
     };
   }
 
@@ -194,15 +424,21 @@ class FakeCodexClient {
       allowExternalFetch: input.allowExternalFetch,
       payload: input.inputPayload
     });
-    if (this.streamingTurn.error) {
-      throw new Error(this.streamingTurn.error);
+    const turn = this.streamingTurns.shift() ?? {
+      response: null,
+      observations: {
+        observed_public_urls: []
+      }
+    };
+    if (this.streamingTurnError ?? turn.error) {
+      throw new Error(this.streamingTurnError ?? turn.error);
     }
-    if (this.streamingTurn.response) {
-      await input.callbacks?.onAgentMessageDelta?.(this.streamingTurn.response);
+    if (turn.response) {
+      await input.callbacks?.onAgentMessageDelta?.(turn.response);
     }
     return {
-      response: this.streamingTurn.response ?? null,
-      observations: this.streamingTurn.observations ?? {
+      response: turn.response ?? null,
+      observations: turn.observations ?? {
         observed_public_urls: []
       }
     };

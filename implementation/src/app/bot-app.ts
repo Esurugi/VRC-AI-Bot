@@ -44,7 +44,8 @@ import { ChatEngagementPolicy } from "../runtime/chat/chat-engagement-policy.js"
 import { ChatRuntimeControlService } from "../runtime/chat/chat-runtime-control-service.js";
 import { RecentChatHistoryService } from "../runtime/chat/recent-chat-history-service.js";
 import { ForumFirstTurnPreprocessor } from "../runtime/forum/forum-first-turn-preprocessor.js";
-import { ForumResearchPlanner } from "../runtime/forum/forum-research-planner.js";
+import { ForumResearchPromptRefiner } from "../runtime/forum/forum-research-prompt-refiner.js";
+import { ForumResearchSupervisor } from "../runtime/forum/forum-research-supervisor.js";
 import { ForumThreadService } from "../runtime/forum/forum-thread-service.js";
 import { MessageIntakeService } from "../runtime/message/message-intake-service.js";
 import { MessageProcessingService } from "../runtime/message/message-processing-service.js";
@@ -94,7 +95,8 @@ type BotApplicationDependencies = {
   chatRuntimeControlService?: ChatRuntimeControlService;
   recentChatHistoryService?: RecentChatHistoryService;
   forumFirstTurnPreprocessor?: ForumFirstTurnPreprocessor;
-  forumResearchPlanner?: ForumResearchPlanner;
+  forumResearchPromptRefiner?: ForumResearchPromptRefiner;
+  forumResearchSupervisor?: ForumResearchSupervisor;
   forumThreadService?: ForumThreadService;
   weeklyMeetupAnnouncementService?: WeeklyMeetupAnnouncementService;
   setTimeoutFn?: typeof setTimeout;
@@ -126,7 +128,8 @@ export class BotApplication {
   private readonly chatRuntimeControlService: ChatRuntimeControlService;
   private readonly recentChatHistoryService: RecentChatHistoryService;
   private readonly forumFirstTurnPreprocessor: ForumFirstTurnPreprocessor;
-  private readonly forumResearchPlanner: ForumResearchPlanner;
+  private readonly forumResearchPromptRefiner: ForumResearchPromptRefiner;
+  private readonly forumResearchSupervisor: ForumResearchSupervisor;
   private readonly forumThreadService: ForumThreadService;
   private readonly weeklyMeetupAnnouncementService: WeeklyMeetupAnnouncementService;
   private readonly setTimeoutFn: typeof setTimeout;
@@ -172,9 +175,12 @@ export class BotApplication {
     this.sessionManager =
       dependencies.sessionManager ??
       new SessionManager(this.store, this.codexClient, this.logger);
-    this.forumResearchPlanner =
-      dependencies.forumResearchPlanner ??
-      new ForumResearchPlanner(this.codexClient, this.logger);
+    this.forumResearchSupervisor =
+      dependencies.forumResearchSupervisor ??
+      new ForumResearchSupervisor(this.codexClient, this.logger);
+    this.forumResearchPromptRefiner =
+      dependencies.forumResearchPromptRefiner ??
+      new ForumResearchPromptRefiner(this.codexClient, this.logger);
     this.forumFirstTurnPreprocessor =
       dependencies.forumFirstTurnPreprocessor ??
       new ForumFirstTurnPreprocessor(
@@ -189,7 +195,8 @@ export class BotApplication {
         this.codexClient,
         this.sessionPolicyResolver,
         this.sessionManager,
-        this.forumResearchPlanner,
+        this.forumResearchPromptRefiner,
+        this.forumResearchSupervisor,
         this.logger
       );
     this.recentChatHistoryService =

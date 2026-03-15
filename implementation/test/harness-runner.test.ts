@@ -12,7 +12,7 @@ import type {
   HarnessResponse
 } from "../src/harness/contracts.js";
 import { HarnessRunner } from "../src/harness/harness-runner.js";
-import type { ForumResearchPlan } from "../src/forum-research/types.js";
+import type { ForumResearchSupervisorDecision } from "../src/forum-research/types.js";
 import type { CodexSandboxMode } from "../src/domain/types.js";
 import {
   SessionPolicyResolver,
@@ -340,303 +340,6 @@ test("HarnessRunner grants public research and knowledge write only on answer tu
   }
 });
 
-test.skip("HarnessRunner uses exploration loop on forum_longform answer turns", async () => {
-  const fixture = createFixture({
-    forumTextResponses: [
-      {
-        response: "acquire note",
-        observations: {
-          observed_public_urls: ["https://example.com/news"]
-        }
-      }
-    ],
-    forumJsonResponses: [
-      {
-        response: {
-          phase_result: "acquired",
-          resolved_items: ["latest facts"],
-          open_items: ["synthesis"],
-          material_gaps: [],
-          contradictions: [],
-          evidence_digest: "facts gathered",
-          provisional_outline: "outline",
-          next_phase: "finalize",
-          stop_judgement: {
-            done: true,
-            reason: "enough evidence",
-            marginal_value: "low"
-          }
-        }
-      },
-      {
-        response: createHarnessResponse({
-          public_text: "公開情報を確認して答えます。[1]",
-          sources_used: ["https://example.com/news"]
-        }),
-        observations: {
-          observed_public_urls: ["https://example.com/news"]
-        }
-      }
-    ]
-  });
-
-  try {
-    await fixture.runner.routeMessage(
-      createHarnessInput({
-        watchLocation: {
-          guildId: "guild-1",
-          channelId: "forum-parent-1",
-          mode: "forum_longform",
-          defaultScope: "conversation_only"
-        },
-        scope: "conversation_only",
-        envelope: {
-          guildId: "guild-1",
-          channelId: "thread-1",
-          messageId: "message-40",
-          authorId: "user-1",
-          placeType: "forum_post_thread",
-          rawPlaceType: "PublicThread",
-          content: "この話題を論じて",
-          urls: [],
-          receivedAt: "2026-03-10T00:00:40.000Z"
-        }
-      })
-    );
-
-    assert.deepEqual(fixture.codexClient.intentCalls[0]?.request.capabilities, {
-      allow_external_fetch: false,
-      allow_knowledge_write: false,
-      allow_moderation: false
-    });
-    assert.equal(fixture.codexClient.answerCalls.length, 0);
-    assert.equal(fixture.codexClient.textTurnCalls.length, 1);
-    assert.equal(fixture.codexClient.jsonTurnCalls.length, 2);
-    const workPayload = fixture.codexClient.textTurnCalls[0]?.payload as Record<
-      string,
-      unknown
-    >;
-    const finalizePayload = fixture.codexClient.jsonTurnCalls[1]?.payload as Record<
-      string,
-      unknown
-    >;
-    assert.equal(
-      (workPayload.forum_loop as { kind?: string } | undefined)?.kind,
-      "exploration_work"
-    );
-    assert.equal(
-      (finalizePayload.forum_loop as { kind?: string } | undefined)?.kind,
-      "finalize"
-    );
-    assert.deepEqual(
-      (finalizePayload.forum_loop as {
-        research_observed?: boolean;
-        longform_target?: unknown;
-        instruction?: string;
-      } | undefined)?.longform_target,
-      {
-        min_body_chars: 6000,
-        basis: "public_text_only",
-        applies: true
-      }
-    );
-    assert.equal(
-      (finalizePayload.forum_loop as { research_observed?: boolean } | undefined)
-        ?.research_observed,
-      true
-    );
-    assert.match(
-      String(
-        (finalizePayload.forum_loop as { instruction?: string } | undefined)
-          ?.instruction
-      ),
-      /at least 6000 Japanese characters in the public_text body alone/i
-    );
-    assert.equal(fixture.codexClient.textTurnCalls[0]?.timeoutMs, 240000);
-    assert.deepEqual(fixture.codexClient.textTurnCalls[0]?.controlPolicy, {
-      idleSteer: {
-        afterMs: 30000,
-        prompt:
-          "Focus only on the unresolved material gaps already listed in forum_loop.prior_state. Do not broaden the search space. Prefer opening specific pages or extracting passages over issuing new broad searches."
-      },
-      broadeningSearchSteer: {
-        searchActionThreshold: 6,
-        prompt:
-          "Shift from issuing new broad searches to opening the strongest candidate pages and extracting the exact passages needed for a fuller longform answer. Use the existing material gaps and the evidence already gathered to deepen the current line of work."
-      }
-    });
-  } finally {
-    fixture.close();
-  }
-});
-
-test.skip("HarnessRunner omits forum longform target when no public research was observed", async () => {
-  const fixture = createFixture({
-    forumTextResponses: [
-      {
-        response: "acquire note"
-      }
-    ],
-    forumJsonResponses: [
-      {
-        response: {
-          phase_result: "acquired",
-          resolved_items: ["local reasoning"],
-          open_items: [],
-          material_gaps: [],
-          contradictions: [],
-          evidence_digest: "digest",
-          provisional_outline: "outline",
-          next_phase: "finalize",
-          stop_judgement: {
-            done: true,
-            reason: "ready",
-            marginal_value: "low"
-          }
-        }
-      },
-      {
-        response: createHarnessResponse({
-          public_text: "説明です。"
-        })
-      }
-    ]
-  });
-
-  try {
-    await fixture.runner.routeMessage(
-      createHarnessInput({
-        watchLocation: {
-          guildId: "guild-1",
-          channelId: "forum-parent-1",
-          mode: "forum_longform",
-          defaultScope: "conversation_only"
-        },
-        scope: "conversation_only",
-        envelope: {
-          guildId: "guild-1",
-          channelId: "thread-1",
-          messageId: "message-forum-no-research",
-          authorId: "user-1",
-          placeType: "forum_post_thread",
-          rawPlaceType: "PublicThread",
-          content: "説明して",
-          urls: [],
-          receivedAt: "2026-03-10T00:00:40.250Z"
-        }
-      })
-    );
-
-    const finalizePayload = fixture.codexClient.jsonTurnCalls[1]?.payload as {
-      forum_loop?: {
-        research_observed?: boolean;
-        longform_target?: unknown;
-      };
-    };
-    assert.equal(finalizePayload.forum_loop?.research_observed, false);
-    assert.equal(finalizePayload.forum_loop?.longform_target, undefined);
-  } finally {
-    fixture.close();
-  }
-});
-
-test.skip("HarnessRunner honors forum checkpoint next_phase over stop_judgement.done", async () => {
-  const fixture = createFixture({
-    forumTextResponses: [
-      {
-        response: "acquire note"
-      },
-      {
-        response: "integrate note"
-      }
-    ],
-    forumJsonResponses: [
-      {
-        response: {
-          phase_result: "acquired",
-          resolved_items: ["fact 1"],
-          open_items: ["turn into explanation"],
-          material_gaps: [
-            {
-              gap: "no more external observation needed",
-              needs_observation: false,
-              suggested_operator: "none"
-            }
-          ],
-          contradictions: [],
-          evidence_digest: "facts gathered",
-          provisional_outline: "outline 1",
-          next_phase: "integrate",
-          stop_judgement: {
-            done: true,
-            reason: "research is sufficient; move to integration",
-            marginal_value: "low"
-          }
-        }
-      },
-      {
-        response: {
-          phase_result: "integrated",
-          resolved_items: ["fact 1", "explanation"],
-          open_items: [],
-          material_gaps: [],
-          contradictions: [],
-          evidence_digest: "integrated digest",
-          provisional_outline: "integrated outline",
-          next_phase: "finalize",
-          stop_judgement: {
-            done: true,
-            reason: "ready to answer",
-            marginal_value: "low"
-          }
-        }
-      },
-      {
-        response: createHarnessResponse({
-          public_text: "十分な厚みのある回答です。[1]",
-          sources_used: ["https://example.com/news"]
-        })
-      }
-    ]
-  });
-
-  try {
-    const result = await fixture.runner.routeMessage(
-      createHarnessInput({
-        watchLocation: {
-          guildId: "guild-1",
-          channelId: "forum-parent-1",
-          mode: "forum_longform",
-          defaultScope: "conversation_only"
-        },
-        scope: "conversation_only",
-        envelope: {
-          guildId: "guild-1",
-          channelId: "thread-1",
-          messageId: "message-forum-next-phase",
-          authorId: "user-1",
-          placeType: "forum_post_thread",
-          rawPlaceType: "PublicThread",
-          content: "詳しく論じて",
-          urls: [],
-          receivedAt: "2026-03-10T00:00:40.500Z"
-        }
-      })
-    );
-
-    assert.equal(result.response.public_text, "十分な厚みのある回答です。[1]");
-    assert.equal(fixture.codexClient.textTurnCalls.length, 2);
-    assert.equal(fixture.codexClient.jsonTurnCalls.length, 3);
-    const integratePayload = fixture.codexClient.textTurnCalls[1]?.payload as {
-      forum_loop?: { phase?: string; iteration?: number };
-    };
-    assert.equal(integratePayload.forum_loop?.phase, "integrate");
-    assert.equal(integratePayload.forum_loop?.iteration, 2);
-  } finally {
-    fixture.close();
-  }
-});
-
 test("HarnessRunner keeps knowledge write disabled for message_urls when no fetchable public URLs exist", async () => {
   const fixture = createFixture({
     intentResponses: [
@@ -761,68 +464,18 @@ test("HarnessRunner retries output safety with task.retry_context and allows obs
   }
 });
 
-test.skip("HarnessRunner allows forum public URLs without retry when observed URLs are partial", async () => {
+test("HarnessRunner uses forum streaming final on the primary forum answer path", async () => {
   const fixture = createFixture({
+    supervisorResponse: {
+      progress_notice: null,
+      worker_tasks: [],
+      interrupts: [],
+      next_action: "finalize",
+      final_brief: "統合方針"
+    },
     forumTextResponses: [
       {
-        response: "acquire note",
-        observations: {
-          observed_public_urls: ["https://www.britannica.com/topic/Sunni"]
-        }
-      },
-      {
-        response: "integrate note"
-      }
-    ],
-    forumJsonResponses: [
-      {
-        response: {
-          phase_result: "acquired",
-          resolved_items: ["fact 1"],
-          open_items: ["fact 2"],
-          material_gaps: [
-            {
-              gap: "fact 2 synthesis",
-              needs_observation: false,
-              suggested_operator: "none"
-            }
-          ],
-          contradictions: [],
-          evidence_digest: "first digest",
-          provisional_outline: "first outline",
-          next_phase: "integrate",
-          stop_judgement: {
-            done: false,
-            reason: "need integration",
-            marginal_value: "medium"
-          }
-        }
-      },
-      {
-        response: {
-          phase_result: "integrated",
-          resolved_items: ["fact 1", "fact 2"],
-          open_items: [],
-          material_gaps: [],
-          contradictions: [],
-          evidence_digest: "final digest",
-          provisional_outline: "final outline",
-          next_phase: "finalize",
-          stop_judgement: {
-            done: true,
-            reason: "ready",
-            marginal_value: "low"
-          }
-        }
-      },
-      {
-        response: createHarnessResponse({
-          public_text: "調査結果です。[1][2]",
-          sources_used: [
-            "https://www.britannica.com/topic/Sunni",
-            "https://www.cfr.org/conference-calls/tensions-between-saudi-arabia-and-iran"
-          ]
-        })
+        response: "公開ソースに基づく本文です。[1]"
       }
     ]
   });
@@ -830,193 +483,32 @@ test.skip("HarnessRunner allows forum public URLs without retry when observed UR
   try {
     const result = await fixture.runner.routeMessage(
       createHarnessInput({
+        scope: "conversation_only",
         watchLocation: {
           guildId: "guild-1",
           channelId: "forum-parent-1",
           mode: "forum_longform",
           defaultScope: "conversation_only"
         },
-        scope: "conversation_only",
         envelope: {
           guildId: "guild-1",
-          channelId: "thread-1",
-          messageId: "message-forum-allow",
+          channelId: "forum-thread-1",
+          messageId: "message-forum-1",
           authorId: "user-1",
           placeType: "forum_post_thread",
           rawPlaceType: "PublicThread",
-          content: "論じて",
+          content: "調べて",
           urls: [],
-          receivedAt: "2026-03-10T00:00:41.000Z"
-        }
+          receivedAt: "2026-03-10T00:00:00.000Z"
+        },
+        forumStarterMessage: "最初の相談",
+        forumRetryCallbacks: {}
       })
     );
 
-    assert.equal(result.response.public_text, "調査結果です。[1][2]");
+    assert.equal(result.response.public_text, "公開ソースに基づく本文です。[1]");
+    assert.equal(fixture.codexClient.streamingTextTurnCalls.length, 1);
     assert.equal(fixture.codexClient.answerCalls.length, 0);
-    assert.equal(fixture.codexClient.compactionCalls.length, 1);
-  } finally {
-    fixture.close();
-  }
-});
-
-test.skip("HarnessRunner keeps forum output-safety retry free of source allowlists", async () => {
-  const fixture = createFixture({
-    forumTextResponses: [
-      {
-        response: "acquire note",
-        observations: {
-          observed_public_urls: ["https://example.com/research"]
-        }
-      }
-    ],
-    forumJsonResponses: [
-      {
-        response: {
-          phase_result: "acquired",
-          resolved_items: ["unsafe cite"],
-          open_items: [],
-          material_gaps: [],
-          contradictions: [],
-          evidence_digest: "digest",
-          provisional_outline: "outline",
-          next_phase: "finalize",
-          stop_judgement: {
-            done: true,
-            reason: "ready",
-            marginal_value: "low"
-          }
-        }
-      },
-      {
-        response: createHarnessResponse({
-          public_text: "bad",
-          sources_used: ["file:///tmp/private.txt"]
-        })
-      },
-      {
-        response: createHarnessResponse({
-          public_text: "公開根拠だけで答え直します。",
-          sources_used: []
-        })
-      }
-    ]
-  });
-
-  try {
-    await fixture.runner.routeMessage(
-      createHarnessInput({
-        watchLocation: {
-          guildId: "guild-1",
-          channelId: "forum-parent-1",
-          mode: "forum_longform",
-          defaultScope: "conversation_only"
-        },
-        scope: "conversation_only",
-        envelope: {
-          guildId: "guild-1",
-          channelId: "thread-1",
-          messageId: "message-forum-retry",
-          authorId: "user-1",
-          placeType: "forum_post_thread",
-          rawPlaceType: "PublicThread",
-          content: "論じて",
-          urls: [],
-          receivedAt: "2026-03-10T00:00:42.000Z"
-        }
-      })
-    );
-
-    const retryFinalizePayload = fixture.codexClient.jsonTurnCalls[2]?.payload as {
-      task?: { retry_context?: unknown };
-      forum_loop?: {
-        kind?: string;
-        research_observed?: boolean;
-        longform_target?: unknown;
-        instruction?: string;
-      };
-    };
-    assert.equal(retryFinalizePayload.forum_loop?.kind, "finalize");
-    assert.equal(retryFinalizePayload.forum_loop?.research_observed, true);
-    assert.deepEqual(retryFinalizePayload.forum_loop?.longform_target, {
-      min_body_chars: 6000,
-      basis: "public_text_only",
-      applies: true
-    });
-    assert.match(
-      String(retryFinalizePayload.forum_loop?.instruction),
-      /at least 6000 Japanese characters in the public_text body alone/i
-    );
-    assert.deepEqual(retryFinalizePayload.task?.retry_context, {
-      kind: "output_safety",
-      retry_count: 1,
-      reason: "blocked or non-public source url",
-      allowed_sources: [],
-      disallowed_sources: ["file:///tmp/private.txt"]
-    });
-  } finally {
-    fixture.close();
-  }
-});
-
-test.skip("HarnessRunner carries termination facts into forum finalize without synthetic semantic stop labels", async () => {
-  const fixture = createFixture({
-    forumTextResponses: [
-      {
-        error: "work turn timed out"
-      }
-    ],
-    forumJsonResponses: [
-      {
-        response: createHarnessResponse({
-          public_text: "最終回答です。"
-        })
-      }
-    ]
-  });
-
-  try {
-    const result = await fixture.runner.routeMessage(
-      createHarnessInput({
-        watchLocation: {
-          guildId: "guild-1",
-          channelId: "forum-parent-1",
-          mode: "forum_longform",
-          defaultScope: "conversation_only"
-        },
-        scope: "conversation_only",
-        envelope: {
-          guildId: "guild-1",
-          channelId: "thread-1",
-          messageId: "message-forum-failure",
-          authorId: "user-1",
-          placeType: "forum_post_thread",
-          rawPlaceType: "PublicThread",
-          content: "論じて",
-          urls: [],
-          receivedAt: "2026-03-10T00:00:43.000Z"
-        }
-      })
-    );
-
-    assert.equal(result.response.public_text, "最終回答です。");
-    const finalizePayload = fixture.codexClient.jsonTurnCalls[0]?.payload as {
-      forum_loop?: {
-        kind?: string;
-        prior_state?: {
-          termination?: { reason?: string; detail?: string };
-          stop_judgement?: { marginal_value?: string };
-        };
-      };
-    };
-    assert.equal(finalizePayload.forum_loop?.kind, "finalize");
-    assert.deepEqual(finalizePayload.forum_loop?.prior_state?.termination, {
-      reason: "interrupt_timeout",
-      detail: "work turn timed out"
-    });
-    assert.equal(
-      finalizePayload.forum_loop?.prior_state?.stop_judgement?.marginal_value,
-      "high"
-    );
   } finally {
     fixture.close();
   }
@@ -1192,7 +684,7 @@ function createFixture(input?: {
   intentResponses?: HarnessIntentResponse[];
   answerResponses?: HarnessResponse[];
   answerObservations?: TurnObservations[];
-  plannerResponse?: ForumResearchPlan;
+  supervisorResponse?: ForumResearchSupervisorDecision;
   forumTextResponses?: Array<{
     response?: string | null;
     observations?: TurnObservations;
@@ -1215,12 +707,20 @@ function createFixture(input?: {
     codexClient as never,
     pino({ level: "silent" })
   );
-  const forumResearchPlanner = {
-    async plan() {
+  const forumResearchPromptRefiner = {
+    async refine() {
+      return {
+        refined_prompt: "forum supervisor hidden prompt",
+        progress_notice: "論点を整えています。",
+        prompt_rationale_summary: "raw request を supervisor 向けに再構成"
+      };
+    }
+  };
+  const forumResearchSupervisor = {
+    async decide() {
       return (
-        input?.plannerResponse ?? {
+        input?.supervisorResponse ?? {
           progress_notice: "調査方針を組み立てています。",
-          effective_user_text: "調査を開始します。",
           worker_tasks: [
             {
               worker_id: "worker-1",
@@ -1231,8 +731,9 @@ function createFixture(input?: {
               max_sources: 3
             }
           ],
-          synthesis_brief: "統合方針",
-          evidence_gaps: ["不足論点"]
+          interrupts: [],
+          next_action: "launch_workers",
+          final_brief: "統合方針"
         }
       );
     }
@@ -1242,7 +743,8 @@ function createFixture(input?: {
     codexClient as never,
     sessionPolicyResolver,
     sessionManager,
-    forumResearchPlanner as never,
+    forumResearchPromptRefiner as never,
+    forumResearchSupervisor as never,
     pino({ level: "silent" })
   );
 

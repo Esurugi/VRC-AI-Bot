@@ -58,6 +58,95 @@ test("MessageProcessingService does not send forum bootstrap notice on retry job
   assert.deepEqual(notices, []);
 });
 
+test("MessageProcessingService closes forum retry-job failures without re-scheduling delayed retry", async () => {
+  const notices: string[] = [];
+  let scheduled = 0;
+  let completedMessageId: string | null = null;
+  const service = createService({
+    store: {
+      messageProcessing: {
+        tryAcquire() {
+          return {
+            status: "acquired"
+          };
+        },
+        markCompleted(messageId: string) {
+          completedMessageId = messageId;
+        }
+      }
+    },
+    retryScheduler: {
+      clear() {},
+      schedule() {
+        scheduled += 1;
+      }
+    },
+    replyDispatchService: {
+      async notifyFailureForRetryJob(_item: unknown, content: string) {
+        notices.push(content);
+      }
+    }
+  });
+
+  await service.handleRetryJobFailure(
+    {
+      message_id: "message-1",
+      guild_id: "guild-1",
+      message_channel_id: "forum-thread-1",
+      watch_channel_id: "forum-parent-1",
+      attempt_count: 2,
+      next_attempt_at: "2026-03-10T00:00:00.000Z",
+      last_failure_category: "fetch_timeout",
+      reply_channel_id: "forum-parent-1",
+      reply_thread_id: "forum-thread-1",
+      place_mode: "forum_longform",
+      stage: "fetch_or_resolve",
+      created_at: "2026-03-10T00:00:00.000Z",
+      updated_at: "2026-03-10T00:00:00.000Z"
+    } as never,
+    new Error("request timed out")
+  );
+
+  assert.equal(scheduled, 0);
+  assert.equal(completedMessageId, "message-1");
+  assert.match(notices[0] ?? "", /visible retry は完了できなかった/);
+});
+
+test("MessageProcessingService streams final forum text to Discord instead of pulsing typing", async () => {
+  const streamed: string[] = [];
+  let completed = 0;
+  const typingReasons: string[] = [];
+  const service = createService({
+    replyDispatchService: {
+      async createStreamingReplyInSamePlace() {
+        return {
+          async append(delta: string) {
+            streamed.push(delta);
+          },
+          async complete() {
+            completed += 1;
+          }
+        };
+      }
+    }
+  });
+
+  const callbacks = (service as any).buildForumCallbacks(createQueuedMessage("live"), {
+    pulseNow: async (reason: string) => {
+      typingReasons.push(reason);
+    },
+    stop() {}
+  });
+
+  await callbacks.onFinalTextDelta("前半");
+  await callbacks.onFinalTextDelta("後半");
+  await callbacks.onFinalTextCompleted();
+
+  assert.deepEqual(streamed, ["前半", "後半"]);
+  assert.equal(completed, 1);
+  assert.deepEqual(typingReasons, []);
+});
+
 function createService(overrides: {
   forumFirstTurnPreprocessor?: {
     resolveEffectiveContentOverride: () => Promise<{
@@ -69,6 +158,21 @@ function createService(overrides: {
   };
   replyDispatchService?: {
     sendFollowupInSamePlace?: (item: unknown, content: string) => Promise<void>;
+    notifyFailureForRetryJob?: (item: unknown, content: string) => Promise<void>;
+    createStreamingReplyInSamePlace?: (item: unknown) => Promise<{
+      append: (delta: string) => Promise<void>;
+      complete: () => Promise<void>;
+    }>;
+  };
+  retryScheduler?: {
+    clear?: (messageId: string) => void;
+    schedule?: (...args: unknown[]) => void;
+  };
+  store?: {
+    messageProcessing?: {
+      tryAcquire?: () => { status: "acquired" };
+      markCompleted?: (messageId: string) => void;
+    };
   };
 } = {}) {
   return new MessageProcessingService(
@@ -80,7 +184,8 @@ function createService(overrides: {
             status: "acquired"
           };
         },
-        markCompleted() {}
+        markCompleted() {},
+        ...overrides.store?.messageProcessing
       },
       channelCursors: {
         upsert() {}
@@ -117,10 +222,11 @@ function createService(overrides: {
         };
       }
     } as never,
-    {
+    ({
       clear() {},
-      schedule() {}
-    } as never,
+      schedule() {},
+      ...overrides.retryScheduler
+    } as never),
     {
       async checkSoftBlock() {
         return {
@@ -132,6 +238,13 @@ function createService(overrides: {
     {} as never,
     ({
       async sendFollowupInSamePlace() {},
+      async notifyFailureForRetryJob() {},
+      async createStreamingReplyInSamePlace() {
+        return {
+          async append() {},
+          async complete() {}
+        };
+      },
       async dispatchResolvedMessage() {
         return {
           channelId: "forum-thread-1",

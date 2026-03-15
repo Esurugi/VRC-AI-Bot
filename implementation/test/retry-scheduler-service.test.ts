@@ -90,3 +90,40 @@ test("RetrySchedulerService schedules pending retries and increments attempt cou
     rmSync(tempDir, { recursive: true, force: true });
   }
 });
+
+test("RetrySchedulerService can clear stale forum_longform retry rows before polling", () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "vrc-ai-bot-retry-"));
+  const dbPath = join(tempDir, "bot.sqlite");
+  let store: SqliteStore | undefined;
+
+  try {
+    store = new SqliteStore(dbPath, REPO_ROOT);
+    store.migrate();
+
+    const scheduler = new RetrySchedulerService(store);
+    store.retryJobs.upsert({
+      messageId: "forum-message-1",
+      guildId: "guild-1",
+      messageChannelId: "forum-thread-1",
+      watchChannelId: "forum-parent-1",
+      attemptCount: 2,
+      nextAttemptAt: "2026-03-12T00:00:00.000Z",
+      lastFailureCategory: "fetch_timeout",
+      replyChannelId: "forum-parent-1",
+      replyThreadId: "forum-thread-1",
+      placeMode: "forum_longform",
+      stage: "fetch_or_resolve"
+    });
+
+    scheduler.clearByPlaceMode("forum_longform");
+
+    assert.equal(store.retryJobs.get("forum-message-1"), null);
+    assert.deepEqual(
+      scheduler.pollDueJobs(new Date("2026-03-12T00:10:00.000Z")),
+      []
+    );
+  } finally {
+    store?.close();
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});

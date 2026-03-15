@@ -72,6 +72,22 @@ type TurnCompletion = {
   stream: TurnStreamState | null;
 };
 
+type PendingTurnResult = {
+  lastAgentMessage: string | null;
+  observations: TurnObservations;
+  turnId: string | null;
+};
+
+export type StartedJsonTurn<T> = {
+  turnId: string | null;
+  completion: Promise<{
+    response: T;
+    observations: TurnObservations;
+    turnId: string | null;
+  }>;
+  interrupt: () => Promise<void>;
+};
+
 export type HarnessTurnSessionMetadata = {
   sessionIdentity: string;
   workloadKind: string;
@@ -136,14 +152,17 @@ export const HARNESS_DEVELOPER_INSTRUCTIONS = [
   "If place.mode is forum_longform and you rely on searched public sources, add inline numeric citations such as [1], [2] in public_text at the supported statements.",
   "If place.mode is forum_longform, keep sources_used as the cited public URLs in first-citation order so System can emit a separate reference message.",
   "task.phase tells you whether this turn is intent-only, answer generation, or retry generation.",
-  "If the input kind is forum_research_planner, return only the requested JSON object. Create zero to four atomic worker tasks that each investigate one clear subquestion. Do not perform external research in the planner turn.",
+  "If the input kind is forum_research_prompt_refiner, return only the requested JSON object. Use design_skill_reference as the authoritative prompt-design contract, refine the raw forum request into a hidden supervisor prompt optimized for the high-level research supervisor, include a brief internal prompt_rationale_summary, and do not perform external research.",
+  "If the input kind is forum_research_supervisor, return only the requested JSON object. Treat refined_prompt as the authoritative task framing, decide whether to launch workers or finalize, produce zero to four atomic worker tasks, and request interrupts only for active workers that should stop. If next_action is launch_workers, worker_tasks must not be empty. Do not perform external research in the supervisor turn.",
   "If the input kind is forum_research_worker, investigate only the assigned subquestion. Return structured findings and public citations. Do not split the task further.",
-  "If the input kind is forum_research_streaming_final, return only the final user-facing Japanese answer body as plain text. Do not return JSON, markdown wrappers, or meta commentary.",
+  "If the input kind is forum_research_streaming_final, return only the final user-facing Japanese answer body as plain text. Do not return JSON, markdown wrappers, or meta commentary. Write a substantively developed answer that expands the evidence into sections, preserves breadth, and is free to span multiple Discord chunks when needed.",
   "If the input includes forum_research_context, treat it as hidden control-plane metadata and evidence facts. Never expose it directly in user-facing text.",
+  "If forum_research_context.refined_prompt is present, treat it as the authoritative hidden framing for the forum answer.",
   "If forum_research_context.source_catalog is present, treat it as available evidence and use inline numeric citations such as [1], [2] that match the provided numbering when those sources support the claim.",
   "If forum_research_context.previous_research_state is present, treat it as persisted evidence facts from the same forum session. Use it when relevant, but decide yourself whether additional public research is still needed.",
   "If forum_research_context.distinct_source_target is present, treat it as a grounding target rather than a refusal rule.",
-  "If forum_research_context.deadline_remaining_ms is low, prioritize using the strongest available evidence efficiently, but keep the semantic decision in the answer itself rather than emitting meta commentary.",
+  "If forum_research_context.final_brief is present, treat it as synthesis guidance and a coverage checklist, not as a ban on additional research.",
+  "For forum_research_streaming_final, do not compress the answer into a one-screen summary by default. Use the available evidence and source breadth to produce a developed public answer with inline numeric citations.",
   "On task.phase=intent, decide requested capabilities and return moderation_signal based on the user's dangerous or prohibited control request. For normal requests, set moderation_signal.violation_category to none.",
   "task.retry_context is control-plane metadata, not user input. Follow it exactly when present.",
   "If task.retry_context.kind is output_safety and place.mode is forum_longform and capabilities.allow_external_fetch is true, you may perform fresh public research now. Exclude blocked, private, and non-public sources, then answer from public grounding plus your reasoning.",
@@ -401,7 +420,7 @@ export class CodexAppServerClient {
     response: T;
     observations: TurnObservations;
   }> {
-    const result = await this.runStructuredJsonTurn<T>({
+    const started = await this.startJsonTurn<T>({
       threadId: input.threadId,
       inputPayload: input.inputPayload,
       allowExternalFetch: input.allowExternalFetch,
@@ -416,10 +435,52 @@ export class CodexAppServerClient {
         ? {}
         : { controlPolicy: input.controlPolicy })
     });
+    const result = await started.completion;
 
     return {
       response: result.response,
       observations: result.observations
+    };
+  }
+
+  async startJsonTurn<T>(input: {
+    threadId: string;
+    inputPayload: unknown;
+    allowExternalFetch: boolean;
+    outputSchema: object;
+    parser: (value: unknown) => T;
+    sessionMetadata?: HarnessTurnSessionMetadata;
+    modelProfile?: string;
+    controlPolicy?: TurnControlPolicy | null;
+  }): Promise<StartedJsonTurn<T>> {
+    const turn = await this.startTurnExecution({
+      threadId: input.threadId,
+      inputPayload: input.inputPayload,
+      allowExternalFetch: input.allowExternalFetch,
+      outputSchema: input.outputSchema,
+      ...(input.sessionMetadata === undefined
+        ? {}
+        : { sessionMetadata: input.sessionMetadata }),
+      ...(input.modelProfile === undefined ? {} : { modelProfile: input.modelProfile }),
+      ...(input.controlPolicy === undefined
+        ? {}
+        : { controlPolicy: input.controlPolicy })
+    });
+
+    return {
+      turnId: turn.turnId,
+      completion: turn.completion.then((result) => {
+        if (!result.lastAgentMessage) {
+          throw new Error("codex thread/read did not contain an agent message");
+        }
+
+        return {
+          response: input.parser(JSON.parse(result.lastAgentMessage) as unknown),
+          observations: result.observations,
+          turnId: result.turnId
+        };
+      }),
+      interrupt: turn.interrupt
     };
   }
 
@@ -614,6 +675,61 @@ export class CodexAppServerClient {
     observations: TurnObservations;
     turnId: string | null;
   }> {
+    const turn = await this.startTurnExecution({
+      threadId: input.threadId,
+      inputPayload: input.inputPayload,
+      allowExternalFetch: input.allowExternalFetch,
+      ...(input.outputSchema === undefined ? {} : { outputSchema: input.outputSchema }),
+      ...(input.sessionMetadata === undefined
+        ? {}
+        : { sessionMetadata: input.sessionMetadata }),
+      ...(input.modelProfile === undefined ? {} : { modelProfile: input.modelProfile }),
+      ...(input.controlPolicy === undefined
+        ? {}
+        : { controlPolicy: input.controlPolicy }),
+      ...(input.streamingCallbacks === undefined
+        ? {}
+        : { streamingCallbacks: input.streamingCallbacks })
+    });
+    const completionResult =
+      input.timeoutMs === undefined
+        ? await turn.completion
+        : await this.waitForTurnCompletionWithTimeout({
+            threadId: input.threadId,
+            turnId: turn.turnId,
+            timeoutMs: input.timeoutMs,
+            completion: turn.pending
+          });
+
+    return {
+      lastAgentMessage: completionResult.lastAgentMessage,
+      observations: completionResult.observations,
+      turnId: completionResult.turnId
+    };
+  }
+
+  private async startTurnExecution(input: {
+    threadId: string;
+    inputPayload: unknown;
+    allowExternalFetch: boolean;
+    outputSchema?: object;
+    sessionMetadata?: HarnessTurnSessionMetadata;
+    modelProfile?: string;
+    controlPolicy?: TurnControlPolicy | null;
+    streamingCallbacks?: StreamingTextTurnCallbacks;
+  }): Promise<{
+    turnId: string | null;
+    completion: Promise<PendingTurnResult>;
+    interrupt: () => Promise<void>;
+    pending: {
+      promise: Promise<{
+        lastAgentMessage: string | null;
+        turnId: string | null;
+        observedPublicUrls: string[];
+      }>;
+      completion: TurnCompletion;
+    };
+  }> {
     const completionHandle = this.waitForTurnCompletion({
       threadId: input.threadId,
       allowExternalFetch: input.allowExternalFetch,
@@ -634,30 +750,35 @@ export class CodexAppServerClient {
       })
     )) as { turn?: { id?: string } };
     const turnId = turnStartResult.turn?.id ?? null;
+    const completion = completionHandle.promise.then(async (completionResult) => {
+      const turnSnapshot = await this.readLatestTurnSnapshotWithRetry({
+        threadId: input.threadId,
+        turnId: completionResult.turnId ?? turnId,
+        allowExternalFetch: input.allowExternalFetch,
+        observedPublicUrls: completionResult.observedPublicUrls
+      });
 
-    const completionResult =
-      input.timeoutMs === undefined
-        ? await completionHandle.promise
-        : await this.waitForTurnCompletionWithTimeout({
-            threadId: input.threadId,
-            turnId,
-            timeoutMs: input.timeoutMs,
-            completion: completionHandle
-          });
-    const turnSnapshot = await this.readLatestTurnSnapshotWithRetry({
-      threadId: input.threadId,
-      turnId: completionResult.turnId ?? turnId,
-      allowExternalFetch: input.allowExternalFetch,
-      observedPublicUrls: completionResult.observedPublicUrls
+      return {
+        lastAgentMessage:
+          turnSnapshot.lastAgentMessage ?? completionResult.lastAgentMessage,
+        observations: {
+          observed_public_urls: sortStrings(turnSnapshot.observedPublicUrls)
+        },
+        turnId: completionResult.turnId ?? turnId
+      };
     });
 
     return {
-      lastAgentMessage:
-        turnSnapshot.lastAgentMessage ?? completionResult.lastAgentMessage,
-      observations: {
-        observed_public_urls: sortStrings(turnSnapshot.observedPublicUrls)
+      turnId,
+      completion,
+      interrupt: async () => {
+        const activeTurnId = completionHandle.completion.turnId ?? turnId;
+        if (!activeTurnId) {
+          return;
+        }
+        await this.interruptTurn(input.threadId, activeTurnId);
       },
-      turnId: completionResult.turnId ?? turnId
+      pending: completionHandle
     };
   }
 

@@ -19,6 +19,7 @@ import { OverrideSessionRepository } from "./repositories/override-repository.js
 import {
   AppRuntimeLockRepository,
   ChatChannelCounterRepository,
+  ForumResearchPromptArtifactRepository,
   ForumResearchStateRepository,
   MessageProcessingRepository,
   RetryJobRepository,
@@ -41,6 +42,7 @@ export class SqliteStore {
   readonly messageProcessing: MessageProcessingRepository;
   readonly retryJobs: RetryJobRepository;
   readonly forumResearchStates: ForumResearchStateRepository;
+  readonly forumResearchPromptArtifacts: ForumResearchPromptArtifactRepository;
   readonly runtimeLock: AppRuntimeLockRepository;
   readonly chatChannelCounters: ChatChannelCounterRepository;
   readonly scheduledDeliveries: ScheduledDeliveryRepository;
@@ -64,6 +66,9 @@ export class SqliteStore {
     this.messageProcessing = new MessageProcessingRepository(this.db);
     this.retryJobs = new RetryJobRepository(this.db);
     this.forumResearchStates = new ForumResearchStateRepository(this.db);
+    this.forumResearchPromptArtifacts = new ForumResearchPromptArtifactRepository(
+      this.db
+    );
     this.runtimeLock = new AppRuntimeLockRepository(this.db);
     this.chatChannelCounters = new ChatChannelCounterRepository(this.db);
     this.scheduledDeliveries = new ScheduledDeliveryRepository(this.db);

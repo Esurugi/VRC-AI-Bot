@@ -25,12 +25,15 @@ type FailureContext = {
 };
 
 const RETRY_DELAYS_MS = [5 * 60_000, 30 * 60_000, 2 * 60 * 60_000] as const;
-const FORUM_RETRY_DELAYS_MS = [0, 15_000] as const;
 
 export class FailureClassifier {
   classify(error: unknown, context: FailureContext): FailureDecision {
     const details = normalizeError(error);
     const adminErrorPayload = details.message;
+
+    if (context.watchMode === "forum_longform") {
+      return classifyForumFailure(details, context.stage, adminErrorPayload);
+    }
 
     if (isPermissionFailure(details)) {
       return {
@@ -63,9 +66,7 @@ export class FailureClassifier {
     }
 
     if (isTransientFailure(details)) {
-      const retryDelays =
-        context.watchMode === "forum_longform" ? FORUM_RETRY_DELAYS_MS : RETRY_DELAYS_MS;
-      const delayMs = retryDelays[context.attemptCount];
+      const delayMs = RETRY_DELAYS_MS[context.attemptCount];
       if (delayMs == null || context.stage === "post_response") {
         return {
           retryable: false,
@@ -98,6 +99,60 @@ export class FailureClassifier {
       terminalReason: "non_retryable_runtime_failure"
     };
   }
+}
+
+function classifyForumFailure(
+  details: NormalizedError,
+  stage: FailureStage,
+  adminErrorPayload: string
+): FailureDecision {
+  if (isPermissionFailure(details)) {
+    return {
+      retryable: false,
+      publicCategory: "permission_denied",
+      adminErrorPayload,
+      delayMs: null,
+      terminalReason: "forum_permission_denied"
+    };
+  }
+
+  if (isUnsupportedPlaceFailure(details)) {
+    return {
+      retryable: false,
+      publicCategory: "unsupported_place",
+      adminErrorPayload,
+      delayMs: null,
+      terminalReason: "forum_unsupported_place"
+    };
+  }
+
+  if (isPublicPageUnavailableFailure(details, stage)) {
+    return {
+      retryable: false,
+      publicCategory: "public_page_unavailable",
+      adminErrorPayload,
+      delayMs: null,
+      terminalReason: "forum_public_page_unavailable"
+    };
+  }
+
+  if (isTimeoutFailure(details)) {
+    return {
+      retryable: false,
+      publicCategory: "fetch_timeout",
+      adminErrorPayload,
+      delayMs: null,
+      terminalReason: "forum_same_request_retry_only"
+    };
+  }
+
+  return {
+    retryable: false,
+    publicCategory: "ai_processing_failed",
+    adminErrorPayload,
+    delayMs: null,
+    terminalReason: "forum_same_request_retry_only"
+  };
 }
 
 type NormalizedError = {

@@ -32,9 +32,9 @@ test("FailureClassifier marks timeout and service errors as transient with stage
     attemptCount: 0,
     watchMode: "forum_longform"
   });
-  assert.equal(forumTimeoutDecision.retryable, true);
+  assert.equal(forumTimeoutDecision.retryable, false);
   assert.equal(forumTimeoutDecision.publicCategory, "fetch_timeout");
-  assert.equal(forumTimeoutDecision.delayMs, 0);
+  assert.equal(forumTimeoutDecision.delayMs, null);
 });
 
 test("FailureClassifier marks blocked or missing resources as permanent", () => {
@@ -88,7 +88,7 @@ test("FailureClassifier stops retrying after three attempts or in post_response 
   assert.equal(postResponse.publicCategory, "retry_limit_reached");
 });
 
-test("FailureClassifier treats forum planner timeout like other transient forum timeouts", () => {
+test("FailureClassifier keeps forum timeouts out of delayed retry scheduling", () => {
   const classifier = new FailureClassifier();
 
   const decision = classifier.classify(
@@ -102,7 +102,7 @@ test("FailureClassifier treats forum planner timeout like other transient forum 
     }
   );
 
-  assert.equal(decision.retryable, true);
+  assert.equal(decision.retryable, false);
   assert.equal(decision.publicCategory, "fetch_timeout");
-  assert.equal(decision.delayMs, 0);
+  assert.equal(decision.delayMs, null);
 });

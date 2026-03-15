@@ -12,6 +12,7 @@ import type { ModerationExecutor } from "../../discord/moderation-executor.js";
 import { writeDiscordRuntimeSnapshot } from "../../discord/runtime-facts.js";
 import type { AppConfig } from "../../domain/types.js";
 import { HarnessRunner } from "../../harness/harness-runner.js";
+import { appendRuntimeTrace } from "../../observability/runtime-trace.js";
 import { RecentChatHistoryService } from "../chat/recent-chat-history-service.js";
 import {
   ForumFirstTurnPreprocessor,
@@ -27,6 +28,19 @@ import {
   type StageFailureInput
 } from "../types.js";
 import { ReplyDispatchService } from "./reply-dispatch-service.js";
+
+type TypingIndicatorController = {
+  pulseNow: (
+    reason:
+      | "startup"
+      | "heartbeat"
+      | "progress_notice"
+      | "retry_status"
+      | "retry_stream"
+      | "final_stream"
+  ) => Promise<void>;
+  stop: () => void;
+};
 
 export class MessageProcessingService {
   constructor(
@@ -73,7 +87,18 @@ export class MessageProcessingService {
       return;
     }
 
-    const stopTyping = this.startTypingIndicator(item.message.channel);
+    const typingIndicator =
+      item.watchLocation.mode === "forum_longform"
+        ? this.startTypingIndicator(item.message.channel, {
+            owner: "forum_high_thinking",
+            messageId: item.envelope.messageId,
+            channelId: item.envelope.channelId
+          })
+        : this.startTypingIndicator(item.message.channel, {
+            owner: "message_processing",
+            messageId: item.envelope.messageId,
+            channelId: item.envelope.channelId
+          });
     try {
       let routed: RoutedHarnessMessage | null;
       let replyTarget = buildSamePlaceReplyTarget(item);
@@ -87,7 +112,11 @@ export class MessageProcessingService {
             actorRole: item.actorRole,
             scope: item.scope
           });
-        routed = await this.resolveHarnessMessage(item, forumBootstrap);
+        routed = await this.resolveHarnessMessage(
+          item,
+          forumBootstrap,
+          typingIndicator
+        );
       } catch (error) {
         await this.handleRuntimeFailure(item, {
           stage: "fetch_or_resolve",
@@ -124,13 +153,14 @@ export class MessageProcessingService {
         replyTarget: buildSamePlaceReplyTarget(item)
       });
     } finally {
-      stopTyping();
+      typingIndicator.stop();
     }
   }
 
   async resolveHarnessMessage(
     item: QueuedMessage,
-    forumBootstrap?: ForumFirstTurnPreparation
+    forumBootstrap?: ForumFirstTurnPreparation,
+    typingIndicator: TypingIndicatorController
   ): Promise<RoutedHarnessMessage | null> {
     const resolvedForumBootstrap =
       forumBootstrap ??
@@ -162,49 +192,85 @@ export class MessageProcessingService {
       recentMessages,
       forumStarterMessage: resolvedForumBootstrap.starterMessage,
       ...(item.watchLocation.mode === "forum_longform"
-        ? { forumRetryCallbacks: this.buildForumCallbacks(item) }
+        ? {
+            forumRetryCallbacks: this.buildForumCallbacks(
+              item,
+              typingIndicator
+            )
+          }
         : {})
     });
   }
 
-  private buildForumCallbacks(item: QueuedMessage) {
-    let streamWriterPromise:
+  private buildForumCallbacks(
+    item: QueuedMessage,
+    typingIndicator: TypingIndicatorController
+  ) {
+    let retryStreamWriterPromise:
       | Promise<{
           append: (delta: string) => Promise<void>;
           complete: () => Promise<void>;
         }>
       | null = null;
-    let statusSent = false;
-    let progressSent = false;
+    let finalStreamWriterPromise:
+      | Promise<{
+          append: (delta: string) => Promise<void>;
+          complete: () => Promise<void>;
+        }>
+      | null = null;
+    const sentStatuses = new Set<string>();
+    const sentProgressNotices = new Set<string>();
 
     return {
       onProgressNotice: async (content: string) => {
-        if (item.source !== "live" || progressSent) {
+        const normalized = content.trim();
+        if (
+          item.source !== "live" ||
+          normalized.length === 0 ||
+          sentProgressNotices.has(normalized)
+        ) {
           return;
         }
-        progressSent = true;
+        sentProgressNotices.add(normalized);
+        await typingIndicator.pulseNow("progress_notice");
         await this.replyDispatchService.sendFollowupInSamePlace(item, content);
       },
       onRetryStatus: async (content: string) => {
-        if (statusSent) {
+        const normalized = content.trim();
+        if (normalized.length === 0 || sentStatuses.has(normalized)) {
           return;
         }
-        statusSent = true;
+        sentStatuses.add(normalized);
+        await typingIndicator.pulseNow("retry_status");
         await this.replyDispatchService.sendFollowupInSamePlace(item, content);
       },
       onRetryStream: {
         onAgentMessageDelta: async (delta: string) => {
-          streamWriterPromise ??=
+          await typingIndicator.pulseNow("retry_stream");
+          retryStreamWriterPromise ??=
             this.replyDispatchService.createStreamingReplyInSamePlace(item);
-          const writer = await streamWriterPromise;
+          const writer = await retryStreamWriterPromise;
           await writer.append(delta);
         }
       },
       onRetryCompleted: async () => {
-        if (!streamWriterPromise) {
+        if (!retryStreamWriterPromise) {
           return;
         }
-        const writer = await streamWriterPromise;
+        const writer = await retryStreamWriterPromise;
+        await writer.complete();
+      },
+      onFinalTextDelta: async (delta: string) => {
+        finalStreamWriterPromise ??=
+          this.replyDispatchService.createStreamingReplyInSamePlace(item);
+        const writer = await finalStreamWriterPromise;
+        await writer.append(delta);
+      },
+      onFinalTextCompleted: async () => {
+        if (!finalStreamWriterPromise) {
+          return;
+        }
+        const writer = await finalStreamWriterPromise;
         await writer.complete();
       }
     };
@@ -260,6 +326,17 @@ export class MessageProcessingService {
     item: QueuedMessage,
     input: StageFailureInput
   ): Promise<void> {
+    if (item.watchLocation.mode === "forum_longform") {
+      await this.handleForumTerminalFailure({
+        messageId: item.envelope.messageId,
+        channelId: item.envelope.channelId,
+        notify: async (notice) =>
+          this.replyDispatchService.notifyFailureInTarget(item, input.replyTarget, notice)
+      });
+      this.markMessageCompleted(item);
+      return;
+    }
+
     const existingRetry = this.store.retryJobs.get(item.envelope.messageId);
     const decision = this.failureClassifier.classify(input.error, {
       stage: input.stage,
@@ -325,6 +402,17 @@ export class MessageProcessingService {
     item: RetryJobRow,
     error: unknown
   ): Promise<void> {
+    if (item.place_mode === "forum_longform") {
+      await this.handleForumTerminalFailure({
+        messageId: item.message_id,
+        channelId: item.message_channel_id,
+        notify: async (notice) =>
+          this.replyDispatchService.notifyFailureForRetryJob(item, notice)
+      });
+      this.markMessageCompletedById(item.message_id, item.message_channel_id);
+      return;
+    }
+
     const decision = this.failureClassifier.classify(error, {
       stage: "fetch_or_resolve",
       attemptCount: item.attempt_count,
@@ -384,36 +472,97 @@ export class MessageProcessingService {
     this.markMessageCompletedById(item.message_id, item.message_channel_id);
   }
 
-  private startTypingIndicator(channel: GuildTextBasedChannel): () => void {
+  private async handleForumTerminalFailure(input: {
+    messageId: string;
+    channelId: string;
+    notify: (notice: string) => Promise<void>;
+  }): Promise<void> {
+    const notice =
+      "調査回答の処理が中断しました。この依頼での visible retry は完了できなかったため、必要なら同じ thread で続けてください。";
+
+    try {
+      await input.notify(notice);
+    } catch (notifyError) {
+      this.logger.warn(
+        {
+          error:
+            notifyError instanceof Error ? notifyError.message : String(notifyError),
+          messageId: input.messageId,
+          channelId: input.channelId
+        },
+        "failed to notify forum terminal failure in public target"
+      );
+    }
+  }
+
+  private startTypingIndicator(
+    channel: GuildTextBasedChannel,
+    context: {
+      owner: "forum_high_thinking" | "message_processing";
+      messageId: string;
+      channelId: string;
+    }
+  ): TypingIndicatorController {
     let active = true;
     let timer: NodeJS.Timeout | null = null;
 
-    const sendTyping = async (): Promise<void> => {
+    appendRuntimeTrace("codex-app-server", "typing_indicator_started", context);
+
+    const sendTyping = async (
+      reason:
+        | "startup"
+        | "heartbeat"
+        | "progress_notice"
+        | "retry_status"
+        | "retry_stream"
+        | "final_stream"
+    ): Promise<void> => {
       try {
         await channel.sendTyping();
+        appendRuntimeTrace("codex-app-server", "typing_indicator_sent", {
+          ...context,
+          reason
+        });
       } catch (error) {
+        appendRuntimeTrace("codex-app-server", "typing_indicator_failed", {
+          ...context,
+          reason,
+          error: error instanceof Error ? error.message : String(error)
+        });
         this.logger.warn(
           {
             error: error instanceof Error ? error.message : String(error),
-            channelId: channel.id
+            channelId: channel.id,
+            owner: context.owner,
+            messageId: context.messageId,
+            reason
           },
           "failed to send typing indicator"
         );
       }
     };
 
-    void sendTyping();
+    void sendTyping("startup");
     timer = setInterval(() => {
       if (!active) {
         return;
       }
-      void sendTyping();
+      void sendTyping("heartbeat");
     }, 8_000);
 
-    return () => {
-      active = false;
-      if (timer) {
-        clearInterval(timer);
+    return {
+      pulseNow: (reason) => {
+        if (!active) {
+          return Promise.resolve();
+        }
+        return sendTyping(reason);
+      },
+      stop: () => {
+        active = false;
+        if (timer) {
+          clearInterval(timer);
+        }
+        appendRuntimeTrace("codex-app-server", "typing_indicator_stopped", context);
       }
     };
   }
