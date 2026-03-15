@@ -8,6 +8,7 @@ import type {
 
 export const DEFAULT_CODEX_MODEL_PROFILE = "default:gpt-5.4";
 export const DEFAULT_CODEX_MODEL = "gpt-5.4";
+export const CHAT_CONVERSATION_LOW_CODEX_MODEL_PROFILE = "chat:gpt-5.4:low";
 export const FORUM_LONGFORM_CODEX_MODEL_PROFILE = "forum:gpt-5.4:high";
 export const FORUM_LONGFORM_LOW_CODEX_MODEL_PROFILE = "forum:gpt-5.4:low";
 export const RUNTIME_CONTRACT_VERSION = "2026-03-13.session-policy.v2";
@@ -89,7 +90,10 @@ export class SessionPolicyResolver {
         bindingId: input.envelope.channelId,
         actorId: null,
         sandboxMode: "read-only",
-        lifecyclePolicy: "reusable"
+        lifecyclePolicy: "reusable",
+        ...(input.watchLocation.mode === "chat"
+          ? { modelProfile: CHAT_CONVERSATION_LOW_CODEX_MODEL_PROFILE }
+          : {})
       });
     }
 
@@ -119,7 +123,10 @@ export class SessionPolicyResolver {
       ),
       actorId: null,
       sandboxMode: "read-only",
-      lifecyclePolicy: "reusable"
+      lifecyclePolicy: "reusable",
+      ...(input.watchLocation.mode === "chat"
+        ? { modelProfile: CHAT_CONVERSATION_LOW_CODEX_MODEL_PROFILE }
+        : {})
     });
   }
 

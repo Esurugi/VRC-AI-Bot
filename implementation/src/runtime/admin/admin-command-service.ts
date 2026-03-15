@@ -10,6 +10,7 @@ import {
   type Channel,
   type ChatInputCommandInteraction,
   type Client,
+  type GuildBasedChannel,
   type NewsChannel,
   type TextChannel
 } from "discord.js";
@@ -76,18 +77,6 @@ export class AdminCommandService {
       return true;
     }
 
-    const watchLocation = resolveCommandWatchLocation(
-      interaction.channel,
-      this.config.watchLocations
-    );
-    if (!watchLocation) {
-      await replyToInteraction(
-        interaction,
-        "この command は configured な会話 place でのみ使えます。"
-      );
-      return true;
-    }
-
     const actorRole = resolveInteractionActorRole(
       interaction,
       this.config.discordOwnerUserIds
@@ -101,6 +90,10 @@ export class AdminCommandService {
     }
 
     if (interaction.commandName === "weekly-meetup-test") {
+      const watchLocation = resolveCommandWatchLocation(
+        interaction.channel,
+        this.config.watchLocations
+      );
       if (!isAdminControlRootPlace(interaction.channel, watchLocation)) {
         await replyToInteraction(
           interaction,
@@ -126,14 +119,6 @@ export class AdminCommandService {
     }
 
     if (interaction.commandName === "override-start") {
-      if (!isConversationCapableOverrideStartPlace(interaction.channel, watchLocation)) {
-        await replyToInteraction(
-          interaction,
-          "この command は configured `chat` / `admin_control` / `forum_longform` の会話 place でのみ使えます。forum_longform では post thread 内で実行してください。"
-        );
-        return true;
-      }
-
       const adminWatchLocation = findAdminControlWatchLocation(
         this.config.watchLocations,
         interaction.guildId
@@ -158,11 +143,15 @@ export class AdminCommandService {
       const startedAt = new Date().toISOString();
       const flags = readOverrideFlags(interaction);
       const initialPrompt = interaction.options.getString("prompt")?.trim() ?? "";
+      const originWatchLocation = resolveCommandWatchLocation(
+        interaction.channel,
+        this.config.watchLocations
+      );
       const effectiveContentOverride =
         initialPrompt.length > 0 && interaction.channel
           ? await this.overrideBootstrapPromptContextService.buildEffectivePrompt({
               prompt: initialPrompt,
-              origin: buildCommandOriginContext(interaction, watchLocation),
+              origin: buildCommandOriginContext(interaction, originWatchLocation),
               historyChannel: interaction.channel
             })
           : null;
@@ -404,56 +393,64 @@ function resolveCommandWatchLocation(
   return null;
 }
 
-function isConversationCapableOverrideStartPlace(
-  channel: Channel | null,
-  watchLocation: WatchLocationConfig
-): boolean {
-  if (!channel || watchLocation.mode === "url_watch") {
-    return false;
-  }
-
-  if (watchLocation.mode === "forum_longform") {
-    return channel.isThread();
-  }
-
-  return true;
-}
-
 function isAdminControlRootPlace(
   channel: Channel | null,
-  watchLocation: WatchLocationConfig
+  watchLocation: WatchLocationConfig | null
 ): boolean {
   return Boolean(
     channel &&
       !channel.isThread() &&
-      watchLocation.mode === "admin_control" &&
+      watchLocation?.mode === "admin_control" &&
       watchLocation.channelId === channel.id
   );
 }
 
 function buildCommandOriginContext(
   interaction: ChatInputCommandInteraction,
-  watchLocation: WatchLocationConfig
+  watchLocation: WatchLocationConfig | null
 ): {
   guildId: string;
   channelId: string;
   rootChannelId: string;
   threadId: string | null;
-  mode: WatchLocationConfig["mode"];
+  mode: WatchLocationConfig["mode"] | "unconfigured";
   placeType: ReturnType<typeof resolvePlaceType>;
 } {
   if (!interaction.channel || !interaction.inCachedGuild()) {
     throw new Error("override command origin context requires a cached guild channel");
   }
 
+  const rootChannelId = interaction.channel.isThread()
+    ? (interaction.channel.parentId ?? interaction.channelId)
+    : interaction.channelId;
+
   return {
     guildId: interaction.guildId,
     channelId: interaction.channelId,
-    rootChannelId: watchLocation.channelId,
+    rootChannelId,
     threadId: interaction.channel.isThread() ? interaction.channelId : null,
-    mode: watchLocation.mode,
-    placeType: resolvePlaceType(interaction.channel, watchLocation.mode)
+    mode: watchLocation?.mode ?? "unconfigured",
+    placeType: resolveCommandOriginPlaceType(interaction.channel, watchLocation)
   };
+}
+
+function resolveCommandOriginPlaceType(
+  channel: GuildBasedChannel,
+  watchLocation: WatchLocationConfig | null
+): ReturnType<typeof resolvePlaceType> {
+  if (watchLocation) {
+    return resolvePlaceType(channel, watchLocation.mode);
+  }
+
+  if (channel.isThread()) {
+    return channel.type === ChannelType.PrivateThread ? "private_thread" : "public_thread";
+  }
+
+  if (channel.type === ChannelType.GuildAnnouncement) {
+    return "guild_announcement";
+  }
+
+  return "guild_text";
 }
 
 function buildOverrideThreadName(interaction: ChatInputCommandInteraction): string {

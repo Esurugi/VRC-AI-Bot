@@ -1,5 +1,6 @@
 import type { ReasoningEffort } from "./generated/ReasoningEffort.js";
 import {
+  CHAT_CONVERSATION_LOW_CODEX_MODEL_PROFILE,
   DEFAULT_CODEX_MODEL,
   DEFAULT_CODEX_MODEL_PROFILE,
   FORUM_LONGFORM_CODEX_MODEL_PROFILE,
@@ -19,6 +20,11 @@ export function resolveCodexExecutionProfile(
       return {
         model: DEFAULT_CODEX_MODEL,
         reasoningEffort: null
+      };
+    case CHAT_CONVERSATION_LOW_CODEX_MODEL_PROFILE:
+      return {
+        model: DEFAULT_CODEX_MODEL,
+        reasoningEffort: "low"
       };
     case FORUM_LONGFORM_CODEX_MODEL_PROFILE:
       return {

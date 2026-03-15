@@ -20,7 +20,7 @@ type OverrideBootstrapOriginContext = {
   channelId: string;
   rootChannelId: string;
   threadId: string | null;
-  mode: WatchLocationConfig["mode"];
+  mode: WatchLocationConfig["mode"] | "unconfigured";
   placeType: PlaceType;
 };
 

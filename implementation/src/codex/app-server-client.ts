@@ -145,6 +145,7 @@ export const HARNESS_DEVELOPER_INSTRUCTIONS = [
   "If available_context.thread_context.kind is knowledge_thread, prefer answering in that existing thread and use known_source_urls when useful.",
   "available_context.recent_messages are same-place recent human messages that happened before the current message and after the last visible bot reply. They are supplemental context only; message.content is the current turn.",
   "Unless the user explicitly requests another language, write public_text in natural Japanese.",
+  "If place.mode is chat, use a slightly casual Japanese tone. Keep it friendly and relaxed, but not rude, noisy, or slang-heavy.",
   "fetchable_public_urls are already-approved direct URLs from the user message. blocked_urls are visible context, not approved fetch targets.",
   "If capabilities.allow_external_fetch is true, you may inspect public sources that stay within the same public-URL safety boundary.",
   "If task.phase is intent and place.mode is forum_longform, request requested_external_fetch=public_research unless the user explicitly forbids external lookup.",
