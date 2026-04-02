@@ -1,12 +1,32 @@
 dist
 node_modules
-.env
-bot.sqlite
-bot.sqlite-shm
-bot.sqlite-wal
 artifacts
 coverage
 .pnpm-store
+
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+.claude/
+
+# Local databases and runtime traces
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
 .tmp/
 document.body.innerText
-.claude/
+
+# Local operational config
+config/watch-locations.json
+config/chat-runtime-controls.json
+config/weekly-meetup-announcement.json
+
+# Private agent assets and prompt materials
+.agents/
+implementation/src/runtime/forum/forum-research-prompt-refiner-contract.md
+
+# Internal working docs
+docs/
+implementation/docs/
