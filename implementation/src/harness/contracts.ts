@@ -120,14 +120,38 @@ export type HarnessRequest = {
       reply_thread_id: string | null;
       root_channel_id: string;
     };
+    place_context: {
+      is_knowledge_place: boolean;
+    };
+    delivery_context: {
+      is_bot_directed: boolean;
+      bot_directed_trigger_kind:
+        | "direct_mention"
+        | "reply_to_bot"
+        | null;
+    };
     discord_runtime_facts_path: string | null;
     fetchable_public_urls: string[];
     blocked_urls: string[];
-    recent_messages: Array<{
+    chat_behavior: "ambient_room_chat" | "directed_help_chat" | null;
+    chat_engagement: {
+      trigger_kind:
+        | "direct_mention"
+        | "reply_to_bot"
+        | "question_marker"
+        | "sparse_periodic"
+        | "ambient_room";
+      is_directed_to_bot: boolean;
+      sparse_ordinal: number | null;
+      ordinary_message_count: number | null;
+    } | null;
+    recent_room_events: Array<{
       message_id: string;
-      author_id: string;
+      author: string;
+      is_bot: boolean;
+      reply_to_message_id: string | null;
+      mentions_bot: boolean;
       content: string;
-      created_at: string;
     }>;
   };
   task: {

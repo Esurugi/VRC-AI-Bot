@@ -101,7 +101,8 @@ export class RetryJobRunner {
       envelope: buildMessageEnvelope(typedMessage, watchLocation),
       watchLocation,
       actorRole: resolveActorRole(typedMessage, this.config.discordOwnerUserIds),
-      scope: resolveScope(typedMessage, watchLocation)
+      scope: resolveScope(typedMessage, watchLocation),
+      chatEngagement: null
     };
   }
 }

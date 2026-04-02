@@ -2,8 +2,9 @@ import { randomUUID } from "node:crypto";
 
 import type {
   ActorRole,
+  ChatEngagementFact,
   MessageEnvelope,
-  RecentChatMessageFact,
+  RecentRoomEventFact,
   Scope,
   WatchLocationConfig
 } from "../domain/types.js";
@@ -36,7 +37,8 @@ export function buildHarnessRequest(input: {
   allowModeration?: boolean;
   overrideContext?: OverrideContext;
   discordRuntimeFactsPath?: string | null;
-  recentMessages?: RecentChatMessageFact[];
+  chatEngagement?: ChatEngagementFact | null;
+  recentRoomEvents?: RecentRoomEventFact[];
   retryContext?:
     | {
         kind: "output_safety";
@@ -83,11 +85,22 @@ export function buildHarnessRequest(input: {
       }
     },
     discordRuntimeFactsPath = null,
-    recentMessages = [],
+    chatEngagement = null,
+    recentRoomEvents = [],
     retryContext = null
   } = input;
   const fetchablePublicUrls: string[] = [];
   const blockedUrls: string[] = [];
+  const isKnowledgePlace =
+    watchLocation.mode === "url_watch" ||
+    threadContext.kind === "knowledge_thread";
+  const deliveryTriggerKind =
+    chatEngagement?.is_directed_to_bot === true
+      ? chatEngagement.trigger_kind === "direct_mention" ||
+        chatEngagement.trigger_kind === "reply_to_bot"
+        ? chatEngagement.trigger_kind
+        : null
+      : null;
 
   for (const url of envelope.urls) {
     if (isAllowedPublicHttpUrl(url)) {
@@ -150,10 +163,22 @@ export function buildHarnessRequest(input: {
         reply_thread_id: threadContext.replyThreadId,
         root_channel_id: threadContext.rootChannelId
       },
+      place_context: {
+        is_knowledge_place: isKnowledgePlace
+      },
+      delivery_context: {
+        is_bot_directed: chatEngagement?.is_directed_to_bot ?? false,
+        bot_directed_trigger_kind: deliveryTriggerKind
+      },
       discord_runtime_facts_path: discordRuntimeFactsPath,
       fetchable_public_urls: fetchablePublicUrls,
       blocked_urls: blockedUrls,
-      recent_messages: recentMessages
+      chat_engagement: chatEngagement,
+      recent_room_events: recentRoomEvents,
+      chat_behavior:
+        watchLocation.mode === "chat"
+          ? (watchLocation.chatBehavior ?? "ambient_room_chat")
+          : null
     },
     task: {
       kind: taskKind,

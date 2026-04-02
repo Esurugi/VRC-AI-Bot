@@ -54,6 +54,7 @@ import {
   ReplyDispatchService,
   resolveKnowledgeIngestRouting
 } from "../runtime/message/reply-dispatch-service.js";
+import { StartupMessageRecoveryService } from "../runtime/message/startup-message-recovery-service.js";
 import { RetryJobRunner } from "../runtime/scheduling/retry-job-runner.js";
 import {
   resolveNextWeeklyMeetupAnnouncementAt,
@@ -86,6 +87,7 @@ type BotApplicationDependencies = {
   replyDispatchService?: ReplyDispatchService;
   messageProcessingService?: MessageProcessingService;
   messageIntakeService?: MessageIntakeService;
+  startupMessageRecoveryService?: StartupMessageRecoveryService;
   retryJobRunner?: RetryJobRunner;
   adminCommandService?: AdminCommandService;
   adminOverrideBootstrapService?: AdminOverrideBootstrapService;
@@ -119,6 +121,7 @@ export class BotApplication {
   private readonly replyDispatchService: ReplyDispatchService;
   private readonly messageProcessingService: MessageProcessingService;
   private readonly messageIntakeService: MessageIntakeService;
+  private readonly startupMessageRecoveryService: StartupMessageRecoveryService;
   private readonly retryJobRunner: RetryJobRunner;
   private readonly adminCommandService: AdminCommandService;
   private readonly adminOverrideBootstrapService: AdminOverrideBootstrapService;
@@ -223,6 +226,8 @@ export class BotApplication {
         logger: this.logger,
         fetchChannel: (channelId) => this.fetchChannel(channelId)
       });
+    this.chatEngagementPolicy =
+      dependencies.chatEngagementPolicy ?? new ChatEngagementPolicy();
     this.messageProcessingService =
       dependencies.messageProcessingService ??
       new MessageProcessingService(
@@ -231,6 +236,7 @@ export class BotApplication {
         this.harnessRunner,
         this.forumFirstTurnPreprocessor,
         this.recentChatHistoryService,
+        this.chatEngagementPolicy,
         this.failureClassifier,
         this.retryScheduler,
         this.moderationIntegration,
@@ -246,8 +252,6 @@ export class BotApplication {
     this.chatChannelCounterService =
       dependencies.chatChannelCounterService ??
       new ChatChannelCounterService(this.store);
-    this.chatEngagementPolicy =
-      dependencies.chatEngagementPolicy ?? new ChatEngagementPolicy();
     this.chatRuntimeControlService =
       dependencies.chatRuntimeControlService ??
       new ChatRuntimeControlService(this.config.chatRuntimeControls ?? null);
@@ -264,6 +268,15 @@ export class BotApplication {
         this.forumThreadService,
         this.logger
       );
+    this.startupMessageRecoveryService =
+      dependencies.startupMessageRecoveryService ??
+      new StartupMessageRecoveryService({
+        watchLocations: config.watchLocations,
+        store: this.store,
+        fetchChannel: (channelId) => this.fetchChannel(channelId),
+        messageIntakeService: this.messageIntakeService,
+        logger: this.logger
+      });
     this.adminOverrideBootstrapService =
       dependencies.adminOverrideBootstrapService ??
       new AdminOverrideBootstrapService(
@@ -339,7 +352,7 @@ export class BotApplication {
       await this.adminCommandService.registerCommands();
       this.startLeaseHeartbeat();
       await this.seedInitialCursors();
-      await this.catchUpPendingMessages();
+      await this.startupMessageRecoveryService.recoverPendingMessages();
       await this.retryJobRunner.drainDueJobs();
       await this.weeklyMeetupAnnouncementService.poll(new Date());
       this.retryJobRunner.start();
@@ -573,10 +586,6 @@ export class BotApplication {
         }
       }
     }
-  }
-
-  private async catchUpPendingMessages(): Promise<void> {
-    // T09c: runtime seam only. Pending live catch-up remains intentionally deferred.
   }
 }
 

@@ -11,8 +11,9 @@ import type {
 } from "../codex/app-server-client.js";
 import type {
   ActorRole,
+  ChatEngagementFact,
   MessageEnvelope,
-  RecentChatMessageFact,
+  RecentRoomEventFact,
   Scope,
   WatchLocationConfig
 } from "../domain/types.js";
@@ -46,7 +47,8 @@ export type HarnessMessageContext = {
   scope: Scope;
   discordRuntimeFactsPath?: string | null;
   effectiveContentOverride?: string | null;
-  recentMessages?: RecentChatMessageFact[];
+  chatEngagement?: ChatEngagementFact | null;
+  recentRoomEvents?: RecentRoomEventFact[];
   forumStarterMessage?: string | null;
   forumRetryCallbacks?: ForumResearchRetryCallbacks;
 };
@@ -134,7 +136,8 @@ export class HarnessRunner {
       allowKnowledgeWrite: false,
       allowModeration: normalizedInput.actorRole !== "user",
       discordRuntimeFactsPath: normalizedInput.discordRuntimeFactsPath ?? null,
-      recentMessages: normalizedInput.recentMessages ?? []
+      chatEngagement: normalizedInput.chatEngagement ?? null,
+      recentRoomEvents: normalizedInput.recentRoomEvents ?? []
     });
     const fetchablePublicUrlCount =
       intentRequest.available_context.fetchable_public_urls.length;
@@ -207,7 +210,8 @@ export class HarnessRunner {
       allowKnowledgeWrite: grantedCapabilities.allow_knowledge_write,
       allowModeration: grantedCapabilities.allow_moderation,
       discordRuntimeFactsPath: normalizedInput.discordRuntimeFactsPath ?? null,
-      recentMessages: normalizedInput.recentMessages ?? []
+      chatEngagement: normalizedInput.chatEngagement ?? null,
+      recentRoomEvents: normalizedInput.recentRoomEvents ?? []
     });
     const answerFlow = await this.runAnswerFlow({
       input: normalizedInput,
@@ -336,7 +340,8 @@ export class HarnessRunner {
         },
         discordRuntimeFactsPath:
           input.request.available_context.discord_runtime_facts_path,
-        recentMessages: input.request.available_context.recent_messages
+        chatEngagement: input.request.available_context.chat_engagement,
+        recentRoomEvents: input.request.available_context.recent_room_events
       });
       const knowledgeRetryTurn = await this.codexClient.runHarnessRequest(
         input.session.threadId,
@@ -436,7 +441,8 @@ export class HarnessRunner {
       },
       discordRuntimeFactsPath:
         input.request.available_context.discord_runtime_facts_path,
-      recentMessages: input.request.available_context.recent_messages
+      chatEngagement: input.request.available_context.chat_engagement,
+      recentRoomEvents: input.request.available_context.recent_room_events
     });
     const secondTurn =
       isForumResearch && firstTurn.state
@@ -445,7 +451,9 @@ export class HarnessRunner {
             threadId: input.session.threadId,
             sessionMetadata: toSessionMetadata(input.session),
             state: firstTurn.state,
-            callbacks: input.input.forumRetryCallbacks
+            ...(input.input.forumRetryCallbacks
+              ? { callbacks: input.input.forumRetryCallbacks }
+              : {})
           })
         : await this.codexClient.runHarnessRequest(
             input.session.threadId,

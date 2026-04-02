@@ -32,6 +32,11 @@ import type { SqliteStore, RetryJobRow } from "../../storage/database.js";
 import type { FailurePublicCategory, FailureStage } from "../../app/failure-classifier.js";
 import type { SanctionNotificationPayload } from "../../app/moderation-integration.js";
 import { appendRuntimeTrace } from "../../observability/runtime-trace.js";
+import {
+  hasSharedSourceEvidence,
+  isKnowledgePlaceMode,
+  isThreadEnvelope
+} from "../../domain/response-boundary.js";
 import type {
   FailureReplyTarget,
   QueuedMessage,
@@ -536,10 +541,10 @@ export class ReplyDispatchService {
     persistenceScope: Scope | null
   ): Promise<FailureReplyTarget> {
     const routing = resolveKnowledgeIngestRouting({
-      isThreadMessage: item.envelope.placeType.endsWith("thread"),
+      isThreadMessage: isThreadEnvelope(item.envelope),
       watchMode: item.watchLocation.mode,
       replyMode: response.reply_mode,
-      hasMessageUrls: item.envelope.urls.length > 0
+      hasSharedSourceEvidence: hasSharedSourceEvidence(item.envelope)
     });
 
     if (routing.kind === "same_place") {
@@ -550,7 +555,7 @@ export class ReplyDispatchService {
           actorRole: item.actorRole,
           scope: item.scope,
           persistenceScope,
-          replyThreadId: item.envelope.placeType.endsWith("thread") ? item.envelope.channelId : null,
+          replyThreadId: isThreadEnvelope(item.envelope) ? item.envelope.channelId : null,
           response
         });
       }
@@ -613,7 +618,7 @@ export function resolveKnowledgeIngestRouting(input: {
   isThreadMessage: boolean;
   watchMode: WatchLocationConfig["mode"];
   replyMode: HarnessResponse["reply_mode"];
-  hasMessageUrls: boolean;
+  hasSharedSourceEvidence: boolean;
 }): {
   kind: "same_place" | "create_public_thread";
 } {
@@ -625,8 +630,8 @@ export function resolveKnowledgeIngestRouting(input: {
 
   if (
     input.replyMode === "same_place" ||
-    input.watchMode !== "url_watch" ||
-    !input.hasMessageUrls
+    !isKnowledgePlaceMode(input.watchMode) ||
+    !input.hasSharedSourceEvidence
   ) {
     return {
       kind: "same_place"

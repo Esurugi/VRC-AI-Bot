@@ -5,16 +5,23 @@ import type {
   Scope,
   WatchLocationConfig
 } from "../domain/types.js";
+import {
+  isAmbientRoomChat,
+  isKnowledgePlaceRootShare,
+  isThreadEnvelope
+} from "../domain/response-boundary.js";
 
 export const DEFAULT_CODEX_MODEL_PROFILE = "default:gpt-5.4";
 export const DEFAULT_CODEX_MODEL = "gpt-5.4";
 export const CHAT_CONVERSATION_LOW_CODEX_MODEL_PROFILE = "chat:gpt-5.4:low";
+export const AMBIENT_ROOM_CHAT_CODEX_MODEL_PROFILE = "ambient:gpt-5.4:low";
 export const FORUM_LONGFORM_CODEX_MODEL_PROFILE = "forum:gpt-5.4:high";
 export const FORUM_LONGFORM_LOW_CODEX_MODEL_PROFILE = "forum:gpt-5.4:low";
 export const RUNTIME_CONTRACT_VERSION = "2026-03-13.session-policy.v2";
 
 export const SESSION_WORKLOAD_KIND_VALUES = [
   "conversation",
+  "ambient_chat",
   "knowledge_ingest",
   "admin_override",
   "forum_longform"
@@ -30,6 +37,7 @@ export type SessionBindingKind = (typeof SESSION_BINDING_KIND_VALUES)[number];
 
 export const SESSION_LIFECYCLE_POLICY_VALUES = [
   "reusable",
+  "ephemeral_turn",
   "explicit_close",
   "thread_lifetime"
 ] as const;
@@ -70,7 +78,7 @@ export class SessionPolicyResolver {
 
     if (
       input.watchLocation.mode === "forum_longform" &&
-      input.envelope.placeType.endsWith("thread")
+      isThreadEnvelope(input.envelope)
     ) {
       return this.buildIdentity({
         workloadKind: "forum_longform",
@@ -83,7 +91,22 @@ export class SessionPolicyResolver {
       });
     }
 
-    if (input.envelope.placeType.endsWith("thread")) {
+    if (isAmbientRoomChat(input.watchLocation)) {
+      return this.buildIdentity({
+        workloadKind: "ambient_chat",
+        bindingKind: "message_origin",
+        bindingId: buildAmbientRoomBindingId(
+          input.envelope.channelId,
+          input.envelope.messageId
+        ),
+        actorId: null,
+        sandboxMode: "read-only",
+        lifecyclePolicy: "ephemeral_turn",
+        modelProfile: AMBIENT_ROOM_CHAT_CODEX_MODEL_PROFILE
+      });
+    }
+
+    if (isThreadEnvelope(input.envelope)) {
       return this.buildIdentity({
         workloadKind: "conversation",
         bindingKind: "thread",
@@ -98,8 +121,10 @@ export class SessionPolicyResolver {
     }
 
     if (
-      input.watchLocation.mode === "url_watch" &&
-      input.envelope.urls.length > 0
+      isKnowledgePlaceRootShare({
+        envelope: input.envelope,
+        watchLocation: input.watchLocation
+      })
     ) {
       return this.buildIdentity({
         workloadKind: "knowledge_ingest",
@@ -212,17 +237,26 @@ export function buildMessageOriginBindingId(
   return `${channelId}:message:${messageId}`;
 }
 
+export function buildAmbientRoomBindingId(
+  channelId: string,
+  messageId: string
+): string {
+  return `${channelId}:ambient:${messageId}`;
+}
+
 export function resolveScopedPlaceId(input: {
   envelope: MessageEnvelope;
   watchLocation: WatchLocationConfig;
 }): string {
-  if (input.envelope.placeType.endsWith("thread")) {
+  if (isThreadEnvelope(input.envelope)) {
     return input.envelope.channelId;
   }
 
   if (
-    input.envelope.urls.length > 0 &&
-    input.watchLocation.mode === "url_watch"
+    isKnowledgePlaceRootShare({
+      envelope: input.envelope,
+      watchLocation: input.watchLocation
+    })
   ) {
     return buildMessageOriginBindingId(
       input.envelope.channelId,

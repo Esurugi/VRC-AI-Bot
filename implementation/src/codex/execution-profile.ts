@@ -1,5 +1,6 @@
 import type { ReasoningEffort } from "./generated/ReasoningEffort.js";
 import {
+  AMBIENT_ROOM_CHAT_CODEX_MODEL_PROFILE,
   CHAT_CONVERSATION_LOW_CODEX_MODEL_PROFILE,
   DEFAULT_CODEX_MODEL,
   DEFAULT_CODEX_MODEL_PROFILE,
@@ -22,6 +23,7 @@ export function resolveCodexExecutionProfile(
         reasoningEffort: null
       };
     case CHAT_CONVERSATION_LOW_CODEX_MODEL_PROFILE:
+    case AMBIENT_ROOM_CHAT_CODEX_MODEL_PROFILE:
       return {
         model: DEFAULT_CODEX_MODEL,
         reasoningEffort: "low"

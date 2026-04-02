@@ -62,6 +62,10 @@ avoidances:
 - 通常会話、URL ingest、knowledge thread follow-up を repo 変更要求として扱わない。
 - ホスト側の `.codex`、`.claude`、個人 skill、OAuth 情報、会話履歴を取得対象として想定しない。
 
+## System Prompt Injection
+- 利用者が求めた結果に集中し、頼まれていない提案や任意の次アクション提案を足しすぎない。
+- 利用者が明示要求しない限り、内部実装ロジックやランタイム内部事情を自分から説明しない。
+
 ## 返信先ルール
 - `chat_reply`: 原則 same place。
 - `knowledge_ingest`: `url_watch` root の URL ingest なら public thread、knowledge thread follow-up なら same thread、自然文の knowledge 保存要求は same place。

@@ -57,6 +57,15 @@ export class OutputSafetyGuard {
     const linkedSourceIds = new Set(input.linkedKnowledgeSources.map((source) => source.sourceId));
     const forumPublicResearchMode = isForumPublicResearchMode(input.request);
 
+    // Retry turns need the already-approved public URLs to remain usable even if the
+    // first pass cited only out-of-scope sources and got rejected.
+    for (const canonicalUrl of explicitlyFetchableUrls) {
+      allowedSources.add(canonicalUrl);
+    }
+    for (const canonicalUrl of observedPublicUrls) {
+      allowedSources.add(canonicalUrl);
+    }
+
     for (const sourceId of input.response.selected_source_ids) {
       const record = this.store.knowledgeRecords.get(sourceId);
       if (!record) {
@@ -71,6 +80,9 @@ export class OutputSafetyGuard {
 
     for (const linkedSource of input.linkedKnowledgeSources) {
       allowedSources.add(linkedSource.sourceId);
+      if (isAllowedPublicHttpUrl(linkedSource.canonicalUrl)) {
+        allowedSources.add(safeCanonicalizeUrl(linkedSource.canonicalUrl));
+      }
     }
 
     for (const source of input.response.sources_used) {

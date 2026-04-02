@@ -15,7 +15,12 @@ import type {
   WatchLocationConfig
 } from "../../domain/types.js";
 import type { HarnessRunner } from "../../harness/harness-runner.js";
+import { appendRuntimeTrace } from "../../observability/runtime-trace.js";
 import { ReplyDispatchService } from "../message/reply-dispatch-service.js";
+
+type TypingIndicatorController = {
+  stop: () => void;
+};
 
 export class AdminOverrideBootstrapService {
   constructor(
@@ -54,32 +59,41 @@ export class AdminOverrideBootstrapService {
       scope: "conversation_only" as const,
       effectiveContentOverride: input.effectiveContentOverride ?? null
     };
-
-    let routed: Awaited<ReturnType<HarnessRunner["routeMessage"]>>;
-    try {
-      routed = await this.harnessRunner.routeMessage(messageContext);
-    } catch (error) {
-      await this.handleFailure(input, envelope.messageId, error, "fetch_or_resolve");
-      return;
-    }
+    const typingIndicator = this.startTypingIndicator(input.thread, {
+      owner: "override_bootstrap",
+      messageId: envelope.messageId,
+      channelId: input.thread.id
+    });
 
     try {
-      await this.replyDispatchService.dispatchHarnessResponseToChannel({
-        channel: input.thread,
-        messageContext,
-        response: routed.response,
-        session: routed.session,
-        knowledgePersistenceScope: routed.knowledgePersistenceScope
-      });
-    } catch (error) {
-      await this.handleFailure(input, envelope.messageId, error, "dispatch");
-      return;
-    }
+      let routed: Awaited<ReturnType<HarnessRunner["routeMessage"]>>;
+      try {
+        routed = await this.harnessRunner.routeMessage(messageContext);
+      } catch (error) {
+        await this.handleFailure(input, envelope.messageId, error, "fetch_or_resolve");
+        return;
+      }
 
-    try {
-      await this.runPostResponseModeration(messageContext, routed);
-    } catch (error) {
-      await this.handleFailure(input, envelope.messageId, error, "post_response");
+      try {
+        await this.replyDispatchService.dispatchHarnessResponseToChannel({
+          channel: input.thread,
+          messageContext,
+          response: routed.response,
+          session: routed.session,
+          knowledgePersistenceScope: routed.knowledgePersistenceScope
+        });
+      } catch (error) {
+        await this.handleFailure(input, envelope.messageId, error, "dispatch");
+        return;
+      }
+
+      try {
+        await this.runPostResponseModeration(messageContext, routed);
+      } catch (error) {
+        await this.handleFailure(input, envelope.messageId, error, "post_response");
+      }
+    } finally {
+      typingIndicator.stop();
     }
   }
 
@@ -153,6 +167,64 @@ export class AdminOverrideBootstrapService {
       stage,
       category: decision.publicCategory
     });
+  }
+
+  private startTypingIndicator(
+    thread: AnyThreadChannel,
+    context: {
+      owner: "override_bootstrap";
+      messageId: string;
+      channelId: string;
+    }
+  ): TypingIndicatorController {
+    let active = true;
+    let timer: NodeJS.Timeout | null = null;
+
+    appendRuntimeTrace("codex-app-server", "typing_indicator_started", context);
+
+    const sendTyping = async (reason: "startup" | "heartbeat"): Promise<void> => {
+      try {
+        await thread.sendTyping();
+        appendRuntimeTrace("codex-app-server", "typing_indicator_sent", {
+          ...context,
+          reason
+        });
+      } catch (error) {
+        appendRuntimeTrace("codex-app-server", "typing_indicator_failed", {
+          ...context,
+          reason,
+          error: error instanceof Error ? error.message : String(error)
+        });
+        this.logger.warn(
+          {
+            error: error instanceof Error ? error.message : String(error),
+            channelId: thread.id,
+            owner: context.owner,
+            messageId: context.messageId,
+            reason
+          },
+          "failed to send typing indicator"
+        );
+      }
+    };
+
+    void sendTyping("startup");
+    timer = setInterval(() => {
+      if (!active) {
+        return;
+      }
+      void sendTyping("heartbeat");
+    }, 8_000);
+
+    return {
+      stop: () => {
+        active = false;
+        if (timer) {
+          clearInterval(timer);
+        }
+        appendRuntimeTrace("codex-app-server", "typing_indicator_stopped", context);
+      }
+    };
   }
 }
 

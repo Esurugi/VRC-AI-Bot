@@ -10,7 +10,8 @@
       "guildId": "123456789012345678",
       "channelId": "323456789012345678",
       "mode": "chat",
-      "defaultScope": "channel_family"
+      "defaultScope": "channel_family",
+      "chatBehavior": "ambient_room_chat"
     },
     {
       "guildId": "123456789012345678",

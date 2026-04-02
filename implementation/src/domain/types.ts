@@ -38,7 +38,14 @@ export type WatchLocationConfig = {
   channelId: string;
   mode: WatchMode;
   defaultScope: Scope;
+  chatBehavior?: ChatBehavior | null;
 };
+
+export const CHAT_BEHAVIOR_VALUES = [
+  "ambient_room_chat",
+  "directed_help_chat"
+] as const;
+export type ChatBehavior = (typeof CHAT_BEHAVIOR_VALUES)[number];
 
 export type AppConfig = {
   discordBotToken: string;
@@ -82,11 +89,30 @@ export type MessageEnvelope = {
   receivedAt: string;
 };
 
-export type RecentChatMessageFact = {
+export const CHAT_ENGAGEMENT_TRIGGER_KIND_VALUES = [
+  "direct_mention",
+  "reply_to_bot",
+  "question_marker",
+  "sparse_periodic",
+  "ambient_room"
+] as const;
+export type ChatEngagementTriggerKind =
+  (typeof CHAT_ENGAGEMENT_TRIGGER_KIND_VALUES)[number];
+
+export type ChatEngagementFact = {
+  trigger_kind: ChatEngagementTriggerKind;
+  is_directed_to_bot: boolean;
+  sparse_ordinal: number | null;
+  ordinary_message_count: number | null;
+};
+
+export type RecentRoomEventFact = {
   message_id: string;
-  author_id: string;
+  author: string;
+  is_bot: boolean;
+  reply_to_message_id: string | null;
+  mentions_bot: boolean;
   content: string;
-  created_at: string;
 };
 
 export type VisibleCandidate = {

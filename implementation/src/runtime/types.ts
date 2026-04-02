@@ -1,7 +1,13 @@
 import type { Message } from "discord.js";
 
 import type { FailureStage } from "../app/failure-classifier.js";
-import type { ActorRole, MessageEnvelope, Scope, WatchLocationConfig } from "../domain/types.js";
+import type {
+  ActorRole,
+  ChatEngagementFact,
+  MessageEnvelope,
+  Scope,
+  WatchLocationConfig
+} from "../domain/types.js";
 import type { HarnessRunner } from "../harness/harness-runner.js";
 import type { AppConfig } from "../domain/types.js";
 
@@ -14,6 +20,7 @@ export type QueuedMessage = {
   watchLocation: WatchLocationConfig;
   actorRole: ActorRole;
   scope: Scope;
+  chatEngagement: ChatEngagementFact | null;
 };
 
 export type FailureReplyTarget = {

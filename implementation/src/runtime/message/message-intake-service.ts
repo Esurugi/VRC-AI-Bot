@@ -10,10 +10,15 @@ import { resolveActorRole, resolveScope } from "../../discord/facts.js";
 import type { AppConfig } from "../../domain/types.js";
 import { OrderedMessageQueue } from "../../queue/ordered-message-queue.js";
 import { ChatChannelCounterService } from "../chat/chat-channel-counter-service.js";
-import { ChatEngagementPolicy } from "../chat/chat-engagement-policy.js";
+import {
+  ChatEngagementPolicy,
+  type ChatEngagementEvaluation,
+  toChatEngagementFact
+} from "../chat/chat-engagement-policy.js";
 import { ChatRuntimeControlService } from "../chat/chat-runtime-control-service.js";
 import { ForumThreadService } from "../forum/forum-thread-service.js";
 import type { QueuedMessage } from "../types.js";
+import { shouldShowProcessingReaction } from "./processing-visibility.js";
 
 export class MessageIntakeService {
   constructor(
@@ -63,22 +68,28 @@ export class MessageIntakeService {
       watchLocation
     });
     const engagement = forumAlways
-      ? "always"
+      ? {
+          decision: "always" as const,
+          triggerKind: null,
+          isDirectedToBot: false
+        }
       : await this.chatEngagementPolicy.evaluate({
           message: typedMessage,
           envelope,
           watchLocation
         });
 
-    if (engagement === "ignore") {
+    if (engagement.decision === "ignore") {
       return;
     }
 
-    if (engagement === "sparse") {
-      const counter = this.chatChannelCounterService.increment(typedMessage.channelId);
-      if ((counter?.ordinary_message_count ?? 0) % 5 !== 0) {
-        return;
-      }
+    const chatEngagement = resolveQueuedChatEngagement({
+      engagement,
+      channelId: typedMessage.channelId,
+      increment: (channelId) => this.chatChannelCounterService.increment(channelId)
+    });
+    if (chatEngagement === null && engagement.decision === "sparse") {
+      return;
     }
 
     const enqueued = this.queue.enqueue({
@@ -89,10 +100,17 @@ export class MessageIntakeService {
       envelope,
       watchLocation,
       actorRole,
-      scope
+      scope,
+      chatEngagement
     });
 
-    if (enqueued) {
+    if (
+      enqueued &&
+      shouldShowProcessingReaction({
+        watchLocation,
+        chatEngagement
+      })
+    ) {
       await this.tryAddProcessingReaction(typedMessage);
     }
   }
@@ -110,4 +128,29 @@ export class MessageIntakeService {
       );
     }
   }
+}
+
+function resolveQueuedChatEngagement(input: {
+  engagement: ChatEngagementEvaluation;
+  channelId: string;
+  increment: (channelId: string) => { ordinary_message_count?: number } | null;
+}): ReturnType<typeof toChatEngagementFact> {
+  if (input.engagement.triggerKind) {
+    return toChatEngagementFact({ evaluation: input.engagement });
+  }
+
+  if (input.engagement.decision !== "sparse") {
+    return null;
+  }
+
+  const counter = input.increment(input.channelId);
+  const ordinaryMessageCount = counter?.ordinary_message_count ?? 0;
+  if (ordinaryMessageCount % 5 !== 0) {
+    return null;
+  }
+
+  return toChatEngagementFact({
+    evaluation: input.engagement,
+    ordinaryMessageCount
+  });
 }

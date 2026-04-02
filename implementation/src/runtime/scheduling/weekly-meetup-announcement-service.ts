@@ -17,6 +17,7 @@ const WEEKLY_MEETUP_EVENT_KEY = "weekly_meetup";
 const JST_TIME_ZONE = "Asia/Tokyo";
 const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
 const TEST_MARKER = "[TEST]";
+const EVERYONE_MENTION = "@everyone";
 const ANNOUNCE_TIME = "18:00";
 const EVENT_TIME = "21:00";
 
@@ -237,6 +238,14 @@ export class WeeklyMeetupAnnouncementService {
 
     try {
       const sent = await channel.send({
+        ...(input.testMarker
+          ? {}
+          : {
+              content: EVERYONE_MENTION,
+              allowedMentions: {
+                parse: ["everyone" as const]
+              }
+            }),
         embeds: [embed]
       });
 

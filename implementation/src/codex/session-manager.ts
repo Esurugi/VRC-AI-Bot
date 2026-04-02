@@ -25,6 +25,10 @@ export class SessionManager {
     threadId: string;
     startedFresh: boolean;
   }> {
+    if (identity.lifecyclePolicy === "ephemeral_turn") {
+      return this.startEphemeralSession(identity);
+    }
+
     this.syncInvalidationGeneration();
 
     const live = this.liveSessions.get(identity.sessionIdentity);
@@ -43,6 +47,10 @@ export class SessionManager {
   }
 
   bindSession(identity: ResolvedSessionIdentity, threadId: string): void {
+    if (identity.lifecyclePolicy === "ephemeral_turn") {
+      return;
+    }
+
     this.syncInvalidationGeneration();
     this.store.codexSessions.upsert({
       sessionIdentity: identity.sessionIdentity,
@@ -207,6 +215,28 @@ export class SessionManager {
       codex_thread_id: threadId,
       runtime_contract_version: identity.runtimeContractVersion,
       model_profile: identity.modelProfile
+    });
+    return {
+      threadId,
+      startedFresh: true
+    };
+  }
+
+  private async startEphemeralSession(
+    identity: ResolvedSessionIdentity
+  ): Promise<{ threadId: string; startedFresh: boolean }> {
+    const executionProfile = resolveCodexExecutionProfile(identity.modelProfile);
+    const threadId = await this.codexClient.startThread(
+      identity.sandboxMode,
+      executionProfile
+    );
+    appendRuntimeTrace("codex-app-server", "session_started", {
+      session_identity: identity.sessionIdentity,
+      workload_kind: identity.workloadKind,
+      codex_thread_id: threadId,
+      runtime_contract_version: identity.runtimeContractVersion,
+      model_profile: identity.modelProfile,
+      ephemeral: true
     });
     return {
       threadId,

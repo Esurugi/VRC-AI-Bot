@@ -115,7 +115,7 @@ export class ForumResearchPipeline {
       threadId: input.threadId,
       sessionIdentity: input.sessionMetadata.sessionIdentity,
       starterMessage: input.starterMessage ?? null,
-      callbacks: input.callbacks
+      ...(input.callbacks ? { callbacks: input.callbacks } : {})
     });
     await input.callbacks?.onProgressNotice?.(
       buildForumPhaseProgressNotice("supervisor_planning")
@@ -137,7 +137,7 @@ export class ForumResearchPipeline {
         sessionMetadata: input.sessionMetadata,
         state: researchState,
         retryKind: "initial",
-        callbacks: input.callbacks
+        ...(input.callbacks ? { callbacks: input.callbacks } : {})
       });
       return {
         ...result,
@@ -156,7 +156,7 @@ export class ForumResearchPipeline {
         sessionMetadata: input.sessionMetadata,
         state: researchState,
         reason,
-        callbacks: input.callbacks
+        ...(input.callbacks ? { callbacks: input.callbacks } : {})
       });
       return {
         ...retried,
@@ -191,7 +191,7 @@ export class ForumResearchPipeline {
         sessionMetadata: input.sessionMetadata,
         state: input.state,
         retryKind: "output_safety_retry",
-        callbacks: input.callbacks
+        ...(input.callbacks ? { callbacks: input.callbacks } : {})
       });
     } catch (error) {
       const reason = classifyRecoverableFinalTurnError(error);
@@ -251,7 +251,7 @@ export class ForumResearchPipeline {
         launchedWorkerIds,
         workerHistory,
         finalBrief,
-        callbacks: input.callbacks,
+        ...(input.callbacks ? { callbacks: input.callbacks } : {}),
         progressNotices
       });
       finalBrief = appliedDecision.finalBrief;

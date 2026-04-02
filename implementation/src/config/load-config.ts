@@ -4,6 +4,7 @@ import { dirname, resolve } from "node:path";
 import { z } from "zod";
 
 import {
+  CHAT_BEHAVIOR_VALUES,
   SCOPE_VALUES,
   WATCH_MODE_VALUES,
   type AppConfig,
@@ -29,7 +30,8 @@ const watchLocationSchema = z.object({
   guildId: z.string().min(1),
   channelId: z.string().min(1),
   mode: z.enum(WATCH_MODE_VALUES),
-  defaultScope: z.enum(SCOPE_VALUES)
+  defaultScope: z.enum(SCOPE_VALUES),
+  chatBehavior: z.enum(CHAT_BEHAVIOR_VALUES).nullable().optional()
 });
 
 const watchLocationFileSchema = z.object({
@@ -124,7 +126,13 @@ function readWatchLocations(path: string): WatchLocationConfig[] {
     seen.add(key);
   }
 
-  return parsed.locations;
+  return parsed.locations.map((location) => ({
+    ...location,
+    chatBehavior:
+      location.mode === "chat"
+        ? (location.chatBehavior ?? "ambient_room_chat")
+        : null
+  }));
 }
 
 function readWeeklyMeetupAnnouncement(

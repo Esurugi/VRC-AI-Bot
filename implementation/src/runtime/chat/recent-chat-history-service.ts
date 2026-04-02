@@ -1,14 +1,15 @@
 import type { Collection, Message, Snowflake } from "discord.js";
 import type { Logger } from "pino";
 
-import type {
-  RecentChatMessageFact,
-  WatchLocationConfig
-} from "../../domain/types.js";
+import type { RecentRoomEventFact, WatchLocationConfig } from "../../domain/types.js";
 import { extractUrls } from "../../discord/message-utils.js";
 
 const HISTORY_SCAN_LIMIT = 50;
-const HISTORY_CONTEXT_LIMIT = 20;
+const HISTORY_CONTEXT_LIMIT = 12;
+
+export type RecentChatRoomContext = {
+  recentRoomEvents: RecentRoomEventFact[];
+};
 
 export class RecentChatHistoryService {
   constructor(private readonly logger: Pick<Logger, "warn">) {}
@@ -16,9 +17,11 @@ export class RecentChatHistoryService {
   async collect(input: {
     message: Message<true>;
     watchLocation: WatchLocationConfig;
-  }): Promise<RecentChatMessageFact[]> {
+  }): Promise<RecentChatRoomContext> {
     if (input.watchLocation.mode !== "chat") {
-      return [];
+      return {
+        recentRoomEvents: []
+      };
     }
 
     try {
@@ -26,7 +29,13 @@ export class RecentChatHistoryService {
         limit: HISTORY_SCAN_LIMIT,
         before: input.message.id
       });
-      return buildRecentHistoryFacts(history, input.message.client.user?.id ?? null);
+      const recentRoomEvents = buildRecentRoomEventFacts(
+        history,
+        input.message.client.user?.id ?? null
+      );
+      return {
+        recentRoomEvents
+      };
     } catch (error) {
       this.logger.warn(
         {
@@ -36,23 +45,27 @@ export class RecentChatHistoryService {
         },
         "failed to fetch recent chat history"
       );
-      return [];
+      return {
+        recentRoomEvents: []
+      };
     }
   }
 }
 
-export function buildRecentHistoryFacts(
+export function buildRecentRoomEventFacts(
   history: Collection<Snowflake, Message<true>>,
   botUserId: string | null
-): RecentChatMessageFact[] {
-  const collected: RecentChatMessageFact[] = [];
+): RecentRoomEventFact[] {
+  const collected: RecentRoomEventFact[] = [];
 
   for (const message of history.values()) {
-    if (botUserId && message.author.id === botUserId) {
-      break;
-    }
-
-    if (message.author.bot || message.webhookId || message.system) {
+    const isCurrentBot =
+      botUserId !== null && message.author.id === botUserId;
+    if (
+      (!isCurrentBot && message.author.bot) ||
+      message.webhookId ||
+      message.system
+    ) {
       continue;
     }
 
@@ -63,9 +76,11 @@ export function buildRecentHistoryFacts(
 
     collected.push({
       message_id: message.id,
-      author_id: message.author.id,
-      content,
-      created_at: message.createdAt.toISOString()
+      author: resolveAuthorDisplayName(message),
+      is_bot: isCurrentBot,
+      reply_to_message_id: message.reference?.messageId ?? null,
+      mentions_bot: botUserId !== null && message.mentions.users.has(botUserId),
+      content
     });
   }
 
@@ -84,4 +99,13 @@ function normalizeHistoryContent(raw: string): string | null {
   }
 
   return null;
+}
+
+function resolveAuthorDisplayName(message: Message<true>): string {
+  return (
+    message.member?.displayName ??
+    message.author.globalName ??
+    message.author.displayName ??
+    message.author.username
+  );
 }

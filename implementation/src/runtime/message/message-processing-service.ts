@@ -15,6 +15,10 @@ import { HarnessRunner } from "../../harness/harness-runner.js";
 import { appendRuntimeTrace } from "../../observability/runtime-trace.js";
 import { RecentChatHistoryService } from "../chat/recent-chat-history-service.js";
 import {
+  ChatEngagementPolicy,
+  toChatEngagementFact
+} from "../chat/chat-engagement-policy.js";
+import {
   ForumFirstTurnPreprocessor,
   type ForumFirstTurnPreparation
 } from "../forum/forum-first-turn-preprocessor.js";
@@ -28,6 +32,7 @@ import {
   type StageFailureInput
 } from "../types.js";
 import { ReplyDispatchService } from "./reply-dispatch-service.js";
+import { shouldShowTypingIndicator } from "./processing-visibility.js";
 
 type TypingIndicatorController = {
   pulseNow: (
@@ -49,6 +54,7 @@ export class MessageProcessingService {
     private readonly harnessRunner: HarnessRunner,
     private readonly forumFirstTurnPreprocessor: ForumFirstTurnPreprocessor,
     private readonly recentChatHistoryService: RecentChatHistoryService,
+    private readonly chatEngagementPolicy: ChatEngagementPolicy,
     private readonly failureClassifier: FailureClassifier,
     private readonly retryScheduler: RetrySchedulerService,
     private readonly moderationIntegration: BotModerationIntegration,
@@ -87,8 +93,11 @@ export class MessageProcessingService {
       return;
     }
 
-    const typingIndicator =
-      item.watchLocation.mode === "forum_longform"
+    const typingIndicator = shouldShowTypingIndicator({
+      watchLocation: item.watchLocation,
+      chatEngagement: item.chatEngagement
+    })
+      ? item.watchLocation.mode === "forum_longform"
         ? this.startTypingIndicator(item.message.channel, {
             owner: "forum_high_thinking",
             messageId: item.envelope.messageId,
@@ -98,7 +107,8 @@ export class MessageProcessingService {
             owner: "message_processing",
             messageId: item.envelope.messageId,
             channelId: item.envelope.channelId
-          });
+          })
+      : createNoopTypingIndicator();
     try {
       let routed: RoutedHarnessMessage | null;
       let replyTarget = buildSamePlaceReplyTarget(item);
@@ -159,7 +169,7 @@ export class MessageProcessingService {
 
   async resolveHarnessMessage(
     item: QueuedMessage,
-    forumBootstrap?: ForumFirstTurnPreparation,
+    forumBootstrap: ForumFirstTurnPreparation | undefined,
     typingIndicator: TypingIndicatorController
   ): Promise<RoutedHarnessMessage | null> {
     const resolvedForumBootstrap =
@@ -178,10 +188,11 @@ export class MessageProcessingService {
       scope: item.scope,
       requestId: item.envelope.messageId
     });
-    const recentMessages = await this.recentChatHistoryService.collect({
+    const roomContext = await this.recentChatHistoryService.collect({
       message: item.message,
       watchLocation: item.watchLocation
     });
+    const chatEngagement = item.chatEngagement ?? (await this.deriveChatEngagement(item));
     return this.harnessRunner.routeMessage({
       envelope: item.envelope,
       watchLocation: item.watchLocation,
@@ -189,7 +200,8 @@ export class MessageProcessingService {
       scope: item.scope,
       discordRuntimeFactsPath: runtimeFacts.snapshotPath,
       effectiveContentOverride: resolvedForumBootstrap.preparedPrompt,
-      recentMessages,
+      chatEngagement,
+      recentRoomEvents: roomContext.recentRoomEvents,
       forumStarterMessage: resolvedForumBootstrap.starterMessage,
       ...(item.watchLocation.mode === "forum_longform"
         ? {
@@ -200,6 +212,22 @@ export class MessageProcessingService {
           }
         : {})
     });
+  }
+
+  private async deriveChatEngagement(item: QueuedMessage) {
+    if (item.watchLocation.mode !== "chat") {
+      return null;
+    }
+
+    const evaluation = await this.chatEngagementPolicy.evaluate({
+      message: item.message,
+      envelope: item.envelope,
+      watchLocation: item.watchLocation
+    });
+    if (evaluation.decision === "ignore") {
+      return null;
+    }
+    return toChatEngagementFact({ evaluation });
   }
 
   private buildForumCallbacks(
@@ -589,4 +617,11 @@ function readReplyTarget(
 
   const candidate = error as { replyTarget?: { channelId: string; threadId: string | null } };
   return candidate.replyTarget ?? null;
+}
+
+function createNoopTypingIndicator(): TypingIndicatorController {
+  return {
+    pulseNow: () => Promise.resolve(),
+    stop: () => {}
+  };
 }
