@@ -740,7 +740,7 @@ function normalizeProductResponse(
   return dedupedResponse;
 }
 
-function normalizeKnowledgeIngestResponse(
+export function normalizeKnowledgeIngestResponse(
   input: HarnessMessageContext,
   threadContext: ResolvedThreadContext,
   response: HarnessResponse,
@@ -750,6 +750,18 @@ function normalizeKnowledgeIngestResponse(
 ): HarnessResponse {
   if (response.outcome !== "knowledge_ingest") {
     return response;
+  }
+
+  if (threadContext.kind === "knowledge_thread") {
+    return {
+      ...response,
+      outcome: "chat_reply",
+      public_text:
+        response.public_text?.trim() || buildKnowledgeReplyText(response),
+      reply_mode: "same_place",
+      target_thread_id: null,
+      knowledge_writes: []
+    };
   }
 
   const shouldCreatePublicThread =
@@ -769,7 +781,7 @@ function normalizeKnowledgeIngestResponse(
   };
 }
 
-function resolveKnowledgePersistenceScope(
+export function resolveKnowledgePersistenceScope(
   currentScope: Scope,
   watchLocation: WatchLocationConfig,
   threadContext: ResolvedThreadContext,
@@ -788,8 +800,8 @@ function resolveKnowledgePersistenceScope(
     return currentScope;
   }
 
-  if (threadContext.kind === "knowledge_thread" && fetchablePublicUrlCount > 0) {
-    return currentScope;
+  if (threadContext.kind === "knowledge_thread") {
+    return null;
   }
 
   return "server_public";

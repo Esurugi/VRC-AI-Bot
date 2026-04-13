@@ -1,5 +1,6 @@
 import {
   ChannelType,
+  type Attachment,
   type GuildBasedChannel,
   type Message,
   type ThreadChannel
@@ -27,7 +28,37 @@ export function isEligibleMessage(message: Message): boolean {
   }
 
   const content = message.content.trim();
-  return content.length > 0 || extractUrls(content).length > 0;
+  return (
+    content.length > 0 ||
+    extractUrls(content).length > 0 ||
+    hasReadableTextAttachment(message)
+  );
+}
+
+export function hasReadableTextAttachment(input: {
+  attachments: ReadonlyMap<string, Attachment>;
+}): boolean {
+  for (const attachment of input.attachments.values()) {
+    if (isReadableTextAttachment(attachment)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+export function isReadableTextAttachment(input: {
+  name: string | null;
+  contentType: string | null;
+}): boolean {
+  const normalizedName = input.name?.trim().toLowerCase() ?? "";
+  const normalizedContentType = input.contentType?.trim().toLowerCase() ?? "";
+
+  return (
+    normalizedName.endsWith(".txt") ||
+    normalizedContentType === "text/plain" ||
+    normalizedContentType.startsWith("text/plain;")
+  );
 }
 
 export function resolveWatchLocation(
@@ -78,9 +109,10 @@ export function resolvePlaceType(
 
 export function buildMessageEnvelope(
   message: Message<true>,
-  watchLocation: WatchLocationConfig
+  watchLocation: WatchLocationConfig,
+  contentOverride?: string | null
 ): MessageEnvelope {
-  const content = message.content.trim();
+  const content = (contentOverride ?? message.content).trim();
 
   return {
     guildId: message.guildId,

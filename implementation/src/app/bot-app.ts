@@ -49,6 +49,7 @@ import { ForumResearchSupervisor } from "../runtime/forum/forum-research-supervi
 import { ForumThreadService } from "../runtime/forum/forum-thread-service.js";
 import { MessageIntakeService } from "../runtime/message/message-intake-service.js";
 import { MessageProcessingService } from "../runtime/message/message-processing-service.js";
+import { PlainTextAttachmentService } from "../runtime/message/plain-text-attachment-service.js";
 import {
   findAdminControlWatchLocation,
   ReplyDispatchService,
@@ -100,6 +101,7 @@ type BotApplicationDependencies = {
   forumResearchPromptRefiner?: ForumResearchPromptRefiner;
   forumResearchSupervisor?: ForumResearchSupervisor;
   forumThreadService?: ForumThreadService;
+  plainTextAttachmentService?: PlainTextAttachmentService;
   weeklyMeetupAnnouncementService?: WeeklyMeetupAnnouncementService;
   setTimeoutFn?: typeof setTimeout;
   clearTimeoutFn?: typeof clearTimeout;
@@ -134,6 +136,7 @@ export class BotApplication {
   private readonly forumResearchPromptRefiner: ForumResearchPromptRefiner;
   private readonly forumResearchSupervisor: ForumResearchSupervisor;
   private readonly forumThreadService: ForumThreadService;
+  private readonly plainTextAttachmentService: PlainTextAttachmentService;
   private readonly weeklyMeetupAnnouncementService: WeeklyMeetupAnnouncementService;
   private readonly setTimeoutFn: typeof setTimeout;
   private readonly clearTimeoutFn: typeof clearTimeout;
@@ -257,6 +260,9 @@ export class BotApplication {
       new ChatRuntimeControlService(this.config.chatRuntimeControls ?? null);
     this.forumThreadService =
       dependencies.forumThreadService ?? new ForumThreadService();
+    this.plainTextAttachmentService =
+      dependencies.plainTextAttachmentService ??
+      new PlainTextAttachmentService(this.logger);
     this.messageIntakeService =
       dependencies.messageIntakeService ??
       new MessageIntakeService(
@@ -266,6 +272,7 @@ export class BotApplication {
         this.chatEngagementPolicy,
         this.chatRuntimeControlService,
         this.forumThreadService,
+        this.plainTextAttachmentService,
         this.logger
       );
     this.startupMessageRecoveryService =
@@ -300,6 +307,7 @@ export class BotApplication {
         this.queue,
         this.replyDispatchService,
         this.messageProcessingService,
+        this.plainTextAttachmentService,
         this.logger
       );
     this.weeklyMeetupAnnouncementService =

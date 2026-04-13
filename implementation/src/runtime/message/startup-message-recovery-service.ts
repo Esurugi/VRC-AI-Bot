@@ -21,6 +21,7 @@ type StartupMessageRecoveryDependencies = {
 };
 
 type RecoverableChannel = TextChannel | NewsChannel | AnyThreadChannel;
+type RecoveryMode = "replay" | "cursor_only";
 
 export class StartupMessageRecoveryService {
   private readonly batchSize: number;
@@ -40,12 +41,14 @@ export class StartupMessageRecoveryService {
     if (!rootChannel) {
       return;
     }
+    const recoveryMode: RecoveryMode =
+      watchLocation.mode === "chat" ? "cursor_only" : "replay";
 
     const rootCursor =
       this.dependencies.store.channelCursors.get(watchLocation.channelId)
         ?.last_processed_message_id ?? null;
     if (rootCursor) {
-      await this.recoverChannelMessages(rootChannel, rootCursor);
+      await this.recoverChannelMessages(rootChannel, rootCursor, recoveryMode);
     }
 
     const activeThreads = await this.fetchActiveThreads(rootChannel);
@@ -57,7 +60,7 @@ export class StartupMessageRecoveryService {
         continue;
       }
 
-      await this.recoverChannelMessages(thread, threadCursor);
+      await this.recoverChannelMessages(thread, threadCursor, recoveryMode);
     }
   }
 
@@ -91,7 +94,8 @@ export class StartupMessageRecoveryService {
 
   private async recoverChannelMessages(
     channel: RecoverableChannel,
-    afterMessageId: string
+    afterMessageId: string,
+    recoveryMode: RecoveryMode
   ): Promise<void> {
     let cursor = afterMessageId;
 
@@ -124,16 +128,22 @@ export class StartupMessageRecoveryService {
         {
           channelId: channel.id,
           recoveredCount: orderedMessages.length,
-          afterMessageId: cursor
+          afterMessageId: cursor,
+          recoveryMode
         },
         "replaying startup backlog messages"
       );
 
-      for (const message of orderedMessages) {
-        await this.dependencies.messageIntakeService.handle(message);
+      if (recoveryMode === "replay") {
+        for (const message of orderedMessages) {
+          await this.dependencies.messageIntakeService.handle(message);
+        }
       }
 
       const lastMessage = orderedMessages.at(-1);
+      if (recoveryMode === "cursor_only" && lastMessage) {
+        this.dependencies.store.channelCursors.upsert(channel.id, lastMessage.id);
+      }
       if (!lastMessage || fetched.size < this.batchSize) {
         return;
       }

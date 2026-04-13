@@ -18,6 +18,7 @@ import {
 import { ChatRuntimeControlService } from "../chat/chat-runtime-control-service.js";
 import { ForumThreadService } from "../forum/forum-thread-service.js";
 import type { QueuedMessage } from "../types.js";
+import { PlainTextAttachmentService } from "./plain-text-attachment-service.js";
 import { shouldShowProcessingReaction } from "./processing-visibility.js";
 
 export class MessageIntakeService {
@@ -28,6 +29,7 @@ export class MessageIntakeService {
     private readonly chatEngagementPolicy: ChatEngagementPolicy,
     private readonly chatRuntimeControlService: ChatRuntimeControlService,
     private readonly forumThreadService: ForumThreadService,
+    private readonly plainTextAttachmentService: PlainTextAttachmentService,
     private readonly logger: Logger
   ) {}
 
@@ -59,7 +61,13 @@ export class MessageIntakeService {
       return;
     }
 
-    const envelope = buildMessageEnvelope(typedMessage, watchLocation);
+    const effectiveContent =
+      await this.plainTextAttachmentService.buildEffectiveContent(typedMessage);
+    const envelope = buildMessageEnvelope(
+      typedMessage,
+      watchLocation,
+      effectiveContent
+    );
     const actorRole = resolveActorRole(typedMessage, this.config.discordOwnerUserIds);
     const scope = resolveScope(typedMessage, watchLocation);
 

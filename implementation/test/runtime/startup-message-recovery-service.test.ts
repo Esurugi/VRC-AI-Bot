@@ -101,22 +101,126 @@ test("startup recovery falls back to the root cursor for active threads without 
   assert.deepEqual(thread.fetchCalls, ["1500"]);
 });
 
-function createWatchLocation(): WatchLocationConfig {
+test("chat startup recovery skips root backlog replay and advances the root cursor", async () => {
+  const handled: string[] = [];
+  const store = createStore({
+    "watch-root": "1000"
+  });
+  const service = new StartupMessageRecoveryService({
+    watchLocations: [createWatchLocation("chat")],
+    store,
+    fetchChannel: async () =>
+      createRootChannel({
+        id: "watch-root",
+        messageBatches: [
+          [createMessage("1002", 2), createMessage("1001", 1)]
+        ]
+      }),
+    messageIntakeService: {
+      handle: async (message: Message<true>) => {
+        handled.push(message.id);
+      }
+    } as unknown as MessageIntakeService,
+    logger: createLogger()
+  });
+
+  await service.recoverPendingMessages();
+
+  assert.deepEqual(handled, []);
+  assert.equal(store.cursors["watch-root"], "1002");
+  assert.deepEqual(store.upserts, [{ channelId: "watch-root", messageId: "1002" }]);
+});
+
+test("chat startup recovery skips active thread backlog replay and advances the thread cursor", async () => {
+  const handled: string[] = [];
+  const thread = createThreadChannel({
+    id: "thread-1",
+    messageBatches: [[createMessage("2002", 12), createMessage("2001", 11)]]
+  });
+  const store = createStore({
+    "watch-root": "1000",
+    "thread-1": "2000"
+  });
+  const service = new StartupMessageRecoveryService({
+    watchLocations: [createWatchLocation("chat")],
+    store,
+    fetchChannel: async () =>
+      createRootChannel({
+        id: "watch-root",
+        activeThreads: [thread],
+        messageBatches: []
+      }),
+    messageIntakeService: {
+      handle: async (message: Message<true>) => {
+        handled.push(message.id);
+      }
+    } as unknown as MessageIntakeService,
+    logger: createLogger()
+  });
+
+  await service.recoverPendingMessages();
+
+  assert.deepEqual(handled, []);
+  assert.deepEqual(thread.fetchCalls, ["2000"]);
+  assert.equal(store.cursors["thread-1"], "2002");
+  assert.deepEqual(store.upserts, [{ channelId: "thread-1", messageId: "2002" }]);
+});
+
+test("chat startup recovery falls back to the root cursor for active threads without their own cursor and seeds the thread cursor", async () => {
+  const handled: string[] = [];
+  const thread = createThreadChannel({
+    id: "thread-1",
+    messageBatches: [[createMessage("3001", 21)]]
+  });
+  const store = createStore({
+    "watch-root": "1500"
+  });
+  const service = new StartupMessageRecoveryService({
+    watchLocations: [createWatchLocation("chat")],
+    store,
+    fetchChannel: async () =>
+      createRootChannel({
+        id: "watch-root",
+        activeThreads: [thread],
+        messageBatches: []
+      }),
+    messageIntakeService: {
+      handle: async (message: Message<true>) => {
+        handled.push(message.id);
+      }
+    } as unknown as MessageIntakeService,
+    logger: createLogger()
+  });
+
+  await service.recoverPendingMessages();
+
+  assert.deepEqual(handled, []);
+  assert.deepEqual(thread.fetchCalls, ["1500"]);
+  assert.equal(store.cursors["thread-1"], "3001");
+  assert.deepEqual(store.upserts, [{ channelId: "thread-1", messageId: "3001" }]);
+});
+
+function createWatchLocation(mode: WatchLocationConfig["mode"] = "url_watch"): WatchLocationConfig {
   return {
     guildId: "guild-1",
     channelId: "watch-root",
-    mode: "url_watch",
+    mode,
     defaultScope: "server_public"
   };
 }
 
 function createStore(
   cursors: Record<string, string>
-): SqliteStore {
+): SqliteStore & {
+  cursors: Record<string, string>;
+  upserts: Array<{ channelId: string; messageId: string }>;
+} {
+  const state = { ...cursors };
+  const upserts: Array<{ channelId: string; messageId: string }> = [];
   return {
     channelCursors: {
       get: (channelId: string) => {
-        const messageId = cursors[channelId];
+        const messageId = state[channelId];
         if (!messageId) {
           return null;
         }
@@ -125,9 +229,18 @@ function createStore(
           last_processed_message_id: messageId,
           updated_at: "2026-03-19T00:00:00.000Z"
         };
+      },
+      upsert: (channelId: string, messageId: string) => {
+        state[channelId] = messageId;
+        upserts.push({ channelId, messageId });
       }
-    }
-  } as SqliteStore;
+    },
+    cursors: state,
+    upserts
+  } as SqliteStore & {
+    cursors: Record<string, string>;
+    upserts: Array<{ channelId: string; messageId: string }>;
+  };
 }
 
 function createRootChannel(input: {

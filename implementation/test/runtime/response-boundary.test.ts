@@ -47,7 +47,7 @@ test("thread envelopes are recognized by place type", () => {
   );
 });
 
-test("knowledge place root share depends on place and evidence", () => {
+test("knowledge place root share depends on root-place evidence only", () => {
   assert.equal(
     isKnowledgePlaceRootShare({
       watchLocation: {
@@ -114,6 +114,30 @@ test("knowledge place root share depends on place and evidence", () => {
         rawPlaceType: "PublicThread",
         content: "https://example.com",
         urls: ["https://example.com"],
+        receivedAt: new Date().toISOString()
+      }
+    }),
+    false
+  );
+
+  assert.equal(
+    isKnowledgePlaceRootShare({
+      watchLocation: {
+        guildId: "guild",
+        channelId: "channel",
+        mode: "url_watch",
+        defaultScope: "server_public",
+        chatBehavior: null
+      },
+      envelope: {
+        guildId: "guild",
+        channelId: "thread",
+        messageId: "message",
+        authorId: "user",
+        placeType: "private_thread",
+        rawPlaceType: "PrivateThread",
+        content: "follow-up https://example.com/more",
+        urls: ["https://example.com/more"],
         receivedAt: new Date().toISOString()
       }
     }),

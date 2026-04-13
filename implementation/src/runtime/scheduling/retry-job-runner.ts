@@ -9,6 +9,7 @@ import { OrderedMessageQueue } from "../../queue/ordered-message-queue.js";
 import { SqliteStore, type RetryJobRow } from "../../storage/database.js";
 import { ReplyDispatchService } from "../message/reply-dispatch-service.js";
 import { MessageProcessingService } from "../message/message-processing-service.js";
+import { PlainTextAttachmentService } from "../message/plain-text-attachment-service.js";
 import type { QueuedMessage } from "../types.js";
 import { resolveRetryWatchLocation } from "../types.js";
 
@@ -23,6 +24,7 @@ export class RetryJobRunner {
     private readonly queue: OrderedMessageQueue<QueuedMessage>,
     private readonly replyDispatchService: ReplyDispatchService,
     private readonly messageProcessingService: MessageProcessingService,
+    private readonly plainTextAttachmentService: PlainTextAttachmentService,
     private readonly logger: Logger,
     private readonly intervalMs = 5_000
   ) {}
@@ -92,13 +94,15 @@ export class RetryJobRunner {
       watchChannelId: job.watch_channel_id,
       mode: job.place_mode
     });
+    const effectiveContent =
+      await this.plainTextAttachmentService.buildEffectiveContent(typedMessage);
 
     return {
       messageId: typedMessage.id,
       orderingKey: typedMessage.channelId,
       source: "retry",
       message: typedMessage,
-      envelope: buildMessageEnvelope(typedMessage, watchLocation),
+      envelope: buildMessageEnvelope(typedMessage, watchLocation, effectiveContent),
       watchLocation,
       actorRole: resolveActorRole(typedMessage, this.config.discordOwnerUserIds),
       scope: resolveScope(typedMessage, watchLocation),

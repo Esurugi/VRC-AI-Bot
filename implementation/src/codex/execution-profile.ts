@@ -13,6 +13,8 @@ export type CodexExecutionProfile = {
   reasoningEffort: ReasoningEffort | null;
 };
 
+const MINI_CODEX_MODEL = "gpt-5.4-mini";
+
 export function resolveCodexExecutionProfile(
   modelProfile: string
 ): CodexExecutionProfile {
@@ -25,7 +27,7 @@ export function resolveCodexExecutionProfile(
     case CHAT_CONVERSATION_LOW_CODEX_MODEL_PROFILE:
     case AMBIENT_ROOM_CHAT_CODEX_MODEL_PROFILE:
       return {
-        model: DEFAULT_CODEX_MODEL,
+        model: MINI_CODEX_MODEL,
         reasoningEffort: "low"
       };
     case FORUM_LONGFORM_CODEX_MODEL_PROFILE:

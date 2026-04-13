@@ -3,12 +3,12 @@ import assert from "node:assert/strict";
 
 import { resolveKnowledgeIngestRouting } from "../../src/runtime/message/reply-dispatch-service.js";
 
-test("knowledge ingest routing stays in place for thread follow-ups", () => {
+test("knowledge ingest routing stays in place when reply mode is same_place", () => {
   assert.deepEqual(
     resolveKnowledgeIngestRouting({
-      isThreadMessage: true,
+      isThreadMessage: false,
       watchMode: "url_watch",
-      replyMode: "create_public_thread",
+      replyMode: "same_place",
       hasSharedSourceEvidence: true
     }),
     {
@@ -36,6 +36,20 @@ test("knowledge ingest routing ignores shared evidence outside url watch", () =>
     resolveKnowledgeIngestRouting({
       isThreadMessage: false,
       watchMode: "chat",
+      replyMode: "create_public_thread",
+      hasSharedSourceEvidence: true
+    }),
+    {
+      kind: "same_place"
+    }
+  );
+});
+
+test("knowledge ingest routing stays in place for thread messages", () => {
+  assert.deepEqual(
+    resolveKnowledgeIngestRouting({
+      isThreadMessage: true,
+      watchMode: "url_watch",
       replyMode: "create_public_thread",
       hasSharedSourceEvidence: true
     }),

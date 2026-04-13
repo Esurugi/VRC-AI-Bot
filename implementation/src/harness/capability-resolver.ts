@@ -21,16 +21,22 @@ export function resolveHarnessCapabilities(input: {
 
   return {
     allow_external_fetch: allowExternalFetch,
-    allow_knowledge_write: shouldGrantKnowledgeWrite(input.intent, allowExternalFetch),
+    allow_knowledge_write: shouldGrantKnowledgeWrite(
+      input.request,
+      input.intent,
+      allowExternalFetch
+    ),
     allow_moderation: input.actorRole !== "user"
   };
 }
 
 function shouldGrantKnowledgeWrite(
+  request: HarnessRequest,
   intent: HarnessIntentResponse,
   allowExternalFetch: boolean
 ): boolean {
   return (
+    request.available_context.thread_context.kind !== "knowledge_thread" &&
     intent.outcome_candidate === "knowledge_ingest" &&
     intent.requested_knowledge_write &&
     allowExternalFetch
