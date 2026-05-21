@@ -67,6 +67,7 @@ test("output safety keeps fetchable public urls available for retry grounding", 
           root_channel_id: "channel-1"
         },
         place_context: {
+          features: ["knowledge_ingest", "conversation"],
           is_knowledge_place: true
         },
         delivery_context: {

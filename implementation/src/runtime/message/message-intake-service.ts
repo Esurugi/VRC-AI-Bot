@@ -48,7 +48,11 @@ export class MessageIntakeService {
     }
 
     const typedMessage = message as Message<true>;
-    if (!this.forumThreadService.shouldHandleMessage(typedMessage, watchLocation)) {
+    const forumHandling = await this.forumThreadService.evaluateMessage(
+      typedMessage,
+      watchLocation
+    );
+    if (forumHandling.decision === "ignore") {
       return;
     }
 
@@ -71,21 +75,14 @@ export class MessageIntakeService {
     const actorRole = resolveActorRole(typedMessage, this.config.discordOwnerUserIds);
     const scope = resolveScope(typedMessage, watchLocation);
 
-    const forumAlways = this.forumThreadService.shouldHandleEveryMessage({
-      envelope,
-      watchLocation
-    });
-    const engagement = forumAlways
-      ? {
-          decision: "always" as const,
-          triggerKind: null,
-          isDirectedToBot: false
-        }
-      : await this.chatEngagementPolicy.evaluate({
-          message: typedMessage,
-          envelope,
-          watchLocation
-        });
+    const engagement =
+      forumHandling.decision === "handle"
+        ? forumHandling.engagement
+        : await this.chatEngagementPolicy.evaluate({
+            message: typedMessage,
+            envelope,
+            watchLocation
+          });
 
     if (engagement.decision === "ignore") {
       return;

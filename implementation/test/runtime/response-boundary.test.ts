@@ -3,16 +3,23 @@ import assert from "node:assert/strict";
 
 import {
   isExplicitBotDirectedEngagement,
-  isKnowledgePlaceMode,
+  isKnowledgePlace,
   isKnowledgePlaceRootShare,
   isThreadEnvelope
 } from "../../src/domain/response-boundary.js";
 
-test("knowledge place mode is limited to url watch", () => {
-  assert.equal(isKnowledgePlaceMode("url_watch"), true);
-  assert.equal(isKnowledgePlaceMode("chat"), false);
-  assert.equal(isKnowledgePlaceMode("admin_control"), false);
-  assert.equal(isKnowledgePlaceMode("forum_longform"), false);
+test("knowledge place can be assigned as a feature independently from legacy mode", () => {
+  assert.equal(
+    isKnowledgePlace({
+      guildId: "guild",
+      channelId: "channel",
+      mode: "chat",
+      defaultScope: "server_public",
+      features: ["knowledge_ingest"],
+      chatBehavior: "directed_help_chat"
+    }),
+    true
+  );
 });
 
 test("thread envelopes are recognized by place type", () => {

@@ -322,6 +322,70 @@ test("url watch thread follow-up stays actionable without urls", async () => {
   });
 });
 
+test("conversation feature uses chat behavior even when legacy mode says url watch", async () => {
+  const policy = new ChatEngagementPolicy();
+  const decision = await policy.evaluate({
+    watchLocation: {
+      guildId: "guild",
+      channelId: "channel",
+      mode: "url_watch",
+      defaultScope: "conversation_only",
+      features: ["conversation"],
+      chatBehavior: "directed_help_chat"
+    },
+    envelope: {
+      guildId: "guild",
+      channelId: "channel",
+      messageId: "message",
+      authorId: "user",
+      placeType: "chat_channel",
+      rawPlaceType: "GuildText",
+      content: "今日は人多いね",
+      urls: [],
+      receivedAt: new Date().toISOString()
+    },
+    message: createMessageDouble({})
+  });
+
+  assert.deepEqual(decision, {
+    decision: "sparse",
+    triggerKind: null,
+    isDirectedToBot: false
+  });
+});
+
+test("knowledge ingest feature keeps ordinary root chatter ignored when legacy mode says chat", async () => {
+  const policy = new ChatEngagementPolicy();
+  const decision = await policy.evaluate({
+    watchLocation: {
+      guildId: "guild",
+      channelId: "channel",
+      mode: "chat",
+      defaultScope: "server_public",
+      features: ["knowledge_ingest", "conversation"],
+      chatBehavior: null
+    },
+    envelope: {
+      guildId: "guild",
+      channelId: "channel",
+      messageId: "message",
+      authorId: "user",
+      placeType: "guild_text",
+      rawPlaceType: "GuildText",
+      content: "なんでや！！！！",
+      urls: [],
+      receivedAt: new Date().toISOString()
+    },
+    message: createMessageDouble({})
+  });
+
+  assert.deepEqual(decision, {
+    decision: "ignore",
+    triggerKind: null,
+    isDirectedToBot: false
+  });
+});
+
 test("sparse engagement fact carries periodic count metadata", () => {
   const fact = toChatEngagementFact({
     evaluation: {

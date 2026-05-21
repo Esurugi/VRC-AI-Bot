@@ -55,7 +55,11 @@ export class OutputSafetyGuard {
       (input.observedPublicUrls ?? []).map((url) => safeCanonicalizeUrl(url))
     );
     const linkedSourceIds = new Set(input.linkedKnowledgeSources.map((source) => source.sourceId));
-    const forumPublicResearchMode = isForumPublicResearchMode(input.request);
+    const linkedCanonicalUrls = new Set(
+      input.linkedKnowledgeSources
+        .filter((source) => isAllowedPublicHttpUrl(source.canonicalUrl))
+        .map((source) => safeCanonicalizeUrl(source.canonicalUrl))
+    );
 
     // Retry turns need the already-approved public URLs to remain usable even if the
     // first pass cited only out-of-scope sources and got rejected.
@@ -85,7 +89,12 @@ export class OutputSafetyGuard {
       }
     }
 
-    for (const source of input.response.sources_used) {
+    const responseSources = [
+      ...input.response.sources_used,
+      ...extractKnowledgeWriteSources(input.response)
+    ];
+
+    for (const source of responseSources) {
       const classification = classifySource(source);
       if (classification.kind === "url") {
         const canonicalUrl = classification.canonicalUrl;
@@ -98,15 +107,10 @@ export class OutputSafetyGuard {
           continue;
         }
 
-        if (forumPublicResearchMode) {
-          allowedSources.add(source);
-          allowedSources.add(canonicalUrl);
-          continue;
-        }
-
         if (
           explicitlyFetchableUrls.has(canonicalUrl) ||
-          observedPublicUrls.has(canonicalUrl)
+          observedPublicUrls.has(canonicalUrl) ||
+          linkedCanonicalUrls.has(canonicalUrl)
         ) {
           allowedSources.add(source);
           allowedSources.add(canonicalUrl);
@@ -157,7 +161,7 @@ export class OutputSafetyGuard {
 
     const reason = dedupeStrings(violations).join("; ");
     const retryInstruction =
-      "scope 外 source や blocked/private URL を根拠に使わず、公開可能な根拠だけで答え直してください。安全な根拠が不足する場合は、その旨を短く明示してください。";
+      "scope 外 source、knowledge_writes、blocked/private URL を根拠や保存対象に使わず、公開可能な根拠だけで答え直してください。安全な根拠が不足する場合は、その旨を短く明示してください。";
 
     if (retryCount > 0) {
       return {
@@ -177,14 +181,6 @@ export class OutputSafetyGuard {
       retryInstruction
     };
   }
-
-}
-
-function isForumPublicResearchMode(request: HarnessRequest): boolean {
-  return (
-    request.place.mode === "forum_longform" &&
-    request.capabilities.allow_external_fetch
-  );
 }
 
 function isRecordVisible(
@@ -224,6 +220,23 @@ function classifySource(
   } catch {
     return { kind: "opaque" };
   }
+}
+
+function extractKnowledgeWriteSources(response: HarnessResponse): string[] {
+  const sources: string[] = [];
+  const seen = new Set<string>();
+
+  for (const write of response.knowledge_writes) {
+    for (const source of [write.source_url, write.canonical_url]) {
+      if (!source || seen.has(source)) {
+        continue;
+      }
+      seen.add(source);
+      sources.push(source);
+    }
+  }
+
+  return sources;
 }
 
 function safeCanonicalizeUrl(url: string): string {

@@ -1,5 +1,6 @@
 import { ChannelType, PermissionsBitField, type Message } from "discord.js";
 
+import { hasPlaceFeature } from "../domain/place-features.js";
 import type { ActorRole, Scope, WatchLocationConfig } from "../domain/types.js";
 
 export function resolveActorRole(
@@ -22,7 +23,7 @@ export function resolveScope(
   message: Message<true>,
   watchLocation: WatchLocationConfig
 ): Scope {
-  if (watchLocation.mode === "admin_control") {
+  if (hasPlaceFeature(watchLocation, "admin_override")) {
     return "conversation_only";
   }
 

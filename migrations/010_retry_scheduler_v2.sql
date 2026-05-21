@@ -1,4 +1,5 @@
-DROP TABLE IF EXISTS retry_job;
+DROP INDEX IF EXISTS idx_retry_job_next_attempt_at;
+ALTER TABLE retry_job RENAME TO retry_job_legacy_v1;
 
 CREATE TABLE retry_job (
   message_id TEXT PRIMARY KEY,
@@ -18,3 +19,36 @@ CREATE TABLE retry_job (
 
 CREATE INDEX idx_retry_job_next_attempt_at
   ON retry_job(next_attempt_at);
+
+INSERT INTO retry_job (
+  message_id,
+  guild_id,
+  message_channel_id,
+  watch_channel_id,
+  attempt_count,
+  next_attempt_at,
+  last_failure_category,
+  reply_channel_id,
+  reply_thread_id,
+  place_mode,
+  stage,
+  created_at,
+  updated_at
+)
+SELECT
+  message_id,
+  guild_id,
+  channel_id,
+  channel_id,
+  attempt_count,
+  next_attempt_at,
+  last_failure_category,
+  reply_channel_id,
+  reply_thread_id,
+  place_mode,
+  stage,
+  created_at,
+  updated_at
+FROM retry_job_legacy_v1;
+
+DROP TABLE retry_job_legacy_v1;

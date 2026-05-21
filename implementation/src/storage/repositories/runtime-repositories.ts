@@ -126,7 +126,12 @@ export class MessageProcessingRepository {
       allowPendingRetryAcquire?: boolean;
     } = {}
   ): {
-    status: "acquired" | "already_completed" | "in_flight" | "pending_retry";
+    status:
+      | "acquired"
+      | "already_completed"
+      | "already_terminal_failure_notified"
+      | "in_flight"
+      | "pending_retry";
   } {
     const now = new Date();
     const leaseMs = input.leaseMs ?? 5 * 60_000;
@@ -168,7 +173,12 @@ export class MessageProcessingRepository {
     `);
 
     const transaction = this.db.transaction((): {
-      status: "acquired" | "already_completed" | "in_flight" | "pending_retry";
+      status:
+        | "acquired"
+        | "already_completed"
+        | "already_terminal_failure_notified"
+        | "in_flight"
+        | "pending_retry";
     } => {
       const existing = find.get(messageId) as MessageProcessingRow | undefined;
       if (!existing) {
@@ -178,6 +188,10 @@ export class MessageProcessingRepository {
 
       if (existing.state === "completed") {
         return { status: "already_completed" } as const;
+      }
+
+      if (existing.state === "terminal_failure_notified") {
+        return { status: "already_terminal_failure_notified" } as const;
       }
 
       if (existing.state === "pending_retry") {
@@ -223,6 +237,20 @@ export class MessageProcessingRepository {
           lease_expires_at = NULL,
           updated_at = CURRENT_TIMESTAMP,
           completed_at = CURRENT_TIMESTAMP
+        WHERE message_id = ?
+      `)
+      .run(messageId);
+  }
+
+  markTerminalFailureNotified(messageId: string): void {
+    this.db
+      .prepare(`
+        UPDATE message_processing
+        SET
+          state = 'terminal_failure_notified',
+          lease_expires_at = NULL,
+          updated_at = CURRENT_TIMESTAMP,
+          completed_at = NULL
         WHERE message_id = ?
       `)
       .run(messageId);
@@ -364,15 +392,6 @@ export class RetryJobRepository {
         WHERE message_id = ?
       `)
       .run(messageId);
-  }
-
-  deleteByPlaceMode(placeMode: WatchLocationConfig["mode"]): void {
-    this.db
-      .prepare(`
-        DELETE FROM retry_job
-        WHERE place_mode = ?
-      `)
-      .run(placeMode);
   }
 }
 

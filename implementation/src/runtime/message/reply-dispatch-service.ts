@@ -34,9 +34,9 @@ import type { SanctionNotificationPayload } from "../../app/moderation-integrati
 import { appendRuntimeTrace } from "../../observability/runtime-trace.js";
 import {
   hasSharedSourceEvidence,
-  isKnowledgePlaceMode,
   isThreadEnvelope
 } from "../../domain/response-boundary.js";
+import { hasPlaceFeature } from "../../domain/place-features.js";
 import type {
   FailureReplyTarget,
   QueuedMessage,
@@ -198,6 +198,22 @@ export class ReplyDispatchService {
       case "ignore":
         return dispatchTarget.resolveSamePlaceReplyTarget();
       case "admin_diagnostics":
+        if (!canDispatchAdminDiagnostics(messageContext)) {
+          this.dependencies.logger.warn(
+            {
+              messageId: messageContext.envelope.messageId,
+              channelId: messageContext.envelope.channelId,
+              actorRole: messageContext.actorRole,
+              watchMode: messageContext.watchLocation.mode,
+              features: messageContext.watchLocation.features ?? []
+            },
+            "blocked admin diagnostics outside authorized admin place"
+          );
+          await dispatchTarget.replyInSamePlace(
+            "この場所では管理診断を表示できません。"
+          );
+          return dispatchTarget.resolveSamePlaceReplyTarget();
+        }
         await dispatchTarget.replyInSamePlace(
           buildAdminDiagnosticsReply({
             messageId: messageContext.envelope.messageId,
@@ -508,7 +524,7 @@ export class ReplyDispatchService {
     messageContext: RoutedMessageContext,
     response: HarnessResponse
   ): Promise<void> {
-    if (messageContext.watchLocation.mode !== "forum_longform") {
+    if (!hasPlaceFeature(messageContext.watchLocation, "forum_research")) {
       return;
     }
 
@@ -542,7 +558,7 @@ export class ReplyDispatchService {
   ): Promise<FailureReplyTarget> {
     const routing = resolveKnowledgeIngestRouting({
       isThreadMessage: isThreadEnvelope(item.envelope),
-      watchMode: item.watchLocation.mode,
+      hasKnowledgeIngestFeature: hasPlaceFeature(item.watchLocation, "knowledge_ingest"),
       replyMode: response.reply_mode,
       hasSharedSourceEvidence: hasSharedSourceEvidence(item.envelope)
     });
@@ -616,7 +632,7 @@ export class ReplyDispatchService {
 
 export function resolveKnowledgeIngestRouting(input: {
   isThreadMessage: boolean;
-  watchMode: WatchLocationConfig["mode"];
+  hasKnowledgeIngestFeature: boolean;
   replyMode: HarnessResponse["reply_mode"];
   hasSharedSourceEvidence: boolean;
 }): {
@@ -629,8 +645,8 @@ export function resolveKnowledgeIngestRouting(input: {
   }
 
   if (
-    input.replyMode === "same_place" ||
-    !isKnowledgePlaceMode(input.watchMode) ||
+    input.replyMode !== "create_public_thread" ||
+    !input.hasKnowledgeIngestFeature ||
     !input.hasSharedSourceEvidence
   ) {
     return {
@@ -721,7 +737,8 @@ export function findAdminControlWatchLocation(
 ): WatchLocationConfig | null {
   return (
     watchLocations.find(
-      (location) => location.guildId === guildId && location.mode === "admin_control"
+      (location) =>
+        location.guildId === guildId && hasPlaceFeature(location, "admin_override")
     ) ?? null
   );
 }
@@ -771,5 +788,14 @@ function isBaseWatchChannel(
   return (
     channel.type === ChannelType.GuildText ||
     channel.type === ChannelType.GuildAnnouncement
+  );
+}
+
+function canDispatchAdminDiagnostics(
+  messageContext: RoutedMessageContext
+): boolean {
+  return (
+    messageContext.actorRole !== "user" &&
+    hasPlaceFeature(messageContext.watchLocation, "admin_override")
   );
 }

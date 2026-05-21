@@ -4,7 +4,8 @@ import assert from "node:assert/strict";
 import { Collection } from "discord.js";
 
 import {
-  buildRecentRoomEventFacts
+  buildRecentRoomEventFacts,
+  shouldCollectRecentRoomEvents
 } from "../../../src/runtime/chat/recent-chat-history-service.js";
 
 test("recent chat history keeps recent bot turns in a minimal room-event shape", () => {
@@ -93,6 +94,86 @@ test("recent chat history keeps recent bot turns in a minimal room-event shape",
       content: "おおーー"
     }
   ]);
+});
+
+test("recent room event collection includes forum research threads", () => {
+  assert.equal(
+    shouldCollectRecentRoomEvents({
+      watchLocation: {
+        guildId: "guild",
+        channelId: "forum-root",
+        mode: "chat",
+        defaultScope: "server_public",
+        features: ["forum_research", "conversation"],
+        chatBehavior: null
+      },
+      message: {
+        channel: {
+          isThread: () => true
+        }
+      } as never
+    }),
+    true
+  );
+
+  assert.equal(
+    shouldCollectRecentRoomEvents({
+      watchLocation: {
+        guildId: "guild",
+        channelId: "forum-root",
+        mode: "forum_longform",
+        defaultScope: "server_public",
+        features: ["forum_research", "conversation"],
+        chatBehavior: null
+      },
+      message: {
+        channel: {
+          isThread: () => false
+        }
+      } as never
+    }),
+    false
+  );
+});
+
+test("recent room event collection uses ambient conversation policy instead of legacy mode", () => {
+  assert.equal(
+    shouldCollectRecentRoomEvents({
+      watchLocation: {
+        guildId: "guild",
+        channelId: "chat-root",
+        mode: "url_watch",
+        defaultScope: "conversation_only",
+        features: ["conversation"],
+        chatBehavior: "ambient_room_chat"
+      },
+      message: {
+        channel: {
+          isThread: () => false
+        }
+      } as never
+    }),
+    true
+  );
+
+  assert.equal(
+    shouldCollectRecentRoomEvents({
+      watchLocation: {
+        guildId: "guild",
+        channelId: "knowledge-root",
+        mode: "chat",
+        defaultScope: "server_public",
+        features: ["knowledge_ingest", "conversation"],
+        chatBehavior: null
+      },
+      message: {
+        channel: {
+          isThread: () => false
+        }
+      } as never
+    }),
+    false
+  );
 });
 
 function createHistoryMessage(input: {

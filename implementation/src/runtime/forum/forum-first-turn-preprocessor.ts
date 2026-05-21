@@ -2,6 +2,7 @@ import type { Message } from "discord.js";
 import type { Logger } from "pino";
 
 import { SessionPolicyResolver } from "../../codex/session-policy.js";
+import { hasPlaceFeature } from "../../domain/place-features.js";
 import type { ActorRole, MessageEnvelope, Scope, WatchLocationConfig } from "../../domain/types.js";
 import type { SqliteStore } from "../../storage/database.js";
 
@@ -31,7 +32,7 @@ export class ForumFirstTurnPreprocessor {
     scope: Scope;
   }): Promise<ForumFirstTurnPreparation> {
     const starterMessage =
-      input.watchLocation.mode === "forum_longform" &&
+      hasPlaceFeature(input.watchLocation, "forum_research") &&
       input.message.channel.isThread()
         ? await this.fetchStarterMessage(input.message)
         : null;

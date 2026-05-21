@@ -1,0 +1,39 @@
+services:
+  bot:
+    build:
+      context: .
+    image: vrc-ai-bot:local
+    command: ["pnpm", "dev:raw"]
+    env_file:
+      - ${BOT_ENV_FILE:-.env}
+    environment:
+      HOME: /codex-home
+      CODEX_HOME: /codex-home/.codex
+    volumes:
+      - .:/workspace
+      - vrc-ai-bot-codex-home:/codex-home
+      - vrc-ai-bot-node-modules:/workspace/node_modules
+      - vrc-ai-bot-pnpm-store:/pnpm/store
+    working_dir: /workspace
+
+  test:
+    build:
+      context: .
+    image: vrc-ai-bot:local
+    command: ["pnpm", "check"]
+    environment:
+      HOME: /codex-home
+      CODEX_HOME: /codex-home/.codex
+    volumes:
+      - .:/workspace
+      - vrc-ai-bot-codex-home:/codex-home
+      - vrc-ai-bot-node-modules:/workspace/node_modules
+      - vrc-ai-bot-pnpm-store:/pnpm/store
+    working_dir: /workspace
+    profiles:
+      - test
+
+volumes:
+  vrc-ai-bot-codex-home:
+  vrc-ai-bot-node-modules:
+  vrc-ai-bot-pnpm-store:

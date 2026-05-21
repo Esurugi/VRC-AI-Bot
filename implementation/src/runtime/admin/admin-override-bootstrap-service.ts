@@ -46,7 +46,7 @@ export class AdminOverrideBootstrapService {
       channelId: input.thread.id,
       messageId: input.requestId,
       authorId: input.actorId,
-      placeType: resolvePlaceType(input.thread, input.watchLocation.mode),
+      placeType: resolvePlaceType(input.thread, input.watchLocation),
       rawPlaceType: ChannelType[input.thread.type] ?? String(input.thread.type),
       content: input.prompt.trim(),
       urls: extractUrls(input.prompt),
@@ -140,8 +140,7 @@ export class AdminOverrideBootstrapService {
   ): Promise<void> {
     const decision = this.failureClassifier.classify(error, {
       stage,
-      attemptCount: 0,
-      watchMode: input.watchLocation.mode
+      attemptCount: 0
     });
     const notice = buildNonRetryingFailureNotice(decision.publicCategory);
 

@@ -89,7 +89,11 @@ export type ThreadKnowledgeContextRow = {
 export type MessageProcessingRow = {
   message_id: string;
   channel_id: string;
-  state: "processing" | "pending_retry" | "completed";
+  state:
+    | "processing"
+    | "pending_retry"
+    | "completed"
+    | "terminal_failure_notified";
   lease_expires_at: string | null;
   created_at: string;
   updated_at: string;

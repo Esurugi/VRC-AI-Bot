@@ -1,0 +1,285 @@
+import type {
+  CodexAppServerClient,
+  HarnessTurnSessionMetadata,
+  StreamingTextTurnCallbacks,
+  TurnObservations
+} from "../../src/codex/app-server-client.js";
+import type {
+  HarnessIntentResponse,
+  HarnessRequest,
+  HarnessResponse
+} from "../../src/harness/contracts.js";
+import type { CodexSandboxMode } from "../../src/domain/types.js";
+
+export type ScriptedCodexEvent =
+  | {
+      type: "startThread";
+      threadId: string;
+      sandbox: CodexSandboxMode;
+      modelProfile: string;
+    }
+  | {
+      type: "intent";
+      phase: HarnessRequest["task"]["phase"];
+      mode: HarnessRequest["place"]["mode"];
+    }
+  | {
+      type: "answer";
+      phase: HarnessRequest["task"]["phase"];
+      mode: HarnessRequest["place"]["mode"];
+      retryKind: string | null;
+    }
+  | {
+      type: "streamingFinal";
+      text: string;
+    };
+
+type AnswerTurn = {
+  response: HarnessResponse;
+  observations?: TurnObservations;
+};
+
+export class ScriptedCodexClient {
+  readonly events: ScriptedCodexEvent[] = [];
+  readonly requests: HarnessRequest[] = [];
+  private threadOrdinal = 0;
+  private readonly intentQueue: HarnessIntentResponse[] = [];
+  private readonly answerQueue: AnswerTurn[] = [];
+  private streamingText = "forum final";
+  private streamingObservations: TurnObservations = {
+    observed_public_urls: []
+  };
+
+  enqueueIntent(response: HarnessIntentResponse): void {
+    this.intentQueue.push(response);
+  }
+
+  enqueueAnswer(turn: AnswerTurn): void {
+    this.answerQueue.push(turn);
+  }
+
+  setForumStreamingTurn(input: {
+    text: string;
+    observations?: TurnObservations;
+  }): void {
+    this.streamingText = input.text;
+    this.streamingObservations = input.observations ?? {
+      observed_public_urls: []
+    };
+  }
+
+  getSessionInvalidationGeneration(): number {
+    return 0;
+  }
+
+  async startThread(
+    sandbox: CodexSandboxMode,
+    executionProfile: { modelProfile?: string; model?: string }
+  ): Promise<string> {
+    this.threadOrdinal += 1;
+    const threadId = `codex-thread-${this.threadOrdinal}`;
+    this.events.push({
+      type: "startThread",
+      threadId,
+      sandbox,
+      modelProfile: executionProfile.modelProfile ?? executionProfile.model ?? "unknown"
+    });
+    return threadId;
+  }
+
+  async resumeThread(): Promise<void> {
+    return;
+  }
+
+  async archiveThread(): Promise<void> {
+    return;
+  }
+
+  async unsubscribeThread(): Promise<void> {
+    return;
+  }
+
+  async startEphemeralThread(): Promise<string> {
+    this.threadOrdinal += 1;
+    return `codex-ephemeral-${this.threadOrdinal}`;
+  }
+
+  async closeEphemeralThread(): Promise<void> {
+    return;
+  }
+
+  async runHarnessIntentRequest(
+    _threadId: string,
+    request: HarnessRequest
+  ): Promise<HarnessIntentResponse> {
+    this.requests.push(request);
+    this.events.push({
+      type: "intent",
+      phase: request.task.phase,
+      mode: request.place.mode
+    });
+    const response = this.intentQueue.shift();
+    if (!response) {
+      throw new Error("missing scripted intent response");
+    }
+    return response;
+  }
+
+  async runHarnessRequest(
+    _threadId: string,
+    request: HarnessRequest
+  ): Promise<{
+    response: HarnessResponse;
+    observations: TurnObservations;
+  }> {
+    this.requests.push(request);
+    this.events.push({
+      type: "answer",
+      phase: request.task.phase,
+      mode: request.place.mode,
+      retryKind: request.task.retry_context?.kind ?? null
+    });
+    const turn = this.answerQueue.shift();
+    if (!turn) {
+      throw new Error("missing scripted answer response");
+    }
+    return {
+      response: turn.response,
+      observations: turn.observations ?? {
+        observed_public_urls: []
+      }
+    };
+  }
+
+  async runJsonTurn(input: {
+    inputPayload: { kind?: string };
+  }): Promise<{
+    response: unknown;
+    observations: TurnObservations;
+    turnId: string | null;
+  }> {
+    if (input.inputPayload.kind === "forum_research_prompt_refiner") {
+      return {
+        response: {
+          refined_prompt: "refined forum prompt",
+          progress_notice: "調査の観点を整理しています。",
+          prompt_rationale_summary: "test prompt"
+        },
+        observations: {
+          observed_public_urls: []
+        },
+        turnId: null
+      };
+    }
+
+    if (input.inputPayload.kind === "forum_research_supervisor") {
+      return {
+        response: {
+          progress_notice: "調査計画を確認しています。",
+          worker_tasks: [],
+          interrupts: [],
+          next_action: "finalize",
+          final_brief: "finalize from current public context"
+        },
+        observations: {
+          observed_public_urls: []
+        },
+        turnId: null
+      };
+    }
+
+    throw new Error(`unexpected json turn kind: ${String(input.inputPayload.kind)}`);
+  }
+
+  async startJsonTurn(): Promise<{
+    turnId: string | null;
+    completion: Promise<{
+      response: unknown;
+      observations: TurnObservations;
+      turnId: string | null;
+    }>;
+    interrupt: () => Promise<void>;
+  }> {
+    return {
+      turnId: null,
+      completion: Promise.resolve({
+        response: {
+          worker_id: "worker-1",
+          subquestion: "test",
+          evidence_items: [],
+          citations: []
+        },
+        observations: {
+          observed_public_urls: []
+        },
+        turnId: null
+      }),
+      interrupt: async () => {}
+    };
+  }
+
+  async runStreamingTextTurn(input: {
+    sessionMetadata?: HarnessTurnSessionMetadata;
+    callbacks?: StreamingTextTurnCallbacks;
+  }): Promise<{
+    response: string;
+    observations: TurnObservations;
+    turnId: string | null;
+  }> {
+    void input.sessionMetadata;
+    this.events.push({
+      type: "streamingFinal",
+      text: this.streamingText
+    });
+    await input.callbacks?.onAgentMessageDelta?.(this.streamingText);
+    return {
+      response: this.streamingText,
+      observations: this.streamingObservations,
+      turnId: null
+    };
+  }
+}
+
+export function asCodexClient(client: ScriptedCodexClient): CodexAppServerClient {
+  return client as unknown as CodexAppServerClient;
+}
+
+export function intent(input: {
+  outcome?: HarnessIntentResponse["outcome_candidate"];
+  fetch?: HarnessIntentResponse["requested_external_fetch"];
+  write?: boolean;
+  repoWrite?: boolean;
+} = {}): HarnessIntentResponse {
+  return {
+    outcome_candidate: input.outcome ?? "chat_reply",
+    repo_write_intent: input.repoWrite ?? false,
+    requested_external_fetch: input.fetch ?? "none",
+    requested_knowledge_write: input.write ?? false,
+    moderation_signal: {
+      violation_category: "none",
+      control_request_class: null,
+      notes: null
+    },
+    diagnostics: {
+      notes: null
+    }
+  };
+}
+
+export function response(input: Partial<HarnessResponse>): HarnessResponse {
+  return {
+    outcome: "chat_reply",
+    repo_write_intent: false,
+    public_text: "テスト応答です。",
+    reply_mode: "same_place",
+    target_thread_id: null,
+    selected_source_ids: [],
+    sources_used: [],
+    knowledge_writes: [],
+    diagnostics: {
+      notes: null
+    },
+    sensitivity_raise: "none",
+    ...input
+  };
+}

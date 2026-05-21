@@ -17,11 +17,19 @@ import type {
   Scope,
   WatchLocationConfig
 } from "../domain/types.js";
+import {
+  hasPlaceFeature,
+  isKnowledgeIngestPlace
+} from "../domain/place-features.js";
 import { KnowledgePersistenceService } from "../knowledge/knowledge-persistence-service.js";
 import {
   DEFAULT_OVERRIDE_FLAGS,
   type OverrideContext
 } from "../override/types.js";
+import {
+  canonicalizeUrl,
+  isAllowedPublicHttpUrl
+} from "../playwright/url-policy.js";
 import type { SqliteStore } from "../storage/database.js";
 import { appendRuntimeTrace } from "../observability/runtime-trace.js";
 import type { ForumResearchPromptRefiner } from "../runtime/forum/forum-research-prompt-refiner.js";
@@ -83,6 +91,7 @@ export class HarnessRunner {
   private readonly knowledgePersistence: KnowledgePersistenceService;
   private readonly outputSafetyGuard: OutputSafetyGuard;
   private readonly forumResearchPipeline: ForumResearchPipeline;
+  private readonly approvedKnowledgeEvidenceUrlsByMessageId = new Map<string, string[]>();
 
   constructor(
     private readonly store: SqliteStore,
@@ -220,6 +229,11 @@ export class HarnessRunner {
       session: resolvedSession,
       fetchablePublicUrlCount
     });
+    const finalResponse = normalizeAdminDiagnosticsResponse(
+      normalizedInput,
+      intent,
+      answerFlow.response
+    );
 
     this.logger.debug(
       {
@@ -227,23 +241,35 @@ export class HarnessRunner {
         codexThreadId: resolvedSession.threadId,
         sessionIdentity: sessionIdentity.sessionIdentity,
         workloadKind: sessionIdentity.workloadKind,
-        outcome: answerFlow.response.outcome,
-        replyMode: answerFlow.response.reply_mode,
-        hasPublicText: Boolean(answerFlow.response.public_text?.trim())
+        outcome: finalResponse.outcome,
+        replyMode: finalResponse.reply_mode,
+        hasPublicText: Boolean(finalResponse.public_text?.trim())
       },
       "harness produced response"
     );
 
+    const knowledgePersistenceScope = resolveKnowledgePersistenceScope(
+      normalizedInput.scope,
+      normalizedInput.watchLocation,
+      threadContext,
+      finalResponse,
+      fetchablePublicUrlCount
+    );
+    if (knowledgePersistenceScope) {
+      this.approvedKnowledgeEvidenceUrlsByMessageId.set(
+        normalizedInput.envelope.messageId,
+        answerFlow.approvedEvidenceUrls
+      );
+    } else {
+      this.approvedKnowledgeEvidenceUrlsByMessageId.delete(
+        normalizedInput.envelope.messageId
+      );
+    }
+
     return {
-      response: answerFlow.response,
+      response: finalResponse,
       session: resolvedSession,
-      knowledgePersistenceScope: resolveKnowledgePersistenceScope(
-        normalizedInput.scope,
-        normalizedInput.watchLocation,
-        threadContext,
-        answerFlow.response,
-        fetchablePublicUrlCount
-      ),
+      knowledgePersistenceScope,
       moderationSignal: intent.moderation_signal,
       primaryReplyAlreadySent: answerFlow.primaryReplyAlreadySent,
       violationCounterSuspended: Boolean(
@@ -263,6 +289,7 @@ export class HarnessRunner {
   }): Promise<{
     response: HarnessResponse;
     primaryReplyAlreadySent: boolean;
+    approvedEvidenceUrls: string[];
   }> {
     const linkedKnowledgeSources = input.threadContext.knowledgeEntries.map((entry) => ({
       sourceId: entry.sourceId,
@@ -270,7 +297,7 @@ export class HarnessRunner {
       canonicalUrl: entry.canonicalUrl
     }));
     const isForumResearch =
-      input.input.watchLocation.mode === "forum_longform" &&
+      hasPlaceFeature(input.input.watchLocation, "forum_research") &&
       input.request.capabilities.allow_external_fetch;
     const firstTurn = isForumResearch
         ? await this.forumResearchPipeline.run({
@@ -360,7 +387,8 @@ export class HarnessRunner {
       if (shouldRetryKnowledgeThreadFollowUp(input.input, input.threadContext, response)) {
         return {
           response: buildKnowledgeThreadFailure(input.input),
-          primaryReplyAlreadySent: false
+          primaryReplyAlreadySent: false,
+          approvedEvidenceUrls: []
         };
       }
     }
@@ -381,25 +409,16 @@ export class HarnessRunner {
     if (firstEvaluation.decision === "allow") {
       return {
         response,
-        primaryReplyAlreadySent: firstTurn.primaryReplyAlreadySent
-      };
-    }
-
-    if (isForumResearch && firstTurn.primaryReplyAlreadySent) {
-      appendRuntimeTrace("codex-app-server", "forum_output_safety_retry_skipped", {
-        messageId: input.input.envelope.messageId,
-        reason: firstEvaluation.reason
-      });
-      return {
-        response,
-        primaryReplyAlreadySent: true
+        primaryReplyAlreadySent: firstTurn.primaryReplyAlreadySent,
+        approvedEvidenceUrls: extractApprovedPublicUrls(firstEvaluation.allowedSources)
       };
     }
 
     if (firstEvaluation.decision === "refuse") {
       return {
         response: buildOutputSafetyRefusal(input.input, firstEvaluation.reason),
-        primaryReplyAlreadySent: false
+        primaryReplyAlreadySent: false,
+        approvedEvidenceUrls: []
       };
     }
 
@@ -485,18 +504,21 @@ export class HarnessRunner {
       if (shouldRetryKnowledgeThreadFollowUp(input.input, input.threadContext, secondPass)) {
         return {
           response: buildKnowledgeThreadFailure(input.input),
-          primaryReplyAlreadySent: false
+          primaryReplyAlreadySent: false,
+          approvedEvidenceUrls: []
         };
       }
       return {
         response: secondPass,
-        primaryReplyAlreadySent: false
+        primaryReplyAlreadySent: false,
+        approvedEvidenceUrls: extractApprovedPublicUrls(secondEvaluation.allowedSources)
       };
     }
 
     return {
       response: buildOutputSafetyRefusal(input.input, secondEvaluation.reason),
-      primaryReplyAlreadySent: false
+      primaryReplyAlreadySent: false,
+      approvedEvidenceUrls: []
     };
   }
 
@@ -530,6 +552,8 @@ export class HarnessRunner {
       this.knowledgePersistence.persist({
         response: input.response,
         sourceUrls: input.envelope.urls,
+        approvedEvidenceUrls:
+          this.approvedKnowledgeEvidenceUrlsByMessageId.get(input.envelope.messageId) ?? [],
         guildId: input.envelope.guildId,
         rootChannelId: input.watchLocation.channelId,
         placeId: resolveScopedPlaceId({
@@ -540,7 +564,9 @@ export class HarnessRunner {
         sourceMessageId: input.envelope.messageId,
         replyThreadId: input.replyThreadId
       });
+      this.approvedKnowledgeEvidenceUrlsByMessageId.delete(input.envelope.messageId);
     } catch (error) {
+      this.approvedKnowledgeEvidenceUrlsByMessageId.delete(input.envelope.messageId);
       this.logger.warn(
         {
           error: error instanceof Error ? error.message : String(error),
@@ -602,7 +628,9 @@ export class HarnessRunner {
     );
     if (threadKnowledge.length === 0) {
       return {
-        kind: "plain_thread",
+        kind: isKnowledgeIngestPlace(watchLocation)
+          ? "missing_or_stale_knowledge_thread"
+          : "plain_thread",
         sourceMessageId: null,
         knownSourceUrls: [],
         replyThreadId: envelope.channelId,
@@ -636,7 +664,7 @@ function canUseWorkspaceWrite(
   overrideContext: OverrideContext
 ): boolean {
   return (
-    input.watchLocation.mode === "admin_control" &&
+    hasPlaceFeature(input.watchLocation, "admin_override") &&
     input.envelope.placeType.endsWith("thread") &&
     input.actorRole !== "user" &&
     overrideContext.active &&
@@ -645,12 +673,13 @@ function canUseWorkspaceWrite(
 }
 
 function buildOverrideRequiredResponse(input: HarnessMessageContext): HarnessResponse {
+  const isAdminOverridePlace = hasPlaceFeature(input.watchLocation, "admin_override");
   const locationHint =
-    input.watchLocation.mode === "admin_control"
+    isAdminOverridePlace
       ? input.envelope.placeType.endsWith("thread")
         ? "この要求を実行するには、この override thread を開いた管理者が active override を維持している必要があります。"
-        : "この要求を実行するには、今いる configured な会話 place で `/override-start` を実行して dedicated override thread を開いてください。作成先は configured `admin_control` root channel 配下です。"
-      : "この要求は active override thread 内でだけ扱えます。今いる configured な会話 place で `/override-start` を実行すると、configured `admin_control` root channel 配下に dedicated override thread を開けます。必要なら `/override-start prompt:\"...\"` で最初の依頼も同時に投入できます。";
+        : "この要求を実行するには、今いる configured な会話 place で `/override-start` を実行して dedicated override thread を開いてください。作成先は configured `admin_override` root channel 配下です。"
+      : "この要求は active override thread 内でだけ扱えます。今いる configured な会話 place で `/override-start` を実行すると、configured `admin_override` root channel 配下に dedicated override thread を開けます。必要なら `/override-start prompt:\"...\"` で最初の依頼も同時に投入できます。";
 
   return {
     outcome: "chat_reply",
@@ -716,6 +745,43 @@ function normalizeEnvelope(envelope: MessageEnvelope): MessageEnvelope {
   };
 }
 
+function normalizeAdminDiagnosticsResponse(
+  input: HarnessMessageContext,
+  intent: HarnessIntentResponse,
+  response: HarnessResponse
+): HarnessResponse {
+  if (response.outcome !== "admin_diagnostics") {
+    return response;
+  }
+
+  if (canShowAdminDiagnostics(input, intent)) {
+    return response;
+  }
+
+  return {
+    ...response,
+    outcome: "ignore",
+    public_text: null,
+    reply_mode: "no_reply",
+    target_thread_id: null,
+    knowledge_writes: [],
+    diagnostics: {
+      notes: "admin diagnostics denied by system gate"
+    }
+  };
+}
+
+function canShowAdminDiagnostics(
+  input: HarnessMessageContext,
+  intent: HarnessIntentResponse
+): boolean {
+  return (
+    input.actorRole !== "user" &&
+    hasPlaceFeature(input.watchLocation, "admin_override") &&
+    intent.outcome_candidate === "admin_diagnostics"
+  );
+}
+
 function normalizeProductResponse(
   input: HarnessMessageContext,
   threadContext: ResolvedThreadContext,
@@ -752,12 +818,11 @@ export function normalizeKnowledgeIngestResponse(
     return response;
   }
 
-  if (threadContext.kind === "knowledge_thread") {
+  if (isKnowledgeFollowUpThreadKind(threadContext.kind)) {
     return {
       ...response,
       outcome: "chat_reply",
-      public_text:
-        response.public_text?.trim() || buildKnowledgeReplyText(response),
+      public_text: response.public_text?.trim() || null,
       reply_mode: "same_place",
       target_thread_id: null,
       knowledge_writes: []
@@ -765,7 +830,7 @@ export function normalizeKnowledgeIngestResponse(
   }
 
   const shouldCreatePublicThread =
-    input.watchLocation.mode === "url_watch" &&
+    isKnowledgeIngestPlace(input.watchLocation) &&
     threadContext.kind === "root_channel" &&
     policy.fetchablePublicUrlCount > 0;
 
@@ -793,18 +858,18 @@ export function resolveKnowledgePersistenceScope(
   }
 
   if (
-    watchLocation.mode === "url_watch" &&
+    isKnowledgeIngestPlace(watchLocation) &&
     threadContext.kind === "root_channel" &&
-    fetchablePublicUrlCount > 0
+    (fetchablePublicUrlCount > 0 || response.knowledge_writes.length > 0)
   ) {
     return currentScope;
   }
 
-  if (threadContext.kind === "knowledge_thread") {
+  if (isKnowledgeFollowUpThreadKind(threadContext.kind)) {
     return null;
   }
 
-  return "server_public";
+  return null;
 }
 
 function dedupeStrings(values: string[]): string[] {
@@ -820,6 +885,14 @@ function dedupeStrings(values: string[]): string[] {
   }
 
   return deduped;
+}
+
+function extractApprovedPublicUrls(values: string[]): string[] {
+  return dedupeStrings(
+    values
+      .filter((value) => isAllowedPublicHttpUrl(value))
+      .map((value) => canonicalizeUrl(value))
+  );
 }
 
 function dedupeKnowledgeWrites(
@@ -882,9 +955,16 @@ function shouldRetryKnowledgeThreadFollowUp(
   response: HarnessResponse
 ): boolean {
   return (
-    threadContext.kind === "knowledge_thread" &&
+    isKnowledgeFollowUpThreadKind(threadContext.kind) &&
     input.envelope.content.trim().length > 0 &&
     !wouldProduceVisibleReply(response)
+  );
+}
+
+function isKnowledgeFollowUpThreadKind(kind: ThreadContextKind): boolean {
+  return (
+    kind === "knowledge_thread" ||
+    kind === "missing_or_stale_knowledge_thread"
   );
 }
 

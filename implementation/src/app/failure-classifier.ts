@@ -1,5 +1,3 @@
-import type { WatchMode } from "../domain/types.js";
-
 export type FailureStage = "fetch_or_resolve" | "dispatch" | "post_response";
 
 export type FailurePublicCategory =
@@ -21,7 +19,7 @@ export type FailureDecision = {
 type FailureContext = {
   stage: FailureStage;
   attemptCount: number;
-  watchMode: WatchMode;
+  forumFailurePolicy?: "same_request_retry_only";
 };
 
 const RETRY_DELAYS_MS = [5 * 60_000, 30 * 60_000, 2 * 60 * 60_000] as const;
@@ -31,7 +29,7 @@ export class FailureClassifier {
     const details = normalizeError(error);
     const adminErrorPayload = details.message;
 
-    if (context.watchMode === "forum_longform") {
+    if (context.forumFailurePolicy === "same_request_retry_only") {
       return classifyForumFailure(details, context.stage, adminErrorPayload);
     }
 

@@ -67,18 +67,17 @@ export function resolveRetryWatchLocation(
   input: {
     guildId: string;
     watchChannelId: string;
-    mode: WatchLocationConfig["mode"];
+    mode?: WatchLocationConfig["mode"];
   }
 ): WatchLocationConfig {
   const resolved = config.watchLocations.find(
     (location) =>
       location.guildId === input.guildId &&
-      location.channelId === input.watchChannelId &&
-      location.mode === input.mode
+      location.channelId === input.watchChannelId
   );
   if (!resolved) {
     throw new Error(
-      `watch location not found for retry job: ${input.guildId}:${input.watchChannelId}:${input.mode}`
+      `watch location not found for retry job: ${input.guildId}:${input.watchChannelId}`
     );
   }
   return resolved;

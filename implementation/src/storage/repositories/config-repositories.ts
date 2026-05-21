@@ -1,6 +1,8 @@
 import Database from "better-sqlite3";
 
 import type {
+  ChatBehavior,
+  PlaceFeature,
   WatchLocationConfig
 } from "../../domain/types.js";
 import type { CodexSandboxMode } from "../../domain/types.js";
@@ -15,17 +17,46 @@ import type {
   WatchLocationRow
 } from "../types.js";
 
+type StoredWatchLocationRow = WatchLocationRow & {
+  feature_profile_id: string | null;
+  features_json: string | null;
+  chat_behavior: ChatBehavior | null;
+  chat_behavior_present: number;
+};
+
 export class WatchLocationRepository {
   constructor(private readonly db: Database.Database) {}
 
   sync(locations: WatchLocationConfig[]): void {
     const insert = this.db.prepare(`
-      INSERT INTO watch_location (guild_id, channel_id, mode, default_scope)
-      VALUES (@guild_id, @channel_id, @mode, @default_scope)
+      INSERT INTO watch_location (
+        guild_id,
+        channel_id,
+        feature_profile_id,
+        mode,
+        default_scope,
+        features_json,
+        chat_behavior,
+        chat_behavior_present
+      )
+      VALUES (
+        @guild_id,
+        @channel_id,
+        @feature_profile_id,
+        @mode,
+        @default_scope,
+        @features_json,
+        @chat_behavior,
+        @chat_behavior_present
+      )
       ON CONFLICT(channel_id) DO UPDATE SET
         guild_id = excluded.guild_id,
+        feature_profile_id = excluded.feature_profile_id,
         mode = excluded.mode,
         default_scope = excluded.default_scope,
+        features_json = excluded.features_json,
+        chat_behavior = excluded.chat_behavior,
+        chat_behavior_present = excluded.chat_behavior_present,
         updated_at = CURRENT_TIMESTAMP
     `);
     const prune = this.db.prepare(
@@ -38,8 +69,13 @@ export class WatchLocationRepository {
         insert.run({
           guild_id: location.guildId,
           channel_id: location.channelId,
+          feature_profile_id: location.featureProfileId ?? null,
           mode: location.mode,
-          default_scope: location.defaultScope
+          default_scope: location.defaultScope,
+          features_json:
+            location.features === undefined ? null : JSON.stringify(location.features),
+          chat_behavior: location.chatBehavior ?? null,
+          chat_behavior_present: location.chatBehavior === undefined ? 0 : 1
         });
       }
 
@@ -55,27 +91,70 @@ export class WatchLocationRepository {
 
   list(): WatchLocationConfig[] {
     return this.db
-      .prepare("SELECT guild_id, channel_id, mode, default_scope FROM watch_location ORDER BY channel_id")
+      .prepare(`
+        SELECT
+          guild_id,
+          channel_id,
+          feature_profile_id,
+          mode,
+          default_scope,
+          features_json,
+          chat_behavior,
+          chat_behavior_present
+        FROM watch_location
+        ORDER BY channel_id
+      `)
       .all()
-      .map((row) => this.mapRow(row as WatchLocationRow));
+      .map((row) => this.mapRow(row as StoredWatchLocationRow));
   }
 
   findForChannel(channelId: string): WatchLocationConfig | null {
     const row = this.db
-      .prepare("SELECT guild_id, channel_id, mode, default_scope FROM watch_location WHERE channel_id = ?")
-      .get(channelId) as WatchLocationRow | undefined;
+      .prepare(`
+        SELECT
+          guild_id,
+          channel_id,
+          feature_profile_id,
+          mode,
+          default_scope,
+          features_json,
+          chat_behavior,
+          chat_behavior_present
+        FROM watch_location
+        WHERE channel_id = ?
+      `)
+      .get(channelId) as StoredWatchLocationRow | undefined;
 
     return row ? this.mapRow(row) : null;
   }
 
-  private mapRow(row: WatchLocationRow): WatchLocationConfig {
+  private mapRow(row: StoredWatchLocationRow): WatchLocationConfig {
+    const features = parseFeatures(row.features_json);
     return {
       guildId: row.guild_id,
       channelId: row.channel_id,
+      ...(row.feature_profile_id === null
+        ? {}
+        : { featureProfileId: row.feature_profile_id }),
       mode: row.mode,
-      defaultScope: row.default_scope
+      defaultScope: row.default_scope,
+      ...(features === undefined ? {} : { features }),
+      ...(row.chat_behavior_present === 0
+        ? {}
+        : { chatBehavior: row.chat_behavior })
     };
   }
+}
+
+function parseFeatures(value: string | null): PlaceFeature[] | undefined {
+  if (value === null) {
+    return undefined;
+  }
+  const parsed = JSON.parse(value) as unknown;
+  if (!Array.isArray(parsed)) {
+    throw new Error("watch_location.features_json must contain a JSON array");
+  }
+  return parsed as PlaceFeature[];
 }
 
 export class ChannelCursorRepository {
@@ -99,6 +178,12 @@ export class ChannelCursorRepository {
         ON CONFLICT(channel_id) DO UPDATE SET
           last_processed_message_id = excluded.last_processed_message_id,
           updated_at = CURRENT_TIMESTAMP
+        WHERE
+          length(excluded.last_processed_message_id) > length(channel_cursor.last_processed_message_id)
+          OR (
+            length(excluded.last_processed_message_id) = length(channel_cursor.last_processed_message_id)
+            AND excluded.last_processed_message_id > channel_cursor.last_processed_message_id
+          )
       `)
       .run(channelId, messageId);
   }

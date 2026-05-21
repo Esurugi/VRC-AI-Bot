@@ -7,8 +7,15 @@ import type {
   WatchLocationConfig
 } from "../../domain/types.js";
 import {
-  isAmbientRoomChat
+  isKnowledgePlaceRootShare,
+  isThreadEnvelope
 } from "../../domain/response-boundary.js";
+import {
+  isAmbientConversationPlace,
+  isConversationPlace,
+  isKnowledgeIngestPlace,
+  resolvePlaceChatBehavior
+} from "../../domain/place-features.js";
 
 export type ChatEngagementDecision = "always" | "sparse" | "ignore";
 export type DirectedChatTriggerKind = Exclude<
@@ -32,10 +39,13 @@ export class ChatEngagementPolicy {
   async evaluate(input: ChatEngagementFacts): Promise<ChatEngagementEvaluation> {
     const botUserId = input.message.client.user?.id;
 
-    if (input.watchLocation.mode === "url_watch") {
+    if (isKnowledgeIngestPlace(input.watchLocation)) {
       if (
-        input.envelope.placeType.endsWith("thread") ||
-        input.envelope.urls.length > 0
+        isThreadEnvelope(input.envelope) ||
+        isKnowledgePlaceRootShare({
+          envelope: input.envelope,
+          watchLocation: input.watchLocation
+        })
       ) {
         return {
           decision: "always",
@@ -59,7 +69,7 @@ export class ChatEngagementPolicy {
       };
     }
 
-    if (input.watchLocation.mode !== "chat") {
+    if (!isConversationPlace(input.watchLocation)) {
       return {
         decision: "always",
         triggerKind: null,
@@ -75,7 +85,16 @@ export class ChatEngagementPolicy {
       return directed;
     }
 
-    if (isAmbientRoomChat(input.watchLocation)) {
+    const chatBehavior = resolvePlaceChatBehavior(input.watchLocation);
+    if (chatBehavior === null) {
+      return {
+        decision: "always",
+        triggerKind: null,
+        isDirectedToBot: false
+      };
+    }
+
+    if (isAmbientConversationPlace(input.watchLocation)) {
       if (containsQuestionMarker(input.envelope.content)) {
         return {
           decision: "always",

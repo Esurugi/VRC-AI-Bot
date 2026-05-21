@@ -66,18 +66,41 @@ test("directed chat adds a processing reaction", () => {
   );
 });
 
-test("non-chat modes keep the processing reaction", () => {
+test("forum feature keeps the processing reaction even when legacy mode says chat", () => {
   assert.equal(
     shouldShowProcessingUi({
       watchLocation: {
         guildId: "g1",
         channelId: "c1",
-        mode: "forum_longform",
+        mode: "chat",
         defaultScope: "server_public",
+        features: ["forum_research", "conversation"],
         chatBehavior: null
       },
       chatEngagement: null
     }),
     true
+  );
+});
+
+test("conversation feature uses chat visibility even when legacy mode says url watch", () => {
+  assert.equal(
+    shouldShowProcessingUi({
+      watchLocation: {
+        guildId: "g1",
+        channelId: "c1",
+        mode: "url_watch",
+        defaultScope: "conversation_only",
+        features: ["conversation"],
+        chatBehavior: "ambient_room_chat"
+      },
+      chatEngagement: {
+        trigger_kind: "sparse_periodic",
+        is_directed_to_bot: false,
+        sparse_ordinal: 5,
+        ordinary_message_count: 5
+      }
+    }),
+    false
   );
 });

@@ -1,4 +1,8 @@
 import type { AppConfig } from "../../domain/types.js";
+import {
+  isConversationPlace,
+  resolvePlaceChatBehavior
+} from "../../domain/place-features.js";
 import type { QueuedMessage } from "../types.js";
 
 type ProcessingVisibilityInput = {
@@ -7,7 +11,8 @@ type ProcessingVisibilityInput = {
 };
 
 export function shouldShowProcessingUi(input: ProcessingVisibilityInput): boolean {
-  if (input.watchLocation.mode !== "chat") {
+  const chatBehavior = resolvePlaceChatBehavior(input.watchLocation);
+  if (!isConversationPlace(input.watchLocation) || chatBehavior === null) {
     return true;
   }
 

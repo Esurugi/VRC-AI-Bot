@@ -20,6 +20,7 @@ import { splitPlainTextReplies } from "../../app/replies.js";
 import { SessionManager } from "../../codex/session-manager.js";
 import { SessionPolicyResolver } from "../../codex/session-policy.js";
 import { resolvePlaceType } from "../../discord/message-utils.js";
+import { hasPlaceFeature } from "../../domain/place-features.js";
 import type { AppConfig, WatchLocationConfig } from "../../domain/types.js";
 import { DEFAULT_OVERRIDE_FLAGS, type OverrideFlags } from "../../override/types.js";
 import { SqliteStore } from "../../storage/database.js";
@@ -97,7 +98,7 @@ export class AdminCommandService {
       if (!isAdminControlRootPlace(interaction.channel, watchLocation)) {
         await replyToInteraction(
           interaction,
-          "この command は configured `admin_control` root channel でのみ使えます。"
+          "この command は configured `admin_override` root channel でのみ使えます。"
         );
         return true;
       }
@@ -126,7 +127,7 @@ export class AdminCommandService {
       if (!adminWatchLocation) {
         await replyToInteraction(
           interaction,
-          "この guild には override thread 作成先の configured `admin_control` root channel がありません。"
+          "この guild には override thread 作成先の configured `admin_override` root channel がありません。"
         );
         return true;
       }
@@ -135,7 +136,7 @@ export class AdminCommandService {
       if (!isBaseWatchChannel(adminRootChannel)) {
         await replyToInteraction(
           interaction,
-          "override thread の作成先は text/announcement の `admin_control` root channel である必要があります。"
+          "override thread の作成先は text/announcement の `admin_override` root channel である必要があります。"
         );
         return true;
       }
@@ -147,6 +148,14 @@ export class AdminCommandService {
         interaction.channel,
         this.config.watchLocations
       );
+      if (!canStartOverrideFromOrigin(interaction.channel, originWatchLocation)) {
+        await replyToInteraction(
+          interaction,
+          "この command は configured watch location からのみ使えます。"
+        );
+        return true;
+      }
+
       const effectiveContentOverride =
         initialPrompt.length > 0 && interaction.channel
           ? await this.overrideBootstrapPromptContextService.buildEffectivePrompt({
@@ -351,7 +360,8 @@ function findAdminControlWatchLocation(
 ): WatchLocationConfig | null {
   return (
     watchLocations.find(
-      (location) => location.guildId === guildId && location.mode === "admin_control"
+      (location) =>
+        location.guildId === guildId && hasPlaceFeature(location, "admin_override")
     ) ?? null
   );
 }
@@ -400,9 +410,17 @@ function isAdminControlRootPlace(
   return Boolean(
     channel &&
       !channel.isThread() &&
-      watchLocation?.mode === "admin_control" &&
+      watchLocation &&
+      hasPlaceFeature(watchLocation, "admin_override") &&
       watchLocation.channelId === channel.id
   );
+}
+
+export function canStartOverrideFromOrigin(
+  channel: Channel | null,
+  watchLocation: WatchLocationConfig | null
+): boolean {
+  return Boolean(channel && watchLocation);
 }
 
 function buildCommandOriginContext(
@@ -439,7 +457,7 @@ function resolveCommandOriginPlaceType(
   watchLocation: WatchLocationConfig | null
 ): ReturnType<typeof resolvePlaceType> {
   if (watchLocation) {
-    return resolvePlaceType(channel, watchLocation.mode);
+    return resolvePlaceType(channel, watchLocation);
   }
 
   if (channel.isThread()) {
