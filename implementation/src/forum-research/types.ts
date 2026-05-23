@@ -2,14 +2,24 @@ import { z } from "zod";
 
 export const FORUM_RESEARCH_DISTINCT_SOURCE_TARGET = 8;
 export const FORUM_RESEARCH_MAX_WORKERS = 4;
+export const FORUM_RESEARCH_WORKER_MIN_SOURCES = 1;
+export const FORUM_RESEARCH_WORKER_MAX_SOURCES = 5;
 
 export const forumResearchWorkerTaskSchema = z.object({
   worker_id: z.string().min(1),
   question: z.string().min(1),
   search_focus: z.string().min(1),
   must_cover: z.array(z.string().min(1)).max(4),
-  min_sources: z.number().int().min(1).max(5),
-  max_sources: z.number().int().min(1).max(5)
+  min_sources: z
+    .number()
+    .int()
+    .min(FORUM_RESEARCH_WORKER_MIN_SOURCES)
+    .max(FORUM_RESEARCH_WORKER_MAX_SOURCES),
+  max_sources: z
+    .number()
+    .int()
+    .min(FORUM_RESEARCH_WORKER_MIN_SOURCES)
+    .max(FORUM_RESEARCH_WORKER_MAX_SOURCES)
 });
 
 export type ForumResearchWorkerTask = z.infer<
@@ -167,8 +177,16 @@ export const forumResearchSupervisorDecisionJsonSchema = {
               type: "string"
             }
           },
-          min_sources: { type: "integer" },
-          max_sources: { type: "integer" }
+          min_sources: {
+            type: "integer",
+            minimum: FORUM_RESEARCH_WORKER_MIN_SOURCES,
+            maximum: FORUM_RESEARCH_WORKER_MAX_SOURCES
+          },
+          max_sources: {
+            type: "integer",
+            minimum: FORUM_RESEARCH_WORKER_MIN_SOURCES,
+            maximum: FORUM_RESEARCH_WORKER_MAX_SOURCES
+          }
         }
       }
     },

@@ -30,7 +30,7 @@ test("recent chat history keeps recent bot turns in a minimal room-event shape",
         id: "m2",
         authorId: "user-2",
         authorDisplayName: "余暇",
-        content: "GPT5.4 fast を使っています()",
+        content: "GPT5.5 fast を使っています()",
         createdAt: "2026-03-15T13:18:00.000Z",
         mentionsBot: true
       })
@@ -83,7 +83,7 @@ test("recent chat history keeps recent bot turns in a minimal room-event shape",
       is_bot: false,
       reply_to_message_id: null,
       mentions_bot: true,
-      content: "GPT5.4 fast を使っています()"
+      content: "GPT5.5 fast を使っています()"
     },
     {
       message_id: "m3",

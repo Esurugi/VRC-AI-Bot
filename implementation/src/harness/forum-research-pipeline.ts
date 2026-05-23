@@ -961,11 +961,24 @@ function buildStreamingFinalPayload(
       refined_prompt: state.promptArtifact.refinedPrompt,
       prompt_rationale_summary: state.promptArtifact.promptRationaleSummary,
       final_brief: state.finalBrief,
+      current_worker_packets: state.bundle.currentWorkerPackets.map(
+        (packet) => ({
+          worker_id: packet.worker_id,
+          subquestion: packet.subquestion,
+          evidence_items: packet.evidence_items,
+          citations: packet.citations
+        })
+      ),
       current_evidence_items: state.bundle.currentWorkerPackets.flatMap(
         (packet) => packet.evidence_items
       ),
       previous_research_state: state.persistedState,
-      source_catalog: state.bundle.sourceCatalog
+      source_catalog: state.bundle.sourceCatalog,
+      synthesis_contract: {
+        use_worker_packets_as_coverage_map: true,
+        preserve_cross_worker_findings: true,
+        answer_may_span_multiple_discord_chunks: true
+      }
     }
   };
 }
@@ -1262,3 +1275,7 @@ function classifyRecoverableFinalTurnError(
   }
   return null;
 }
+
+export const __testOnlyForumResearchPipeline = {
+  buildStreamingFinalPayload
+};

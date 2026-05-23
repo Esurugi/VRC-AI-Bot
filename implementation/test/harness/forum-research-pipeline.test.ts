@@ -1,7 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { shouldRefreshForumPromptArtifact } from "../../src/harness/forum-research-pipeline.js";
+import {
+  __testOnlyForumResearchPipeline,
+  shouldRefreshForumPromptArtifact,
+  type ForumResearchPipelineState
+} from "../../src/harness/forum-research-pipeline.js";
 import type { HarnessRequest } from "../../src/harness/contracts.js";
 
 test("forum prompt artifacts refresh only for bot-directed thread follow-ups", () => {
@@ -50,6 +54,93 @@ test("forum prompt artifacts refresh only for bot-directed thread follow-ups", (
     ),
     false
   );
+});
+
+test("forum final payload preserves worker packets as synthesis coverage", () => {
+  const request = createRequest({
+    mode: "forum_longform",
+    threadId: "thread",
+    isBotDirected: true
+  });
+  const state: ForumResearchPipelineState = {
+    finalBrief: "final coverage",
+    promptArtifact: {
+      sessionIdentity: "session",
+      threadId: "thread",
+      lastMessageId: "message",
+      refinedPrompt: "refined",
+      progressNotice: null,
+      promptRationaleSummary: "rationale"
+    },
+    persistedState: null,
+    bundle: {
+      distinctSourceTarget: 8,
+      distinctSources: ["https://example.com/a"],
+      evidenceItems: [
+        {
+          claim: "flat claim",
+          source_urls: ["https://example.com/a"]
+        }
+      ],
+      sourceCatalog: [
+        {
+          index: 1,
+          url: "https://example.com/a",
+          claims: ["worker claim"]
+        }
+      ],
+      currentWorkerPackets: [
+        {
+          worker_id: "w1",
+          subquestion: "worker coverage question",
+          evidence_items: [
+            {
+              claim: "worker claim",
+              source_urls: ["https://example.com/a"]
+            }
+          ],
+          citations: [
+            {
+              url: "https://example.com/a",
+              claim: "worker claim"
+            }
+          ]
+        }
+      ]
+    }
+  };
+
+  const payload =
+    __testOnlyForumResearchPipeline.buildStreamingFinalPayload(
+      request,
+      state,
+      "initial"
+    );
+  const context = payload.forum_research_context as Record<string, unknown>;
+
+  assert.deepEqual(context.current_worker_packets, [
+    {
+      worker_id: "w1",
+      subquestion: "worker coverage question",
+      evidence_items: [
+        {
+          claim: "worker claim",
+          source_urls: ["https://example.com/a"]
+        }
+      ],
+        citations: [
+          {
+            url: "https://example.com/a",
+            claim: "worker claim"
+          }
+        ]
+    }
+  ]);
+  assert.deepEqual(context.synthesis_contract, {
+    use_worker_packets_as_coverage_map: true,
+    preserve_cross_worker_findings: true,
+    answer_may_span_multiple_discord_chunks: true
+  });
 });
 
 function createRequest(input: {

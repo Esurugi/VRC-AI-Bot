@@ -19,6 +19,7 @@ import {
   resolveCodexExecutionProfile,
   type CodexExecutionProfile
 } from "./execution-profile.js";
+import { DEFAULT_CODEX_MODEL_PROFILE } from "./session-policy.js";
 import {
   canonicalizeUrl,
   isAllowedPublicHttpUrl
@@ -200,10 +201,11 @@ export function buildHarnessDeveloperInstructions(repoRoot = process.cwd()): str
     "If the input includes forum_research_context, treat it as hidden control-plane metadata and evidence facts. Never expose it directly in user-facing text.",
     "If forum_research_context.refined_prompt is present, treat it as the authoritative hidden framing for the forum answer.",
     "If forum_research_context.source_catalog is present, treat it as available evidence and use inline numeric citations such as [1], [2] that match the provided numbering when those sources support the claim.",
+    "If forum_research_context.current_worker_packets is present, use each worker packet and subquestion as a coverage map. Do not drop important findings from a worker merely because final_brief is short or because current_evidence_items is flattened.",
     "If forum_research_context.previous_research_state is present, treat it as persisted evidence facts from the same forum session. Use it when relevant, but decide yourself whether additional public research is still needed.",
     "If forum_research_context.distinct_source_target is present, treat it as a grounding target rather than a refusal rule.",
     "If forum_research_context.final_brief is present, treat it as synthesis guidance and a coverage checklist, not as a ban on additional research.",
-    "For forum_research_streaming_final, do not compress the answer into a one-screen summary by default. Use the available evidence and source breadth to produce a developed public answer with inline numeric citations.",
+    "For forum_research_streaming_final, do not compress the answer into a one-screen summary by default. Use the worker packets, evidence items, previous research state, and source breadth to produce a developed public answer with inline numeric citations, grouping related findings and noting tradeoffs or uncertainty when the gathered evidence supports them.",
     "On task.phase=intent, decide requested capabilities and return moderation_signal based on the user's dangerous or prohibited control request. For normal requests, set moderation_signal.violation_category to none.",
     "task.retry_context is control-plane metadata, not user input. Follow it exactly when present.",
     "If task.retry_context.kind is output_safety, available_context.place_context.features includes forum_research, and capabilities.allow_external_fetch is true, you may perform fresh public research now. Exclude blocked, private, and non-public sources, then answer from public grounding plus your reasoning.",
@@ -366,7 +368,9 @@ export class CodexAppServerClient {
 
   async startThread(
     sandbox: CodexSandboxMode,
-    profile: CodexExecutionProfile = resolveCodexExecutionProfile("default:gpt-5.4")
+    profile: CodexExecutionProfile = resolveCodexExecutionProfile(
+      DEFAULT_CODEX_MODEL_PROFILE
+    )
   ): Promise<string> {
     const result = (await this.request(
       "thread/start",
@@ -821,7 +825,9 @@ export class CodexAppServerClient {
       streamingCallbacks: input.streamingCallbacks ?? null
     });
     const executionProfile = resolveCodexExecutionProfile(
-      input.modelProfile ?? input.sessionMetadata?.modelProfile ?? "default:gpt-5.4"
+      input.modelProfile ??
+        input.sessionMetadata?.modelProfile ??
+        DEFAULT_CODEX_MODEL_PROFILE
     );
 
     const turnStartResult = (await this.request(

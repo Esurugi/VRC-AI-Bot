@@ -12,12 +12,12 @@ import {
 } from "../domain/response-boundary.js";
 import { isForumResearchPlace } from "../domain/place-features.js";
 
-export const DEFAULT_CODEX_MODEL_PROFILE = "default:gpt-5.4";
-export const DEFAULT_CODEX_MODEL = "gpt-5.4";
-export const CHAT_CONVERSATION_LOW_CODEX_MODEL_PROFILE = "chat:gpt-5.4-mini:low";
-export const AMBIENT_ROOM_CHAT_CODEX_MODEL_PROFILE = "ambient:gpt-5.4-mini:low";
-export const FORUM_LONGFORM_CODEX_MODEL_PROFILE = "forum:gpt-5.4:high";
-export const FORUM_LONGFORM_LOW_CODEX_MODEL_PROFILE = "forum:gpt-5.4:low";
+export const DEFAULT_CODEX_MODEL_PROFILE = "default:gpt-5.5";
+export const DEFAULT_CODEX_MODEL = "gpt-5.5";
+export const CHAT_CONVERSATION_LOW_CODEX_MODEL_PROFILE = "chat:gpt-5.5-mini:low";
+export const AMBIENT_ROOM_CHAT_CODEX_MODEL_PROFILE = "ambient:gpt-5.5-mini:low";
+export const FORUM_LONGFORM_CODEX_MODEL_PROFILE = "forum:gpt-5.5:high";
+export const FORUM_LONGFORM_LOW_CODEX_MODEL_PROFILE = "forum:gpt-5.5:low";
 export const RUNTIME_CONTRACT_VERSION = "2026-05-21.session-policy.v3";
 
 export const SESSION_WORKLOAD_KIND_VALUES = [

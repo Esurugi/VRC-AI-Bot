@@ -13,7 +13,7 @@ export type CodexExecutionProfile = {
   reasoningEffort: ReasoningEffort | null;
 };
 
-const MINI_CODEX_MODEL = "gpt-5.4-mini";
+const MINI_CODEX_MODEL = "gpt-5.5-mini";
 
 export function resolveCodexExecutionProfile(
   modelProfile: string

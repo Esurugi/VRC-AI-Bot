@@ -95,6 +95,18 @@ test("harness instructions explain ambient room chat handling", () => {
   );
   assert.match(
     HARNESS_DEVELOPER_INSTRUCTIONS,
+    /current_worker_packets.*worker packet and subquestion as a coverage map/
+  );
+  assert.match(
+    HARNESS_DEVELOPER_INSTRUCTIONS,
+    /do not compress the answer into a one-screen summary by default/i
+  );
+  assert.match(
+    HARNESS_DEVELOPER_INSTRUCTIONS,
+    /worker packets, evidence items, previous research state, and source breadth/
+  );
+  assert.match(
+    HARNESS_DEVELOPER_INSTRUCTIONS,
     /ignore is model-owned/i
   );
   assert.match(
