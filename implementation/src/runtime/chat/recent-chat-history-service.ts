@@ -2,6 +2,10 @@ import type { Collection, Message, Snowflake } from "discord.js";
 import type { Logger } from "pino";
 
 import type { RecentRoomEventFact, WatchLocationConfig } from "../../domain/types.js";
+import {
+  isAmbientConversationPlace,
+  isForumResearchPlace
+} from "../../domain/place-features.js";
 import { extractUrls } from "../../discord/message-utils.js";
 
 const HISTORY_SCAN_LIMIT = 50;
@@ -18,7 +22,7 @@ export class RecentChatHistoryService {
     message: Message<true>;
     watchLocation: WatchLocationConfig;
   }): Promise<RecentChatRoomContext> {
-    if (input.watchLocation.mode !== "chat") {
+    if (!shouldCollectRecentRoomEvents(input)) {
       return {
         recentRoomEvents: []
       };
@@ -50,6 +54,20 @@ export class RecentChatHistoryService {
       };
     }
   }
+}
+
+export function shouldCollectRecentRoomEvents(input: {
+  message: Message<true>;
+  watchLocation: WatchLocationConfig;
+}): boolean {
+  if (isAmbientConversationPlace(input.watchLocation)) {
+    return true;
+  }
+
+  return (
+    isForumResearchPlace(input.watchLocation) &&
+    input.message.channel.isThread()
+  );
 }
 
 export function buildRecentRoomEventFacts(

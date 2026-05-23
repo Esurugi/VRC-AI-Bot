@@ -1,29 +1,52 @@
 {
-  "locations": [
+  "featureProfiles": {
+    "knowledge-share": {
+      "features": ["knowledge_ingest", "conversation"],
+      "defaultScope": "server_public"
+    },
+    "ambient-chat": {
+      "features": ["conversation"],
+      "defaultScope": "channel_family",
+      "chatBehavior": "ambient_room_chat"
+    },
+    "research-forum": {
+      "features": ["forum_research", "conversation"],
+      "defaultScope": "conversation_only"
+    },
+    "clear-explanation": {
+      "features": ["clear_explanation", "conversation"],
+      "defaultScope": "server_public"
+    },
+    "admin-override": {
+      "features": ["admin_override", "conversation"],
+      "defaultScope": "conversation_only"
+    }
+  },
+  "assignments": [
     {
       "guildId": "123456789012345678",
       "channelId": "223456789012345678",
-      "mode": "url_watch",
-      "defaultScope": "server_public"
+      "featureProfile": "knowledge-share"
     },
     {
       "guildId": "123456789012345678",
       "channelId": "323456789012345678",
-      "mode": "chat",
-      "defaultScope": "channel_family",
-      "chatBehavior": "ambient_room_chat"
+      "featureProfile": "ambient-chat"
     },
     {
       "guildId": "123456789012345678",
       "channelId": "373456789012345678",
-      "mode": "forum_longform",
-      "defaultScope": "conversation_only"
+      "featureProfile": "research-forum"
+    },
+    {
+      "guildId": "123456789012345678",
+      "channelId": "1507630781479260230",
+      "featureProfile": "clear-explanation"
     },
     {
       "guildId": "123456789012345678",
       "channelId": "423456789012345678",
-      "mode": "admin_control",
-      "defaultScope": "conversation_only"
+      "featureProfile": "admin-override"
     }
   ]
 }

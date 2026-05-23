@@ -8,6 +8,11 @@ import type {
   Scope,
   WatchLocationConfig
 } from "../domain/types.js";
+import {
+  isKnowledgeIngestPlace,
+  resolvePlaceChatBehavior,
+  resolvePlaceFeatures
+} from "../domain/place-features.js";
 import type { OverrideContext } from "../override/types.js";
 import { isAllowedPublicHttpUrl } from "../playwright/url-policy.js";
 import type {
@@ -92,8 +97,10 @@ export function buildHarnessRequest(input: {
   const fetchablePublicUrls: string[] = [];
   const blockedUrls: string[] = [];
   const isKnowledgePlace =
-    watchLocation.mode === "url_watch" ||
-    threadContext.kind === "knowledge_thread";
+    isKnowledgeIngestPlace(watchLocation) ||
+    threadContext.kind === "knowledge_thread" ||
+    threadContext.kind === "missing_or_stale_knowledge_thread";
+  const placeFeatures = resolvePlaceFeatures(watchLocation);
   const deliveryTriggerKind =
     chatEngagement?.is_directed_to_bot === true
       ? chatEngagement.trigger_kind === "direct_mention" ||
@@ -164,6 +171,7 @@ export function buildHarnessRequest(input: {
         root_channel_id: threadContext.rootChannelId
       },
       place_context: {
+        features: placeFeatures,
         is_knowledge_place: isKnowledgePlace
       },
       delivery_context: {
@@ -175,10 +183,7 @@ export function buildHarnessRequest(input: {
       blocked_urls: blockedUrls,
       chat_engagement: chatEngagement,
       recent_room_events: recentRoomEvents,
-      chat_behavior:
-        watchLocation.mode === "chat"
-          ? (watchLocation.chatBehavior ?? "ambient_room_chat")
-          : null
+      chat_behavior: resolvePlaceChatBehavior(watchLocation)
     },
     task: {
       kind: taskKind,

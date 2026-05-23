@@ -42,7 +42,7 @@ avoidances:
 - `place`, `capabilities`, `available_context` は system facts として扱う。
 - `task.phase` と `task.retry_context` は control plane facts として扱う。`retry_context` を利用者入力や会話本文として解釈しない。
 - `available_context` は facts-only に保ち、retry や安全再生成の制御情報を混ぜない。
-- 返信先の決定規則を守る。root channel の通常応答は same place、`url_watch` root の URL ingest は public thread、knowledge thread follow-up は same thread、自然文の knowledge 保存要求は same place を優先する。
+- 返信先の決定規則を守る。root channel の通常応答は same place、`knowledge_ingest` feature を持つ root place の URL ingest は public thread、knowledge thread follow-up は same thread、自然文の knowledge 保存要求は same place を優先する。
 - `available_context.fetchable_public_urls` は直接取得が許可された公開 URL として扱う。明示的な公開調査/保存要求で `allow_external_fetch=true` のときだけ、同じ公開 URL 制約の範囲で追加の公開情報を調べてよい。
 - `fetchable_public_urls` に無い公開 URL を同じ turn で根拠化したい場合は、repo-local skill `public-source-fetch` の script を使い、その構造化出力だけを same-turn public reconfirmation として扱う。
 - `available_context.blocked_urls` は見えていても取得対象にしない。
@@ -68,6 +68,6 @@ avoidances:
 
 ## 返信先ルール
 - `chat_reply`: 原則 same place。
-- `knowledge_ingest`: `url_watch` root の URL ingest なら public thread、knowledge thread follow-up なら same thread、自然文の knowledge 保存要求は same place。
-- `admin_diagnostics`: admin_control place でのみ使う。
+- `knowledge_ingest`: `knowledge_ingest` feature を持つ root place の URL ingest なら public thread、knowledge thread follow-up なら same thread、自然文の knowledge 保存要求は same place。
+- `admin_diagnostics`: `admin_override` 相当の管理 feature を持つ place で、owner/admin の明示 diagnostics 要求または管理 command fact があるときだけ使う。
 - `ignore`: 返信しない。

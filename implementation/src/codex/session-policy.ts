@@ -10,21 +10,28 @@ import {
   isKnowledgePlaceRootShare,
   isThreadEnvelope
 } from "../domain/response-boundary.js";
+import {
+  isClearExplanationPlace,
+  isForumResearchPlace
+} from "../domain/place-features.js";
 
-export const DEFAULT_CODEX_MODEL_PROFILE = "default:gpt-5.4";
-export const DEFAULT_CODEX_MODEL = "gpt-5.4";
-export const CHAT_CONVERSATION_LOW_CODEX_MODEL_PROFILE = "chat:gpt-5.4-mini:low";
-export const AMBIENT_ROOM_CHAT_CODEX_MODEL_PROFILE = "ambient:gpt-5.4-mini:low";
-export const FORUM_LONGFORM_CODEX_MODEL_PROFILE = "forum:gpt-5.4:high";
-export const FORUM_LONGFORM_LOW_CODEX_MODEL_PROFILE = "forum:gpt-5.4:low";
-export const RUNTIME_CONTRACT_VERSION = "2026-03-13.session-policy.v2";
+export const DEFAULT_CODEX_MODEL_PROFILE = "default:gpt-5.5";
+export const DEFAULT_CODEX_MODEL = "gpt-5.5";
+export const CHAT_CONVERSATION_LOW_CODEX_MODEL_PROFILE = "chat:gpt-5.5-mini:low";
+export const AMBIENT_ROOM_CHAT_CODEX_MODEL_PROFILE = "ambient:gpt-5.5-mini:low";
+export const FORUM_LONGFORM_CODEX_MODEL_PROFILE = "forum:gpt-5.5:high";
+export const FORUM_LONGFORM_LOW_CODEX_MODEL_PROFILE = "forum:gpt-5.5:low";
+export const CLEAR_EXPLANATION_CODEX_MODEL_PROFILE =
+  "clear_explanation:gpt-5.5:high";
+export const RUNTIME_CONTRACT_VERSION = "2026-05-21.session-policy.v3";
 
 export const SESSION_WORKLOAD_KIND_VALUES = [
   "conversation",
   "ambient_chat",
   "knowledge_ingest",
   "admin_override",
-  "forum_longform"
+  "forum_longform",
+  "clear_explanation"
 ] as const;
 export type SessionWorkloadKind = (typeof SESSION_WORKLOAD_KIND_VALUES)[number];
 
@@ -77,7 +84,7 @@ export class SessionPolicyResolver {
     }
 
     if (
-      input.watchLocation.mode === "forum_longform" &&
+      isForumResearchPlace(input.watchLocation) &&
       isThreadEnvelope(input.envelope)
     ) {
       return this.buildIdentity({
@@ -88,6 +95,21 @@ export class SessionPolicyResolver {
         sandboxMode: "read-only",
         lifecyclePolicy: "thread_lifetime",
         modelProfile: FORUM_LONGFORM_CODEX_MODEL_PROFILE
+      });
+    }
+
+    if (
+      isClearExplanationPlace(input.watchLocation) &&
+      isThreadEnvelope(input.envelope)
+    ) {
+      return this.buildIdentity({
+        workloadKind: "clear_explanation",
+        bindingKind: "thread",
+        bindingId: input.envelope.channelId,
+        actorId: null,
+        sandboxMode: "read-only",
+        lifecyclePolicy: "thread_lifetime",
+        modelProfile: CLEAR_EXPLANATION_CODEX_MODEL_PROFILE
       });
     }
 
@@ -140,10 +162,7 @@ export class SessionPolicyResolver {
     return this.buildIdentity({
       workloadKind: "conversation",
       bindingKind: "place",
-      bindingId: buildPlaceBindingId(
-        input.envelope.channelId,
-        input.watchLocation.mode
-      ),
+      bindingId: buildPlaceBindingId(input.envelope.channelId),
       actorId: null,
       sandboxMode: "read-only",
       lifecyclePolicy: "reusable",
@@ -220,11 +239,8 @@ export function formatSessionIdentity(parts: SessionIdentityParts): string {
   ].join("|");
 }
 
-export function buildPlaceBindingId(
-  channelId: string,
-  mode: WatchLocationConfig["mode"]
-): string {
-  return `${channelId}:${mode}`;
+export function buildPlaceBindingId(channelId: string): string {
+  return channelId;
 }
 
 export function buildMessageOriginBindingId(
@@ -261,5 +277,5 @@ export function resolveScopedPlaceId(input: {
     );
   }
 
-  return buildPlaceBindingId(input.envelope.channelId, input.watchLocation.mode);
+  return buildPlaceBindingId(input.envelope.channelId);
 }

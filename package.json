@@ -15,7 +15,7 @@
     "dev:raw": "tsx implementation/src/main.ts",
     "discord:invite": "tsx implementation/src/tools/print-discord-invite.ts",
     "start": "node --enable-source-maps dist/src/main.js",
-    "test": "node --import tsx --test implementation/test/**/*.test.ts",
+    "test": "node --import tsx --test \"implementation/test/**/*.test.ts\"",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

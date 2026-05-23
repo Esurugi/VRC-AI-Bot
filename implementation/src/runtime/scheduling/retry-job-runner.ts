@@ -1,7 +1,7 @@
 import type { Client } from "discord.js";
 import type { Logger } from "pino";
 
-import type { RetrySchedulerService } from "../../app/retry-scheduler-service.js";
+import type { RetrySchedulerService } from "./retry-scheduler-service.js";
 import { buildMessageEnvelope } from "../../discord/message-utils.js";
 import { resolveActorRole, resolveScope } from "../../discord/facts.js";
 import type { AppConfig } from "../../domain/types.js";
@@ -52,7 +52,6 @@ export class RetryJobRunner {
   }
 
   async drainDueJobs(): Promise<void> {
-    this.retryScheduler.clearByPlaceMode("forum_longform");
     const dueJobs = this.retryScheduler.pollDueJobs();
     for (const job of dueJobs) {
       await this.enqueueRetryJob(job);

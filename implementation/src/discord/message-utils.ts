@@ -11,6 +11,13 @@ import type {
   PlaceType,
   WatchLocationConfig
 } from "../domain/types.js";
+import {
+  hasPlaceFeature,
+  isClearExplanationPlace,
+  isConversationPlace,
+  isForumResearchPlace,
+  isKnowledgeIngestPlace
+} from "../domain/place-features.js";
 
 const URL_PATTERN = /https?:\/\/[^\s<>()]+/giu;
 
@@ -86,22 +93,22 @@ export function resolveWatchLocation(
 
 export function resolvePlaceType(
   channel: GuildBasedChannel,
-  mode: WatchLocationConfig["mode"]
+  watchLocation: WatchLocationConfig
 ): PlaceType {
   if (channel.isThread()) {
-    return resolveThreadPlaceType(channel, mode);
+    return resolveThreadPlaceType(channel, watchLocation);
   }
 
   if (channel.type === ChannelType.GuildAnnouncement) {
     return "guild_announcement";
   }
 
-  if (mode === "chat") {
-    return "chat_channel";
+  if (hasPlaceFeature(watchLocation, "admin_override")) {
+    return "admin_control_channel";
   }
 
-  if (mode === "admin_control") {
-    return "admin_control_channel";
+  if (isConversationChannelPlace(watchLocation)) {
+    return "chat_channel";
   }
 
   return "guild_text";
@@ -119,7 +126,7 @@ export function buildMessageEnvelope(
     channelId: message.channelId,
     messageId: message.id,
     authorId: message.author.id,
-    placeType: resolvePlaceType(message.channel, watchLocation.mode),
+    placeType: resolvePlaceType(message.channel, watchLocation),
     rawPlaceType: ChannelType[message.channel.type] ?? String(message.channel.type),
     content,
     urls: extractUrls(content),
@@ -129,9 +136,9 @@ export function buildMessageEnvelope(
 
 function resolveThreadPlaceType(
   channel: ThreadChannel,
-  mode: WatchLocationConfig["mode"]
+  watchLocation: WatchLocationConfig
 ): PlaceType {
-  if (mode === "forum_longform") {
+  if (isForumResearchPlace(watchLocation)) {
     return "forum_post_thread";
   }
 
@@ -140,4 +147,16 @@ function resolveThreadPlaceType(
   }
 
   return "public_thread";
+}
+
+function isConversationChannelPlace(
+  watchLocation: WatchLocationConfig
+): boolean {
+  return (
+    isConversationPlace(watchLocation) &&
+    !isKnowledgeIngestPlace(watchLocation) &&
+    !isForumResearchPlace(watchLocation) &&
+    !isClearExplanationPlace(watchLocation) &&
+    !hasPlaceFeature(watchLocation, "admin_override")
+  );
 }

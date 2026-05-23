@@ -14,12 +14,16 @@ import type { SqliteStore } from "../storage/database.js";
 import { buildVisibilityKey } from "./visibility.js";
 
 type UrlInput = {
-  sourceUrl: string;
-  index: number;
-  kind: "message_url" | "knowledge_write";
+  item: KnowledgeWrite;
+  canonicalUrl: string;
 };
 
 type KnowledgeWrite = HarnessResponse["knowledge_writes"][number];
+type SkippedKnowledgeWrite = {
+  sourceUrl: string | null;
+  canonicalUrl: string | null;
+  reason: string;
+};
 
 export class KnowledgePersistenceService {
   constructor(
@@ -36,6 +40,7 @@ export class KnowledgePersistenceService {
     scope: Scope;
     sourceMessageId: string;
     replyThreadId: string | null;
+    approvedEvidenceUrls: string[];
   }): void {
     appendRuntimeTrace("knowledge-persistence", "knowledge_persist_requested", {
       outcome: input.response.outcome,
@@ -46,26 +51,43 @@ export class KnowledgePersistenceService {
       rootChannelId: input.rootChannelId,
       placeId: input.placeId,
       sourceUrls: input.sourceUrls,
+      approvedEvidenceUrls: input.approvedEvidenceUrls,
       knowledgeWrites: getKnowledgeWrites(input.response)
     });
 
-    const urlInputs = buildPersistInputs(input);
-
-    for (const urlInput of urlInputs) {
-      const item = resolveKnowledgeWrite({
-        urlInput,
-        response: input.response,
-        logger: this.logger
+    const { persistInputs, skipped } = buildPersistInputs({
+      response: input.response,
+      approvedEvidenceUrls: input.approvedEvidenceUrls
+    });
+    if (skipped.length > 0) {
+      this.logger.debug(
+        {
+          sourceMessageId: input.sourceMessageId,
+          skipped
+        },
+        "knowledge persistence skipped incomplete or unapproved knowledge writes"
+      );
+      appendRuntimeTrace("knowledge-persistence", "knowledge_persist_skipped", {
+        sourceMessageId: input.sourceMessageId,
+        replyThreadId: input.replyThreadId,
+        skipped
       });
+    }
+
+    if (persistInputs.length === 0) {
+      return;
+    }
+
+    for (const urlInput of persistInputs) {
+      const item = urlInput.item;
       const capturedAt = new Date().toISOString();
-      const canonicalUrl = canonicalizeUrl(
-        item.canonical_url ?? item.source_url ?? urlInput.sourceUrl
-      );
-      const summary = item.summary ?? inferSummary(input.response.public_text, canonicalUrl);
-      const normalizedText = inferNormalizedText(
-        publicTextForPersistedSource(item, input.response),
-        summary
-      );
+      const canonicalUrl = urlInput.canonicalUrl;
+      const title = item.title?.trim();
+      const summary = item.summary?.trim();
+      if (!title || !summary) {
+        continue;
+      }
+      const normalizedText = inferNormalizedText(item.normalized_text, summary);
       const contentHash =
         item.content_hash ?? synthesizeContentHash(canonicalUrl, summary);
       const visibilityKey = buildVisibilityKey({
@@ -87,7 +109,7 @@ export class KnowledgePersistenceService {
           recordId,
           canonicalUrl,
           domain: extractDomain(canonicalUrl),
-          title: item.title ?? inferTitle(canonicalUrl),
+          title,
           summary,
           tags: item.tags,
           scope: input.scope,
@@ -138,168 +160,93 @@ function getKnowledgeWrites(response: HarnessResponse): KnowledgeWrite[] {
 
 function buildPersistInputs(input: {
   response: HarnessResponse;
-  sourceUrls: string[];
-}): UrlInput[] {
+  approvedEvidenceUrls: string[];
+}): {
+  persistInputs: UrlInput[];
+  skipped: SkippedKnowledgeWrite[];
+} {
   const seen = new Set<string>();
+  const approvedEvidenceUrls = new Set(
+    input.approvedEvidenceUrls
+      .filter((url) => isAllowedPublicHttpUrl(url))
+      .map((url) => canonicalizeUrl(url))
+  );
   const persistInputs: UrlInput[] = [];
+  const skipped: SkippedKnowledgeWrite[] = [];
   const knowledgeWrites = getKnowledgeWrites(input.response);
 
-  const pushSource = (
-    sourceUrl: string,
-    index: number,
-    kind: UrlInput["kind"]
-  ) => {
-    if (!isAllowedPublicHttpUrl(sourceUrl)) {
-      return;
+  for (const item of knowledgeWrites) {
+    const urls = [item.source_url, item.canonical_url].filter(
+      (url): url is string => url !== null
+    );
+    if (urls.length === 0) {
+      skipped.push(toSkippedKnowledgeWrite(item, "missing source url"));
+      continue;
     }
 
-    const canonicalUrl = canonicalizeUrl(sourceUrl);
+    if (urls.some((url) => !isAllowedPublicHttpUrl(url))) {
+      skipped.push(toSkippedKnowledgeWrite(item, "blocked or non-public source url"));
+      continue;
+    }
+
+    const canonicalUrls = urls.map((url) => canonicalizeUrl(url));
+    if (canonicalUrls.some((url) => !approvedEvidenceUrls.has(url))) {
+      skipped.push(
+        toSkippedKnowledgeWrite(
+          item,
+          "source url is not approved same-turn evidence"
+        )
+      );
+      continue;
+    }
+
+    if (!item.title?.trim()) {
+      skipped.push(toSkippedKnowledgeWrite(item, "missing title"));
+      continue;
+    }
+
+    if (!item.summary?.trim()) {
+      skipped.push(toSkippedKnowledgeWrite(item, "missing summary"));
+      continue;
+    }
+
+    const fallbackUrl = item.canonical_url ?? item.source_url ?? urls[0];
+    if (!fallbackUrl) {
+      skipped.push(toSkippedKnowledgeWrite(item, "missing source url"));
+      continue;
+    }
+    const canonicalUrl = canonicalizeUrl(fallbackUrl);
     if (seen.has(canonicalUrl)) {
-      return;
+      continue;
     }
 
     seen.add(canonicalUrl);
     persistInputs.push({
-      sourceUrl,
-      index,
-      kind
+      item,
+      canonicalUrl
     });
-  };
-
-  input.sourceUrls.forEach((sourceUrl, index) => {
-    pushSource(sourceUrl, index, "message_url");
-  });
-
-  knowledgeWrites.forEach((item, index) => {
-    const sourceUrl = item.canonical_url ?? item.source_url;
-    if (!sourceUrl) {
-      return;
-    }
-    pushSource(sourceUrl, index, "knowledge_write");
-  });
-
-  if (persistInputs.length === 0) {
-    throw new Error("knowledge_ingest requires at least one persistable public source");
   }
 
-  return persistInputs;
-}
-
-function resolveKnowledgeWrite(input: {
-  urlInput: UrlInput;
-  response: HarnessResponse;
-  logger: Logger;
-}): KnowledgeWrite {
-  const { urlInput, response, logger } = input;
-  const knowledgeWrites = getKnowledgeWrites(response);
-  const normalizedSourceUrl = canonicalizeUrl(urlInput.sourceUrl);
-  const exact = knowledgeWrites.find((item) => {
-    const itemSourceUrl =
-      item.source_url === null ? null : canonicalizeUrl(item.source_url);
-    const itemCanonicalUrl =
-      item.canonical_url === null ? null : canonicalizeUrl(item.canonical_url);
-    return (
-      itemSourceUrl === normalizedSourceUrl ||
-      itemCanonicalUrl === normalizedSourceUrl
-    );
-  });
-  if (exact) {
-    return exact;
-  }
-
-  if (urlInput.kind === "message_url") {
-    logger.warn(
-      {
-        sourceUrl: urlInput.sourceUrl
-      },
-      "knowledge write URL mismatch for message URL; synthesizing fallback knowledge"
-    );
-    return {
-      source_url: urlInput.sourceUrl,
-      canonical_url: canonicalizeUrl(urlInput.sourceUrl),
-      title: inferTitle(urlInput.sourceUrl),
-      summary: inferSummary(response.public_text, urlInput.sourceUrl),
-      tags: [],
-      content_hash: synthesizeContentHash(
-        canonicalizeUrl(urlInput.sourceUrl),
-        inferSummary(response.public_text, urlInput.sourceUrl)
-      ),
-      normalized_text: response.public_text,
-      source_kind: "shared_public_text"
-    };
-  }
-
-  const indexed = knowledgeWrites[urlInput.index];
-  if (indexed) {
-    logger.warn(
-      {
-        sourceUrl: urlInput.sourceUrl,
-        knowledgeWriteIndex: urlInput.index
-      },
-      "knowledge write URL mismatch; using index-based fallback"
-    );
-    return indexed;
-  }
-
-  if (knowledgeWrites.length === 1) {
-    const singleItem = knowledgeWrites[0];
-    if (!singleItem) {
-      throw new Error("unreachable: single knowledge write expected");
-    }
-    logger.warn(
-      {
-        sourceUrl: urlInput.sourceUrl
-      },
-      "knowledge write URL mismatch; using single-item fallback"
-    );
-    return singleItem;
-  }
-
-  logger.warn(
-    {
-      sourceUrl: urlInput.sourceUrl
-    },
-    "knowledge write missing; synthesizing fallback knowledge from source URL"
-  );
   return {
-    source_url: urlInput.sourceUrl,
-    canonical_url: canonicalizeUrl(urlInput.sourceUrl),
-    title: inferTitle(urlInput.sourceUrl),
-    summary: inferSummary(response.public_text, urlInput.sourceUrl),
-    tags: [],
-    content_hash: synthesizeContentHash(
-      canonicalizeUrl(urlInput.sourceUrl),
-      inferSummary(response.public_text, urlInput.sourceUrl)
-    ),
-    normalized_text: response.public_text,
-    source_kind: "shared_public_text"
+    persistInputs,
+    skipped
   };
 }
 
-function inferTitle(rawUrl: string): string {
-  try {
-    return new URL(rawUrl).hostname;
-  } catch {
-    return rawUrl;
-  }
-}
-
-function inferSummary(publicText: string | null, fallbackUrl: string): string {
-  const source = publicText?.trim() || fallbackUrl;
-  const normalized = source.replace(/\s+/g, " ").trim();
-  return normalized.length <= 500 ? normalized : `${normalized.slice(0, 500)}...`;
+function toSkippedKnowledgeWrite(
+  item: KnowledgeWrite,
+  reason: string
+): SkippedKnowledgeWrite {
+  return {
+    sourceUrl: item.source_url,
+    canonicalUrl: item.canonical_url,
+    reason
+  };
 }
 
 function inferNormalizedText(publicText: string | null, summary: string): string {
   const source = publicText?.trim() || summary;
   return source.replace(/\s+/g, " ").trim();
-}
-
-function publicTextForPersistedSource(
-  item: KnowledgeWrite,
-  response: HarnessResponse
-): string | null {
-  return item.normalized_text?.trim() || item.summary?.trim() || response.public_text;
 }
 
 function synthesizeContentHash(canonicalUrl: string, summary: string): string {

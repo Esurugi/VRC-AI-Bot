@@ -4,6 +4,7 @@ import {
   SCOPE_VALUES,
   type ActorRole,
   type MessageEnvelope,
+  type PlaceFeature,
   type Scope,
   type WatchLocationConfig
 } from "../domain/types.js";
@@ -65,6 +66,7 @@ export type ModerationViolationCategory =
 export const THREAD_CONTEXT_KIND_VALUES = [
   "root_channel",
   "knowledge_thread",
+  "missing_or_stale_knowledge_thread",
   "plain_thread"
 ] as const;
 export type ThreadContextKind = (typeof THREAD_CONTEXT_KIND_VALUES)[number];
@@ -121,6 +123,7 @@ export type HarnessRequest = {
       root_channel_id: string;
     };
     place_context: {
+      features: PlaceFeature[];
       is_knowledge_place: boolean;
     };
     delivery_context: {

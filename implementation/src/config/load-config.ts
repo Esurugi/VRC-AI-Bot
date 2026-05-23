@@ -5,13 +5,30 @@ import { z } from "zod";
 
 import {
   CHAT_BEHAVIOR_VALUES,
+  PLACE_FEATURE_VALUES,
   SCOPE_VALUES,
   WATCH_MODE_VALUES,
   type AppConfig,
   type ChatRuntimeControlsConfig,
+  type PlaceFeatureProfileConfig,
   type WeeklyMeetupAnnouncementConfig,
   type WatchLocationConfig
 } from "../domain/types.js";
+import {
+  hasPlaceFeature,
+  inferLegacyWatchModeFromFeatures,
+  isConversationPlace,
+  normalizePlaceFeatures,
+  resolvePlaceChatBehavior,
+  resolvePlaceFeatures
+} from "../domain/place-features.js";
+
+const PRIMARY_PLACE_FEATURES = [
+  "knowledge_ingest",
+  "admin_override",
+  "forum_research",
+  "clear_explanation"
+] as const;
 
 const envSchema = z.object({
   DISCORD_BOT_TOKEN: z.string().min(1),
@@ -26,16 +43,39 @@ const envSchema = z.object({
   BOT_WEEKLY_MEETUP_ANNOUNCEMENT_PATH: z.string().min(1).optional()
 });
 
-const watchLocationSchema = z.object({
-  guildId: z.string().min(1),
-  channelId: z.string().min(1),
-  mode: z.enum(WATCH_MODE_VALUES),
+const featureProfileSchema = z.object({
+  features: z.array(z.enum(PLACE_FEATURE_VALUES)).min(1),
   defaultScope: z.enum(SCOPE_VALUES),
   chatBehavior: z.enum(CHAT_BEHAVIOR_VALUES).nullable().optional()
 });
 
+const watchLocationAssignmentSchema = z.object({
+  guildId: z.string().min(1),
+  channelId: z.string().min(1),
+  featureProfile: z.string().min(1)
+});
+
+const legacyWatchLocationSchema = z.object({
+  guildId: z.string().min(1),
+  channelId: z.string().min(1),
+  mode: z.enum(WATCH_MODE_VALUES),
+  defaultScope: z.enum(SCOPE_VALUES),
+  features: z.array(z.enum(PLACE_FEATURE_VALUES)).optional(),
+  chatBehavior: z.enum(CHAT_BEHAVIOR_VALUES).nullable().optional()
+});
+
 const watchLocationFileSchema = z.object({
-  locations: z.array(watchLocationSchema)
+  featureProfiles: z.record(z.string().min(1), featureProfileSchema).optional(),
+  assignments: z.array(watchLocationAssignmentSchema).optional(),
+  locations: z.array(legacyWatchLocationSchema).optional()
+}).superRefine((value, ctx) => {
+  if (!value.assignments?.length && !value.locations?.length) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["locations"],
+      message: "Expected at least one assignment or legacy location"
+    });
+  }
 });
 
 const weeklyMeetupAnnouncementSchema = z.object({
@@ -116,9 +156,14 @@ function readWatchLocations(path: string): WatchLocationConfig[] {
   const parsed = watchLocationFileSchema.parse(
     JSON.parse(readFileSync(path, "utf8"))
   );
+  const profiles = normalizeFeatureProfiles(parsed.featureProfiles ?? {});
+  const watchLocations = [
+    ...normalizeAssignedWatchLocations(parsed.assignments ?? [], profiles),
+    ...normalizeLegacyWatchLocations(parsed.locations ?? [])
+  ];
   const seen = new Set<string>();
 
-  for (const location of parsed.locations) {
+  for (const location of watchLocations) {
     const key = `${location.guildId}:${location.channelId}`;
     if (seen.has(key)) {
       throw new Error(`Duplicate watch location: ${key}`);
@@ -126,13 +171,108 @@ function readWatchLocations(path: string): WatchLocationConfig[] {
     seen.add(key);
   }
 
-  return parsed.locations.map((location) => ({
-    ...location,
-    chatBehavior:
-      location.mode === "chat"
-        ? (location.chatBehavior ?? "ambient_room_chat")
-        : null
-  }));
+  return watchLocations;
+}
+
+function normalizeFeatureProfiles(
+  input: Record<string, z.infer<typeof featureProfileSchema>>
+): Map<string, PlaceFeatureProfileConfig> {
+  const profiles = new Map<string, PlaceFeatureProfileConfig>();
+  for (const [id, profile] of Object.entries(input)) {
+    profiles.set(id, {
+      id,
+      features: normalizeProfileFeatures(profile.features, `feature profile: ${id}`),
+      defaultScope: profile.defaultScope,
+      ...(profile.chatBehavior !== undefined
+        ? { chatBehavior: profile.chatBehavior }
+        : {})
+    });
+  }
+  return profiles;
+}
+
+function normalizeAssignedWatchLocations(
+  assignments: Array<z.infer<typeof watchLocationAssignmentSchema>>,
+  profiles: Map<string, PlaceFeatureProfileConfig>
+): WatchLocationConfig[] {
+  return assignments.map((assignment) => {
+    const profile = profiles.get(assignment.featureProfile);
+    if (!profile) {
+      throw new Error(
+        `Unknown feature profile for watch assignment: ${assignment.featureProfile}`
+      );
+    }
+
+    const mode = inferLegacyWatchModeFromFeatures(profile.features);
+    return {
+      guildId: assignment.guildId,
+      channelId: assignment.channelId,
+      featureProfileId: profile.id,
+      mode,
+      defaultScope: profile.defaultScope,
+      features: profile.features,
+      chatBehavior: normalizeConfiguredChatBehavior(
+        profile.features,
+        profile.chatBehavior
+      )
+    };
+  });
+}
+
+function normalizeLegacyWatchLocations(
+  locations: Array<z.infer<typeof legacyWatchLocationSchema>>
+): WatchLocationConfig[] {
+  return locations.map((location) => {
+    const features = location.features
+      ? normalizeProfileFeatures(
+          location.features,
+          `legacy watch location: ${location.guildId}:${location.channelId}`
+        )
+      : null;
+    if (features) {
+      const inferredMode = inferLegacyWatchModeFromFeatures(features);
+      if (inferredMode !== location.mode) {
+        throw new Error(
+          `Legacy watch location mode/features mismatch: ${location.guildId}:${location.channelId} has mode ${location.mode} but features imply ${inferredMode}`
+        );
+      }
+    }
+
+    return {
+      guildId: location.guildId,
+      channelId: location.channelId,
+      mode: location.mode,
+      defaultScope: location.defaultScope,
+      ...(features ? { features } : {}),
+      chatBehavior: normalizeConfiguredChatBehavior(
+        resolvePlaceFeatures({
+          guildId: location.guildId,
+          channelId: location.channelId,
+          mode: location.mode,
+          defaultScope: location.defaultScope,
+          ...(features ? { features } : {})
+        }),
+        location.chatBehavior
+      )
+    };
+  });
+}
+
+function normalizeProfileFeatures(
+  features: Array<(typeof PLACE_FEATURE_VALUES)[number]>,
+  source: string
+): Array<(typeof PLACE_FEATURE_VALUES)[number]> {
+  const normalized = normalizePlaceFeatures(features);
+  const primaryFeatures = PRIMARY_PLACE_FEATURES.filter((feature) =>
+    normalized.includes(feature)
+  );
+  if (primaryFeatures.length > 1) {
+    throw new Error(
+      `${source} declares multiple primary place features: ${primaryFeatures.join(", ")}`
+    );
+  }
+
+  return normalized;
 }
 
 function readWeeklyMeetupAnnouncement(
@@ -172,7 +312,7 @@ function readChatRuntimeControls(
   );
   const allowedRootChannelIds = new Set(
     watchLocations
-      .filter((location) => location.mode === "chat")
+      .filter(isChatRuntimeControlledLocation)
       .map((location) => location.channelId)
   );
 
@@ -185,6 +325,31 @@ function readChatRuntimeControls(
   }
 
   return parsed;
+}
+
+function normalizeConfiguredChatBehavior(
+  features: WatchLocationConfig["features"],
+  configured: WatchLocationConfig["chatBehavior"] | undefined
+): Exclude<WatchLocationConfig["chatBehavior"], undefined> {
+  return resolvePlaceChatBehavior({
+    guildId: "config-normalization",
+    channelId: "config-normalization",
+    mode: inferLegacyWatchModeFromFeatures(features ?? []),
+    defaultScope: "conversation_only",
+    ...(features !== undefined ? { features } : {}),
+    ...(configured !== undefined ? { chatBehavior: configured } : {})
+  });
+}
+
+function isChatRuntimeControlledLocation(location: WatchLocationConfig): boolean {
+  return (
+    isConversationPlace(location) &&
+    !hasPlaceFeature(location, "knowledge_ingest") &&
+    !hasPlaceFeature(location, "admin_override") &&
+    !hasPlaceFeature(location, "forum_research") &&
+    !hasPlaceFeature(location, "clear_explanation") &&
+    resolvePlaceChatBehavior(location) !== null
+  );
 }
 
 function validateWeeklyMeetupDate(

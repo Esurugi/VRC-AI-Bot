@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { shouldShowProcessingUi } from "../../src/runtime/message/processing-visibility.js";
+import {
+  shouldShowProcessingReaction,
+  shouldShowProcessingUi
+} from "../../src/runtime/message/processing-visibility.js";
 
 test("ambient room chat does not add a processing reaction", () => {
   assert.equal(
@@ -66,18 +69,58 @@ test("directed chat adds a processing reaction", () => {
   );
 });
 
-test("non-chat modes keep the processing reaction", () => {
+test("forum feature keeps the processing reaction even when legacy mode says chat", () => {
   assert.equal(
     shouldShowProcessingUi({
       watchLocation: {
         guildId: "g1",
         channelId: "c1",
-        mode: "forum_longform",
+        mode: "chat",
         defaultScope: "server_public",
+        features: ["forum_research", "conversation"],
         chatBehavior: null
       },
       chatEngagement: null
     }),
     true
+  );
+});
+
+test("clear explanation feature keeps the processing reaction in dedicated threads", () => {
+  assert.equal(
+    shouldShowProcessingReaction({
+      watchLocation: {
+        guildId: "g1",
+        channelId: "c1",
+        mode: "chat",
+        defaultScope: "server_public",
+        features: ["clear_explanation", "conversation"],
+        chatBehavior: null
+      },
+      chatEngagement: null
+    }),
+    true
+  );
+});
+
+test("conversation feature uses chat visibility even when legacy mode says url watch", () => {
+  assert.equal(
+    shouldShowProcessingUi({
+      watchLocation: {
+        guildId: "g1",
+        channelId: "c1",
+        mode: "url_watch",
+        defaultScope: "conversation_only",
+        features: ["conversation"],
+        chatBehavior: "ambient_room_chat"
+      },
+      chatEngagement: {
+        trigger_kind: "sparse_periodic",
+        is_directed_to_bot: false,
+        sparse_ordinal: 5,
+        ordinary_message_count: 5
+      }
+    }),
+    false
   );
 });

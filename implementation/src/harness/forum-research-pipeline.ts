@@ -115,6 +115,7 @@ export class ForumResearchPipeline {
       threadId: input.threadId,
       sessionIdentity: input.sessionMetadata.sessionIdentity,
       starterMessage: input.starterMessage ?? null,
+      refreshExisting: shouldRefreshForumPromptArtifact(input.request),
       ...(input.callbacks ? { callbacks: input.callbacks } : {})
     });
     await input.callbacks?.onProgressNotice?.(
@@ -142,7 +143,7 @@ export class ForumResearchPipeline {
       return {
         ...result,
         state: researchState,
-        primaryReplyAlreadySent: result.response.outcome === "chat_reply"
+        primaryReplyAlreadySent: false
       };
     } catch (error) {
       const reason = classifyRecoverableFinalTurnError(error);
@@ -210,7 +211,8 @@ export class ForumResearchPipeline {
           `forum output safety retry failed: ${reason}`
         ),
         observations: {
-          observed_public_urls: []
+          observed_public_urls: [],
+          generated_images: []
         }
       };
     }
@@ -555,13 +557,8 @@ export class ForumResearchPipeline {
       allowExternalFetch: input.request.capabilities.allow_external_fetch,
       sessionMetadata: input.sessionMetadata,
       modelProfile: FORUM_LONGFORM_CODEX_MODEL_PROFILE,
-      callbacks: {
-        onAgentMessageDelta: async (delta) => {
-          await input.callbacks?.onFinalTextDelta?.(delta);
-        }
-      }
+      callbacks: {}
     });
-    await input.callbacks?.onFinalTextCompleted?.();
 
     appendRuntimeTrace("codex-app-server", "forum_high_synthesis_completed", {
       messageId: input.request.message.id,
@@ -586,7 +583,10 @@ export class ForumResearchPipeline {
           ? "forum streaming final"
           : "forum output safety streaming final"
       ),
-      observations: result.observations
+      observations: mergeSourceCatalogObservations(
+        result.observations,
+        input.state.bundle.sourceCatalog
+      )
     };
   }
 
@@ -623,11 +623,8 @@ export class ForumResearchPipeline {
               messageId: input.request.message.id,
               chunkLength: delta.length
             });
-            await input.callbacks?.onRetryStream?.onAgentMessageDelta?.(delta);
           },
-          onReasoningSummaryDelta: async (delta) => {
-            await input.callbacks?.onRetryStream?.onReasoningSummaryDelta?.(delta);
-          }
+          onReasoningSummaryDelta: async () => {}
         }
       });
 
@@ -645,8 +642,11 @@ export class ForumResearchPipeline {
 
       return {
         response,
-        observations: result.observations,
-        primaryReplyAlreadySent: response.outcome === "chat_reply"
+        observations: mergeSourceCatalogObservations(
+          result.observations,
+          input.state.bundle.sourceCatalog
+        ),
+        primaryReplyAlreadySent: false
       };
     } catch (error) {
       appendRuntimeTrace("codex-app-server", "forum_retry_terminal_failure", {
@@ -662,7 +662,8 @@ export class ForumResearchPipeline {
           }`
         ),
         observations: {
-          observed_public_urls: []
+          observed_public_urls: [],
+          generated_images: []
         },
         primaryReplyAlreadySent: false
       };
@@ -679,12 +680,13 @@ export class ForumResearchPipeline {
       sessionIdentity,
       threadId: row.thread_id
     });
+    const sourceCatalog = parseSourceCatalog(row.source_catalog_json);
     return {
       sessionIdentity: row.session_identity,
       threadId: row.thread_id,
       lastMessageId: row.last_message_id,
-      evidenceItems: parseEvidenceItems(row.evidence_items_json),
-      sourceCatalog: parseSourceCatalog(row.source_catalog_json),
+      evidenceItems: parseEvidenceItems(row.evidence_items_json, sourceCatalog),
+      sourceCatalog,
       distinctSources: parseStringArray(row.distinct_sources_json)
     };
   }
@@ -694,10 +696,11 @@ export class ForumResearchPipeline {
     threadId: string;
     sessionIdentity: string;
     starterMessage: string | null;
+    refreshExisting: boolean;
     callbacks?: ForumResearchRetryCallbacks;
   }): Promise<PersistedPromptRefinementArtifact> {
     const existing = this.loadPromptArtifact(input.sessionIdentity);
-    if (existing) {
+    if (existing && !input.refreshExisting) {
       return existing;
     }
 
@@ -750,6 +753,14 @@ export class ForumResearchPipeline {
       promptRationaleSummary: row.prompt_rationale_summary
     };
   }
+}
+
+export function shouldRefreshForumPromptArtifact(request: HarnessRequest): boolean {
+  return (
+    request.available_context.place_context.features.includes("forum_research") &&
+    request.place.thread_id !== null &&
+    request.available_context.delivery_context.is_bot_directed
+  );
 }
 
 async function waitForNextWorker(
@@ -952,11 +963,24 @@ function buildStreamingFinalPayload(
       refined_prompt: state.promptArtifact.refinedPrompt,
       prompt_rationale_summary: state.promptArtifact.promptRationaleSummary,
       final_brief: state.finalBrief,
+      current_worker_packets: state.bundle.currentWorkerPackets.map(
+        (packet) => ({
+          worker_id: packet.worker_id,
+          subquestion: packet.subquestion,
+          evidence_items: packet.evidence_items,
+          citations: packet.citations
+        })
+      ),
       current_evidence_items: state.bundle.currentWorkerPackets.flatMap(
         (packet) => packet.evidence_items
       ),
       previous_research_state: state.persistedState,
-      source_catalog: state.bundle.sourceCatalog
+      source_catalog: state.bundle.sourceCatalog,
+      synthesis_contract: {
+        use_worker_packets_as_coverage_map: true,
+        preserve_cross_worker_findings: true,
+        answer_may_span_multiple_discord_chunks: true
+      }
     }
   };
 }
@@ -1059,6 +1083,22 @@ function normalizePublicUrl(url: string): string | null {
   }
 }
 
+function mergeSourceCatalogObservations(
+  observations: TurnObservations,
+  sourceCatalog: ForumResearchSourceCatalogEntry[]
+): TurnObservations {
+  const catalogUrls = sourceCatalog
+    .map((entry) => normalizePublicUrl(entry.url))
+    .filter((url): url is string => Boolean(url));
+  return {
+    observed_public_urls: dedupeStrings([
+      ...observations.observed_public_urls,
+      ...catalogUrls
+    ]),
+    generated_images: observations.generated_images
+  };
+}
+
 function dedupeStrings(values: string[]): string[] {
   return [...new Set(values)];
 }
@@ -1074,21 +1114,31 @@ function parseStringArray(value: string): string[] {
   }
 }
 
-function parseEvidenceItems(value: string): ForumResearchEvidenceItem[] {
+export function parseEvidenceItems(
+  value: string,
+  sourceCatalog: ForumResearchSourceCatalogEntry[] = []
+): ForumResearchEvidenceItem[] {
   try {
     const parsed = JSON.parse(value) as unknown;
-    return Array.isArray(parsed)
-      ? parsed
-          .map((item) => forumResearchEvidenceItemSchema.safeParse(item))
-          .filter((item) => item.success)
-          .map((item) => item.data)
-      : [];
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    const parsedItems = parsed
+      .map((item) => forumResearchEvidenceItemSchema.safeParse(item))
+      .filter((item) => item.success)
+      .map((item) => item.data);
+    if (parsedItems.length > 0) {
+      return parsedItems;
+    }
+
+    return parseLegacyEvidenceItems(parsed, sourceCatalog);
   } catch {
     return [];
   }
 }
 
-function parseSourceCatalog(value: string): ForumResearchSourceCatalogEntry[] {
+export function parseSourceCatalog(value: string): ForumResearchSourceCatalogEntry[] {
   try {
     const parsed = JSON.parse(value) as unknown;
     if (!Array.isArray(parsed)) {
@@ -1099,24 +1149,56 @@ function parseSourceCatalog(value: string): ForumResearchSourceCatalogEntry[] {
         if (
           typeof item !== "object" ||
           item === null ||
-          typeof item.index !== "number" ||
-          typeof item.url !== "string" ||
-          !Array.isArray(item.claims)
+          typeof item.url !== "string"
         ) {
           return null;
         }
+        const index = typeof item.index === "number" ? item.index : 1;
+        const claims = Array.isArray(item.claims)
+          ? item.claims.filter(
+              (claim: unknown): claim is string => typeof claim === "string"
+            )
+          : ["Legacy forum research progress"];
         return {
-          index: item.index,
+          index,
           url: item.url,
-          claims: item.claims.filter(
-            (claim: unknown): claim is string => typeof claim === "string"
-          )
+          claims
         } satisfies ForumResearchSourceCatalogEntry;
       })
       .filter((item): item is ForumResearchSourceCatalogEntry => item !== null);
   } catch {
     return [];
   }
+}
+
+function parseLegacyEvidenceItems(
+  parsed: unknown[],
+  sourceCatalog: ForumResearchSourceCatalogEntry[]
+): ForumResearchEvidenceItem[] {
+  const firstSource = sourceCatalog.find((source) => source.url.trim().length > 0);
+  if (!firstSource) {
+    return [];
+  }
+
+  return parsed
+    .map((item): ForumResearchEvidenceItem | null => {
+      if (
+        typeof item !== "object" ||
+        item === null ||
+        (item as { kind?: unknown }).kind !== "legacy_forum_research_progress"
+      ) {
+        return null;
+      }
+      const plannerBrief = (item as { planner_brief?: unknown }).planner_brief;
+      return {
+        claim:
+          typeof plannerBrief === "string" && plannerBrief.trim().length > 0
+            ? plannerBrief.trim()
+            : "Legacy forum research progress",
+        source_urls: [firstSource.url]
+      };
+    })
+    .filter((item): item is ForumResearchEvidenceItem => item !== null);
 }
 
 function classifyWorkerFailure(
@@ -1196,3 +1278,7 @@ function classifyRecoverableFinalTurnError(
   }
   return null;
 }
+
+export const __testOnlyForumResearchPipeline = {
+  buildStreamingFinalPayload
+};

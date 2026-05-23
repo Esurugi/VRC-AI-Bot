@@ -200,12 +200,81 @@ test("chat startup recovery falls back to the root cursor for active threads wit
   assert.deepEqual(store.upserts, [{ channelId: "thread-1", messageId: "3001" }]);
 });
 
-function createWatchLocation(mode: WatchLocationConfig["mode"] = "url_watch"): WatchLocationConfig {
+test("startup recovery uses conversation feature policy when legacy mode says url watch", async () => {
+  const handled: string[] = [];
+  const store = createStore({
+    "watch-root": "1000"
+  });
+  const service = new StartupMessageRecoveryService({
+    watchLocations: [
+      createWatchLocation({
+        mode: "url_watch",
+        features: ["conversation"],
+        chatBehavior: "ambient_room_chat",
+        defaultScope: "conversation_only"
+      })
+    ],
+    store,
+    fetchChannel: async () =>
+      createRootChannel({
+        id: "watch-root",
+        messageBatches: [[createMessage("1001", 1)]]
+      }),
+    messageIntakeService: {
+      handle: async (message: Message<true>) => {
+        handled.push(message.id);
+      }
+    } as unknown as MessageIntakeService,
+    logger: createLogger()
+  });
+
+  await service.recoverPendingMessages();
+
+  assert.deepEqual(handled, []);
+  assert.equal(store.cursors["watch-root"], "1001");
+});
+
+test("startup recovery uses forum feature policy when legacy mode says chat", async () => {
+  const handled: string[] = [];
+  const service = new StartupMessageRecoveryService({
+    watchLocations: [
+      createWatchLocation({
+        mode: "chat",
+        features: ["forum_research", "conversation"],
+        chatBehavior: null
+      })
+    ],
+    store: createStore({
+      "watch-root": "1000"
+    }),
+    fetchChannel: async () =>
+      createRootChannel({
+        id: "watch-root",
+        messageBatches: [[createMessage("1001", 1)]]
+      }),
+    messageIntakeService: {
+      handle: async (message: Message<true>) => {
+        handled.push(message.id);
+      }
+    } as unknown as MessageIntakeService,
+    logger: createLogger()
+  });
+
+  await service.recoverPendingMessages();
+
+  assert.deepEqual(handled, ["1001"]);
+});
+
+function createWatchLocation(
+  input: WatchLocationConfig["mode"] | Partial<WatchLocationConfig> = "url_watch"
+): WatchLocationConfig {
+  const overrides = typeof input === "string" ? { mode: input } : input;
   return {
     guildId: "guild-1",
     channelId: "watch-root",
-    mode,
-    defaultScope: "server_public"
+    mode: "url_watch",
+    defaultScope: "server_public",
+    ...overrides
   };
 }
 

@@ -24,7 +24,7 @@ config/chat-runtime-controls.json
 config/weekly-meetup-announcement.json
 
 # Private agent assets and prompt materials
-.agents/
+.agents/*
 implementation/src/runtime/forum/forum-research-prompt-refiner-contract.md
 
 # Internal working docs

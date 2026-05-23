@@ -3,18 +3,21 @@ import {
   ThreadAutoArchiveDuration,
   type AnyThreadChannel,
   type Channel,
+  type GuildTextBasedChannel,
   type NewsChannel,
   type TextChannel
 } from "discord.js";
 import type { Logger } from "pino";
 
+import type { FailurePublicCategory, FailureStage } from "../failure/failure-classifier.js";
+import type { SanctionNotificationPayload } from "../moderation/moderation-integration.js";
 import {
   buildAdminDiagnosticsReply,
   buildPermanentFailureReply,
-  buildPlainTextReply,
   buildSanctionStateChangeReply,
   splitPlainTextReplies
-} from "../../app/replies.js";
+} from "./replies.js";
+import { DiscordReplySender } from "./discord-reply-sender.js";
 import { SessionManager } from "../../codex/session-manager.js";
 import { SessionPolicyResolver } from "../../codex/session-policy.js";
 import type { MessageEnvelope, Scope, WatchLocationConfig } from "../../domain/types.js";
@@ -24,19 +27,18 @@ import {
   type HarnessRunner
 } from "../../harness/harness-runner.js";
 import type { HarnessResponse } from "../../harness/contracts.js";
+import type { GeneratedImageArtifact } from "../../codex/app-server-client.js";
 import {
   canonicalizeUrl,
   isAllowedPublicHttpUrl
 } from "../../playwright/url-policy.js";
 import type { SqliteStore, RetryJobRow } from "../../storage/database.js";
-import type { FailurePublicCategory, FailureStage } from "../../app/failure-classifier.js";
-import type { SanctionNotificationPayload } from "../../app/moderation-integration.js";
 import { appendRuntimeTrace } from "../../observability/runtime-trace.js";
 import {
   hasSharedSourceEvidence,
-  isKnowledgePlaceMode,
   isThreadEnvelope
 } from "../../domain/response-boundary.js";
+import { hasPlaceFeature } from "../../domain/place-features.js";
 import type {
   FailureReplyTarget,
   QueuedMessage,
@@ -62,6 +64,8 @@ type ReplyDispatchDependencies = {
 };
 
 export class ReplyDispatchService {
+  private readonly discordReplySender = new DiscordReplySender();
+
   constructor(private readonly dependencies: ReplyDispatchDependencies) {}
 
   async dispatchResolvedMessage(
@@ -90,6 +94,7 @@ export class ReplyDispatchService {
         },
         routed.response
       );
+      await this.sendGeneratedImagesInSamePlace(item, routed.generatedImages);
       return buildSamePlaceReplyTarget(item);
     }
 
@@ -97,7 +102,8 @@ export class ReplyDispatchService {
       item,
       routed.response,
       routed.session,
-      routed.knowledgePersistenceScope
+      routed.knowledgePersistenceScope,
+      routed.generatedImages
     );
   }
 
@@ -105,7 +111,8 @@ export class ReplyDispatchService {
     item: QueuedMessage,
     response: HarnessResponse,
     session: HarnessResolvedSession,
-    knowledgePersistenceScope: Scope | null
+    knowledgePersistenceScope: Scope | null,
+    generatedImages: GeneratedImageArtifact[] = []
   ): Promise<FailureReplyTarget> {
     return this.dispatchHarnessResponseWithContext(
       {
@@ -118,6 +125,8 @@ export class ReplyDispatchService {
         replyInSamePlace: async (content) => this.replyInSamePlace(item, content),
         sendFollowupInSamePlace: async (content) =>
           this.sendFollowupInSamePlace(item, content),
+        sendGeneratedImagesInSamePlace: async (images) =>
+          this.sendGeneratedImagesInSamePlace(item, images),
         resolveSamePlaceReplyTarget: () => buildSamePlaceReplyTarget(item),
         sendToExistingThread: async (content, threadId) => {
           const channel = await this.fetchReplyChannel(threadId);
@@ -130,7 +139,8 @@ export class ReplyDispatchService {
       },
       response,
       session,
-      knowledgePersistenceScope
+      knowledgePersistenceScope,
+      generatedImages
     );
   }
 
@@ -140,6 +150,7 @@ export class ReplyDispatchService {
     response: HarnessResponse;
     session: HarnessResolvedSession;
     knowledgePersistenceScope: Scope | null;
+    generatedImages?: GeneratedImageArtifact[];
   }): Promise<FailureReplyTarget> {
     return this.dispatchHarnessResponseWithContext(
       input.messageContext,
@@ -147,6 +158,8 @@ export class ReplyDispatchService {
         replyInSamePlace: async (content) => this.sendChunksToChannel(input.channel, content),
         sendFollowupInSamePlace: async (content) =>
           this.sendChunksToChannel(input.channel, content),
+        sendGeneratedImagesInSamePlace: async (images) =>
+          this.sendGeneratedImagesToChannel(input.channel, images),
         resolveSamePlaceReplyTarget: () => ({
           channelId: input.channel.id,
           threadId: input.channel.id
@@ -161,7 +174,8 @@ export class ReplyDispatchService {
       },
       input.response,
       input.session,
-      input.knowledgePersistenceScope
+      input.knowledgePersistenceScope,
+      input.generatedImages ?? []
     );
   }
 
@@ -170,13 +184,17 @@ export class ReplyDispatchService {
     dispatchTarget: {
       replyInSamePlace: (content: string) => Promise<void>;
       sendFollowupInSamePlace: (content: string) => Promise<void>;
+      sendGeneratedImagesInSamePlace: (
+        images: GeneratedImageArtifact[]
+      ) => Promise<void>;
       resolveSamePlaceReplyTarget: () => FailureReplyTarget;
       sendToExistingThread: (content: string, threadId: string) => Promise<void>;
       resolveKnowledgeThread: () => Promise<AnyThreadChannel>;
     },
     response: HarnessResponse,
     session: HarnessResolvedSession,
-    knowledgePersistenceScope: Scope | null
+    knowledgePersistenceScope: Scope | null,
+    generatedImages: GeneratedImageArtifact[]
   ): Promise<FailureReplyTarget> {
     this.dependencies.logger.debug(
       {
@@ -198,6 +216,22 @@ export class ReplyDispatchService {
       case "ignore":
         return dispatchTarget.resolveSamePlaceReplyTarget();
       case "admin_diagnostics":
+        if (!canDispatchAdminDiagnostics(messageContext)) {
+          this.dependencies.logger.warn(
+            {
+              messageId: messageContext.envelope.messageId,
+              channelId: messageContext.envelope.channelId,
+              actorRole: messageContext.actorRole,
+              watchMode: messageContext.watchLocation.mode,
+              features: messageContext.watchLocation.features ?? []
+            },
+            "blocked admin diagnostics outside authorized admin place"
+          );
+          await dispatchTarget.replyInSamePlace(
+            "この場所では管理診断を表示できません。"
+          );
+          return dispatchTarget.resolveSamePlaceReplyTarget();
+        }
         await dispatchTarget.replyInSamePlace(
           buildAdminDiagnosticsReply({
             messageId: messageContext.envelope.messageId,
@@ -233,6 +267,7 @@ export class ReplyDispatchService {
             response
           );
         }
+        await dispatchTarget.sendGeneratedImagesInSamePlace(generatedImages);
         return dispatchTarget.resolveSamePlaceReplyTarget();
       case "failure":
         await dispatchTarget.replyInSamePlace(
@@ -381,124 +416,36 @@ export class ReplyDispatchService {
     channel: AnyThreadChannel,
     content: string
   ): Promise<void> {
-    for (const chunk of splitPlainTextReplies(content)) {
-      await channel.send({
-        content: chunk,
-        allowedMentions: {
-          parse: []
-        }
-      });
-    }
+    await this.discordReplySender.sendChunksToChannel(channel, content);
   }
 
   async replyInSamePlace(item: QueuedMessage, content: string): Promise<void> {
-    const chunks = splitPlainTextReplies(content);
-    const [firstChunk, ...restChunks] = chunks;
-    await item.message.reply({
-      content: firstChunk ?? buildPlainTextReply(content),
-      allowedMentions: {
-        repliedUser: false
-      }
-    });
-    for (const chunk of restChunks) {
-      await item.message.channel.send({
-        content: chunk,
-        allowedMentions: {
-          parse: []
-        }
-      });
-    }
-    appendRuntimeTrace("codex-app-server", "discord_reply_sent", {
-      messageId: item.envelope.messageId,
-      channelId: item.envelope.channelId,
-      watchMode: item.watchLocation.mode,
-      chunkCount: chunks.length,
-      firstChunkLength: (firstChunk ?? "").length
-    });
+    await this.discordReplySender.replyInSamePlace(item, content);
   }
 
   async sendFollowupInSamePlace(item: QueuedMessage, content: string): Promise<void> {
-    const chunks = splitPlainTextReplies(content);
-    for (const chunk of chunks) {
-      await item.message.channel.send({
-        content: chunk,
-        allowedMentions: {
-          parse: []
-        }
-      });
-    }
-    appendRuntimeTrace("codex-app-server", "discord_followup_sent", {
-      messageId: item.envelope.messageId,
-      channelId: item.envelope.channelId,
-      watchMode: item.watchLocation.mode,
-      chunkCount: chunks.length
-    });
+    await this.discordReplySender.sendFollowupInSamePlace(item, content);
+  }
+
+  async sendGeneratedImagesInSamePlace(
+    item: QueuedMessage,
+    images: GeneratedImageArtifact[]
+  ): Promise<void> {
+    await this.discordReplySender.sendGeneratedImagesInSamePlace(item, images);
+  }
+
+  async sendGeneratedImagesToChannel(
+    channel: GuildTextBasedChannel,
+    images: GeneratedImageArtifact[]
+  ): Promise<void> {
+    await this.discordReplySender.sendGeneratedImagesToChannel(channel, images);
   }
 
   async createStreamingReplyInSamePlace(item: QueuedMessage): Promise<{
     append: (delta: string) => Promise<void>;
     complete: () => Promise<void>;
   }> {
-    const sentMessages: Array<{
-      edit: (input: { content: string; allowedMentions: { parse: [] } }) => Promise<unknown>;
-    }> = [];
-    const sentContents: string[] = [];
-    let accumulated = "";
-    let flushPromise = Promise.resolve();
-    let flushTimer: NodeJS.Timeout | null = null;
-
-    const flushNow = async (): Promise<void> => {
-      const chunks = splitPlainTextReplies(accumulated || " ");
-      for (let index = 0; index < chunks.length; index += 1) {
-        const chunk = chunks[index] ?? "";
-        if (sentMessages[index]) {
-          if (sentContents[index] === chunk) {
-            continue;
-          }
-          await sentMessages[index]?.edit({
-            content: chunk,
-            allowedMentions: { parse: [] }
-          });
-          sentContents[index] = chunk;
-          continue;
-        }
-
-        const message = await item.message.channel.send({
-          content: chunk,
-          allowedMentions: {
-            parse: []
-          }
-        });
-        sentMessages.push(message);
-        sentContents.push(chunk);
-      }
-    };
-
-    const scheduleFlush = (): void => {
-      if (flushTimer) {
-        return;
-      }
-
-      flushTimer = setTimeout(() => {
-        flushTimer = null;
-        flushPromise = flushPromise.then(() => flushNow());
-      }, 300);
-    };
-
-    return {
-      append: async (delta: string) => {
-        accumulated += delta;
-        scheduleFlush();
-      },
-      complete: async () => {
-        if (flushTimer) {
-          clearTimeout(flushTimer);
-          flushTimer = null;
-        }
-        flushPromise = flushPromise.then(() => flushNow());
-        await flushPromise;
-      }
-    };
+    return this.discordReplySender.createStreamingReplyInSamePlace(item);
   }
 
   private async sendReferenceAppendixIfNeeded(
@@ -508,7 +455,7 @@ export class ReplyDispatchService {
     messageContext: RoutedMessageContext,
     response: HarnessResponse
   ): Promise<void> {
-    if (messageContext.watchLocation.mode !== "forum_longform") {
+    if (!hasPlaceFeature(messageContext.watchLocation, "forum_research")) {
       return;
     }
 
@@ -542,7 +489,7 @@ export class ReplyDispatchService {
   ): Promise<FailureReplyTarget> {
     const routing = resolveKnowledgeIngestRouting({
       isThreadMessage: isThreadEnvelope(item.envelope),
-      watchMode: item.watchLocation.mode,
+      hasKnowledgeIngestFeature: hasPlaceFeature(item.watchLocation, "knowledge_ingest"),
       replyMode: response.reply_mode,
       hasSharedSourceEvidence: hasSharedSourceEvidence(item.envelope)
     });
@@ -616,7 +563,7 @@ export class ReplyDispatchService {
 
 export function resolveKnowledgeIngestRouting(input: {
   isThreadMessage: boolean;
-  watchMode: WatchLocationConfig["mode"];
+  hasKnowledgeIngestFeature: boolean;
   replyMode: HarnessResponse["reply_mode"];
   hasSharedSourceEvidence: boolean;
 }): {
@@ -629,8 +576,8 @@ export function resolveKnowledgeIngestRouting(input: {
   }
 
   if (
-    input.replyMode === "same_place" ||
-    !isKnowledgePlaceMode(input.watchMode) ||
+    input.replyMode !== "create_public_thread" ||
+    !input.hasKnowledgeIngestFeature ||
     !input.hasSharedSourceEvidence
   ) {
     return {
@@ -721,7 +668,8 @@ export function findAdminControlWatchLocation(
 ): WatchLocationConfig | null {
   return (
     watchLocations.find(
-      (location) => location.guildId === guildId && location.mode === "admin_control"
+      (location) =>
+        location.guildId === guildId && hasPlaceFeature(location, "admin_override")
     ) ?? null
   );
 }
@@ -771,5 +719,14 @@ function isBaseWatchChannel(
   return (
     channel.type === ChannelType.GuildText ||
     channel.type === ChannelType.GuildAnnouncement
+  );
+}
+
+function canDispatchAdminDiagnostics(
+  messageContext: RoutedMessageContext
+): boolean {
+  return (
+    messageContext.actorRole !== "user" &&
+    hasPlaceFeature(messageContext.watchLocation, "admin_override")
   );
 }

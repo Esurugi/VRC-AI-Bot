@@ -9,11 +9,11 @@ import {
   FORUM_LONGFORM_CODEX_MODEL_PROFILE
 } from "../../src/codex/session-policy.js";
 
-test("chat and ambient profiles use gpt-5.4-mini", () => {
+test("chat and ambient profiles use gpt-5.5-mini", () => {
   assert.deepEqual(
     resolveCodexExecutionProfile(CHAT_CONVERSATION_LOW_CODEX_MODEL_PROFILE),
     {
-      model: "gpt-5.4-mini",
+      model: "gpt-5.5-mini",
       reasoningEffort: "low"
     }
   );
@@ -21,20 +21,20 @@ test("chat and ambient profiles use gpt-5.4-mini", () => {
   assert.deepEqual(
     resolveCodexExecutionProfile(AMBIENT_ROOM_CHAT_CODEX_MODEL_PROFILE),
     {
-      model: "gpt-5.4-mini",
+      model: "gpt-5.5-mini",
       reasoningEffort: "low"
     }
   );
 });
 
-test("default and forum high profiles stay on gpt-5.4", () => {
+test("default and forum high profiles stay on gpt-5.5", () => {
   assert.deepEqual(resolveCodexExecutionProfile(DEFAULT_CODEX_MODEL_PROFILE), {
-    model: "gpt-5.4",
+    model: "gpt-5.5",
     reasoningEffort: null
   });
 
   assert.deepEqual(resolveCodexExecutionProfile(FORUM_LONGFORM_CODEX_MODEL_PROFILE), {
-    model: "gpt-5.4",
+    model: "gpt-5.5",
     reasoningEffort: "high"
   });
 });

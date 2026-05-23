@@ -1,8 +1,11 @@
-DROP TABLE IF EXISTS source_link;
-DROP TABLE IF EXISTS knowledge_artifact;
-DROP TABLE IF EXISTS knowledge_source_text;
 DROP TABLE IF EXISTS knowledge_record_fts;
-DROP TABLE IF EXISTS knowledge_record;
+
+ALTER TABLE source_link RENAME TO source_link_legacy_v1;
+ALTER TABLE knowledge_artifact RENAME TO knowledge_artifact_legacy_v1;
+ALTER TABLE knowledge_record RENAME TO knowledge_record_legacy_v1;
+
+DROP INDEX IF EXISTS knowledge_record_dedupe;
+DROP TABLE IF EXISTS knowledge_source_text;
 
 CREATE TABLE IF NOT EXISTS knowledge_record (
   record_id TEXT PRIMARY KEY,
@@ -56,3 +59,79 @@ CREATE TABLE IF NOT EXISTS source_link (
   created_at TEXT NOT NULL,
   FOREIGN KEY (record_id) REFERENCES knowledge_record(record_id)
 );
+
+INSERT INTO knowledge_record (
+  record_id,
+  canonical_url,
+  domain,
+  title,
+  summary,
+  tags_json,
+  scope,
+  visibility_key,
+  content_hash,
+  created_at
+)
+SELECT
+  record_id,
+  canonical_url,
+  domain,
+  title,
+  summary,
+  tags_json,
+  scope,
+  'legacy:' || scope,
+  content_hash,
+  created_at
+FROM knowledge_record_legacy_v1;
+
+INSERT INTO knowledge_record_fts (
+  record_id,
+  canonical_url,
+  domain,
+  title,
+  summary,
+  tags
+)
+SELECT
+  record_id,
+  canonical_url,
+  domain,
+  title,
+  summary,
+  tags_json
+FROM knowledge_record_legacy_v1;
+
+INSERT INTO knowledge_artifact (
+  record_id,
+  final_url,
+  snapshot_path,
+  screenshot_path,
+  network_log_path
+)
+SELECT
+  record_id,
+  final_url,
+  snapshot_path,
+  screenshot_path,
+  network_log_path
+FROM knowledge_artifact_legacy_v1;
+
+INSERT INTO source_link (
+  link_id,
+  record_id,
+  source_message_id,
+  reply_thread_id,
+  created_at
+)
+SELECT
+  link_id,
+  record_id,
+  source_message_id,
+  reply_thread_id,
+  created_at
+FROM source_link_legacy_v1;
+
+DROP TABLE source_link_legacy_v1;
+DROP TABLE knowledge_artifact_legacy_v1;
+DROP TABLE knowledge_record_legacy_v1;

@@ -9,14 +9,6 @@ export function resolveHarnessCapabilities(input: {
   intent: HarnessIntentResponse;
   workspaceWriteActive: boolean;
 }): ResolvedCapabilities {
-  if (input.workspaceWriteActive) {
-    return {
-      allow_external_fetch: true,
-      allow_knowledge_write: true,
-      allow_moderation: true
-    };
-  }
-
   const allowExternalFetch = shouldGrantExternalFetch(input.request, input.intent);
 
   return {
@@ -36,7 +28,8 @@ function shouldGrantKnowledgeWrite(
   allowExternalFetch: boolean
 ): boolean {
   return (
-    request.available_context.thread_context.kind !== "knowledge_thread" &&
+    request.available_context.thread_context.kind === "root_channel" &&
+    request.available_context.place_context.is_knowledge_place &&
     intent.outcome_candidate === "knowledge_ingest" &&
     intent.requested_knowledge_write &&
     allowExternalFetch
@@ -47,7 +40,7 @@ function shouldGrantExternalFetch(
   request: HarnessRequest,
   intent: HarnessIntentResponse
 ): boolean {
-  if (request.place.mode === "forum_longform") {
+  if (request.available_context.place_context.features.includes("forum_research")) {
     return true;
   }
 

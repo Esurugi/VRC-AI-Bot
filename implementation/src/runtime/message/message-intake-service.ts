@@ -8,6 +8,7 @@ import {
 } from "../../discord/message-utils.js";
 import { resolveActorRole, resolveScope } from "../../discord/facts.js";
 import type { AppConfig } from "../../domain/types.js";
+import { isClearExplanationPlace } from "../../domain/place-features.js";
 import { OrderedMessageQueue } from "../../queue/ordered-message-queue.js";
 import { ChatChannelCounterService } from "../chat/chat-channel-counter-service.js";
 import {
@@ -48,7 +49,18 @@ export class MessageIntakeService {
     }
 
     const typedMessage = message as Message<true>;
-    if (!this.forumThreadService.shouldHandleMessage(typedMessage, watchLocation)) {
+    if (
+      isClearExplanationPlace(watchLocation) &&
+      !typedMessage.channel.isThread()
+    ) {
+      return;
+    }
+
+    const forumHandling = await this.forumThreadService.evaluateMessage(
+      typedMessage,
+      watchLocation
+    );
+    if (forumHandling.decision === "ignore") {
       return;
     }
 
@@ -71,21 +83,14 @@ export class MessageIntakeService {
     const actorRole = resolveActorRole(typedMessage, this.config.discordOwnerUserIds);
     const scope = resolveScope(typedMessage, watchLocation);
 
-    const forumAlways = this.forumThreadService.shouldHandleEveryMessage({
-      envelope,
-      watchLocation
-    });
-    const engagement = forumAlways
-      ? {
-          decision: "always" as const,
-          triggerKind: null,
-          isDirectedToBot: false
-        }
-      : await this.chatEngagementPolicy.evaluate({
-          message: typedMessage,
-          envelope,
-          watchLocation
-        });
+    const engagement =
+      forumHandling.decision === "handle"
+        ? forumHandling.engagement
+        : await this.chatEngagementPolicy.evaluate({
+            message: typedMessage,
+            envelope,
+            watchLocation
+          });
 
     if (engagement.decision === "ignore") {
       return;

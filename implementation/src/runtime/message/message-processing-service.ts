@@ -1,15 +1,21 @@
 import type { GuildTextBasedChannel } from "discord.js";
 import type { Logger } from "pino";
 
-import type { FailureClassifier } from "../../app/failure-classifier.js";
+import type { FailureClassifier } from "../failure/failure-classifier.js";
 import type {
   BotModerationIntegration,
   PostResponseModerationInput
-} from "../../app/moderation-integration.js";
-import { buildFailureNotice } from "../../app/replies.js";
-import type { RetrySchedulerService } from "../../app/retry-scheduler-service.js";
+} from "../moderation/moderation-integration.js";
+import { buildFailureNotice } from "./replies.js";
+import type { RetrySchedulerService } from "../scheduling/retry-scheduler-service.js";
 import type { ModerationExecutor } from "../../discord/moderation-executor.js";
 import { writeDiscordRuntimeSnapshot } from "../../discord/runtime-facts.js";
+import {
+  isClearExplanationPlace,
+  isConversationPlace,
+  isForumResearchPlace
+} from "../../domain/place-features.js";
+import { isThreadEnvelope } from "../../domain/response-boundary.js";
 import type { AppConfig } from "../../domain/types.js";
 import { HarnessRunner } from "../../harness/harness-runner.js";
 import { appendRuntimeTrace } from "../../observability/runtime-trace.js";
@@ -64,6 +70,13 @@ export class MessageProcessingService {
   ) {}
 
   async process(item: QueuedMessage): Promise<void> {
+    if (
+      isClearExplanationPlace(item.watchLocation) &&
+      !isThreadEnvelope(item.envelope)
+    ) {
+      return;
+    }
+
     const acquired = this.store.messageProcessing.tryAcquire(
       item.envelope.messageId,
       item.envelope.channelId,
@@ -80,7 +93,10 @@ export class MessageProcessingService {
         },
         "skipping duplicate message processing"
       );
-      if (acquired.status === "already_completed") {
+      if (
+        acquired.status === "already_completed" ||
+        acquired.status === "already_terminal_failure_notified"
+      ) {
         this.store.channelCursors.upsert(item.envelope.channelId, item.envelope.messageId);
         this.retryScheduler.clear(item.envelope.messageId);
       }
@@ -97,7 +113,7 @@ export class MessageProcessingService {
       watchLocation: item.watchLocation,
       chatEngagement: item.chatEngagement
     })
-      ? item.watchLocation.mode === "forum_longform"
+      ? isForumResearchPlace(item.watchLocation)
         ? this.startTypingIndicator(item.message.channel, {
             owner: "forum_high_thinking",
             messageId: item.envelope.messageId,
@@ -203,7 +219,7 @@ export class MessageProcessingService {
       chatEngagement,
       recentRoomEvents: roomContext.recentRoomEvents,
       forumStarterMessage: resolvedForumBootstrap.starterMessage,
-      ...(item.watchLocation.mode === "forum_longform"
+      ...(isForumResearchPlace(item.watchLocation)
         ? {
             forumRetryCallbacks: this.buildForumCallbacks(
               item,
@@ -215,7 +231,7 @@ export class MessageProcessingService {
   }
 
   private async deriveChatEngagement(item: QueuedMessage) {
-    if (item.watchLocation.mode !== "chat") {
+    if (!isConversationPlace(item.watchLocation)) {
       return null;
     }
 
@@ -354,22 +370,21 @@ export class MessageProcessingService {
     item: QueuedMessage,
     input: StageFailureInput
   ): Promise<void> {
-    if (item.watchLocation.mode === "forum_longform") {
+    if (isForumResearchPlace(item.watchLocation)) {
       await this.handleForumTerminalFailure({
         messageId: item.envelope.messageId,
         channelId: item.envelope.channelId,
         notify: async (notice) =>
           this.replyDispatchService.notifyFailureInTarget(item, input.replyTarget, notice)
       });
-      this.markMessageCompleted(item);
+      this.markTerminalFailureNotified(item);
       return;
     }
 
     const existingRetry = this.store.retryJobs.get(item.envelope.messageId);
     const decision = this.failureClassifier.classify(input.error, {
       stage: input.stage,
-      attemptCount: existingRetry?.attempt_count ?? 0,
-      watchMode: item.watchLocation.mode
+      attemptCount: existingRetry?.attempt_count ?? 0
     });
     const notice = buildFailureNotice({
       category: decision.publicCategory,
@@ -413,7 +428,7 @@ export class MessageProcessingService {
       stage: input.stage,
       category: decision.publicCategory
     });
-    this.markMessageCompleted(item);
+    this.markTerminalFailureNotified(item);
   }
 
   markMessageCompleted(item: QueuedMessage): void {
@@ -426,25 +441,41 @@ export class MessageProcessingService {
     this.store.channelCursors.upsert(channelId, messageId);
   }
 
+  markTerminalFailureNotified(item: QueuedMessage): void {
+    this.markTerminalFailureNotifiedById(
+      item.envelope.messageId,
+      item.envelope.channelId
+    );
+  }
+
+  markTerminalFailureNotifiedById(messageId: string, channelId: string): void {
+    this.retryScheduler.clear(messageId);
+    this.store.messageProcessing.markTerminalFailureNotified(messageId);
+    this.store.channelCursors.upsert(channelId, messageId);
+  }
+
   async handleRetryJobFailure(
     item: RetryJobRow,
     error: unknown
   ): Promise<void> {
-    if (item.place_mode === "forum_longform") {
+    const retryWatchLocation = this.resolveRetryJobWatchLocation(item);
+    const isForumRetryJob = retryWatchLocation
+      ? isForumResearchPlace(retryWatchLocation)
+      : isLegacyForumRetryJobWithoutResolvedWatchLocation(item);
+    if (isForumRetryJob) {
       await this.handleForumTerminalFailure({
         messageId: item.message_id,
         channelId: item.message_channel_id,
         notify: async (notice) =>
           this.replyDispatchService.notifyFailureForRetryJob(item, notice)
       });
-      this.markMessageCompletedById(item.message_id, item.message_channel_id);
+      this.markTerminalFailureNotifiedById(item.message_id, item.message_channel_id);
       return;
     }
 
     const decision = this.failureClassifier.classify(error, {
       stage: "fetch_or_resolve",
-      attemptCount: item.attempt_count,
-      watchMode: item.place_mode
+      attemptCount: item.attempt_count
     });
     const notice = buildFailureNotice({
       category: decision.publicCategory,
@@ -475,11 +506,13 @@ export class MessageProcessingService {
           messageId: item.message_id,
           replyThreadId: item.reply_thread_id
         }),
-        watchLocation: resolveRetryWatchLocation(this.config, {
-          guildId: item.guild_id,
-          watchChannelId: item.watch_channel_id,
-          mode: item.place_mode
-        }),
+        watchLocation:
+          retryWatchLocation ??
+          resolveRetryWatchLocation(this.config, {
+            guildId: item.guild_id,
+            watchChannelId: item.watch_channel_id,
+            mode: item.place_mode
+          }),
         stage: "fetch_or_resolve",
         decision,
         replyChannelId: item.reply_channel_id,
@@ -497,7 +530,29 @@ export class MessageProcessingService {
       stage: "fetch_or_resolve",
       category: decision.publicCategory
     });
-    this.markMessageCompletedById(item.message_id, item.message_channel_id);
+    this.markTerminalFailureNotifiedById(item.message_id, item.message_channel_id);
+  }
+
+  private resolveRetryJobWatchLocation(item: RetryJobRow): AppConfig["watchLocations"][number] | null {
+    try {
+      return resolveRetryWatchLocation(this.config, {
+        guildId: item.guild_id,
+        watchChannelId: item.watch_channel_id,
+        mode: item.place_mode
+      });
+    } catch (error) {
+      this.logger.warn(
+        {
+          error: error instanceof Error ? error.message : String(error),
+          messageId: item.message_id,
+          guildId: item.guild_id,
+          watchChannelId: item.watch_channel_id,
+          placeMode: item.place_mode
+        },
+        "failed to resolve retry job watch location from current config"
+      );
+      return null;
+    }
   }
 
   private async handleForumTerminalFailure(input: {
@@ -624,4 +679,10 @@ function createNoopTypingIndicator(): TypingIndicatorController {
     pulseNow: () => Promise.resolve(),
     stop: () => {}
   };
+}
+
+function isLegacyForumRetryJobWithoutResolvedWatchLocation(
+  item: RetryJobRow
+): boolean {
+  return item.place_mode === "forum_longform";
 }

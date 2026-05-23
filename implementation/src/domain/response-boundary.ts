@@ -3,15 +3,13 @@ import type {
   MessageEnvelope,
   WatchLocationConfig
 } from "./types.js";
+import {
+  isAmbientConversationPlace,
+  isKnowledgeIngestPlace
+} from "./place-features.js";
 
 export function isKnowledgePlace(watchLocation: WatchLocationConfig): boolean {
-  return isKnowledgePlaceMode(watchLocation.mode);
-}
-
-export function isKnowledgePlaceMode(
-  mode: WatchLocationConfig["mode"]
-): boolean {
-  return mode === "url_watch";
+  return isKnowledgeIngestPlace(watchLocation);
 }
 
 export function isThreadEnvelope(envelope: MessageEnvelope): boolean {
@@ -34,10 +32,7 @@ export function isKnowledgePlaceRootShare(input: {
 }
 
 export function isAmbientRoomChat(watchLocation: WatchLocationConfig): boolean {
-  return (
-    watchLocation.mode === "chat" &&
-    (watchLocation.chatBehavior ?? "ambient_room_chat") === "ambient_room_chat"
-  );
+  return isAmbientConversationPlace(watchLocation);
 }
 
 export function isExplicitBotDirectedEngagement(

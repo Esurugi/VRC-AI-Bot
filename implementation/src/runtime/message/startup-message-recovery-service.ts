@@ -7,6 +7,13 @@ import {
 } from "discord.js";
 import type { Logger } from "pino";
 
+import {
+  isConversationPlace,
+  isForumResearchPlace,
+  isKnowledgeIngestPlace,
+  hasPlaceFeature,
+  resolvePlaceChatBehavior
+} from "../../domain/place-features.js";
 import type { WatchLocationConfig } from "../../domain/types.js";
 import type { SqliteStore } from "../../storage/database.js";
 import type { MessageIntakeService } from "./message-intake-service.js";
@@ -41,8 +48,7 @@ export class StartupMessageRecoveryService {
     if (!rootChannel) {
       return;
     }
-    const recoveryMode: RecoveryMode =
-      watchLocation.mode === "chat" ? "cursor_only" : "replay";
+    const recoveryMode = resolveRecoveryMode(watchLocation);
 
     const rootCursor =
       this.dependencies.store.channelCursors.get(watchLocation.channelId)
@@ -181,4 +187,19 @@ function isRecoverableRootChannel(
     channel.type === ChannelType.GuildText ||
     channel.type === ChannelType.GuildAnnouncement
   );
+}
+
+function resolveRecoveryMode(watchLocation: WatchLocationConfig): RecoveryMode {
+  if (
+    isForumResearchPlace(watchLocation) ||
+    isKnowledgeIngestPlace(watchLocation) ||
+    hasPlaceFeature(watchLocation, "admin_override")
+  ) {
+    return "replay";
+  }
+
+  return isConversationPlace(watchLocation) &&
+    resolvePlaceChatBehavior(watchLocation) !== null
+    ? "cursor_only"
+    : "replay";
 }

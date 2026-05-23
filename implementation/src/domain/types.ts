@@ -16,6 +16,15 @@ export const WATCH_MODE_VALUES = [
 ] as const;
 export type WatchMode = (typeof WATCH_MODE_VALUES)[number];
 
+export const PLACE_FEATURE_VALUES = [
+  "conversation",
+  "knowledge_ingest",
+  "admin_override",
+  "forum_research",
+  "clear_explanation"
+] as const;
+export type PlaceFeature = (typeof PLACE_FEATURE_VALUES)[number];
+
 export const PLACE_TYPE_VALUES = [
   "guild_text",
   "guild_announcement",
@@ -36,7 +45,16 @@ export type CodexSandboxMode = (typeof CODEX_SANDBOX_MODE_VALUES)[number];
 export type WatchLocationConfig = {
   guildId: string;
   channelId: string;
+  featureProfileId?: string;
   mode: WatchMode;
+  defaultScope: Scope;
+  features?: PlaceFeature[];
+  chatBehavior?: ChatBehavior | null;
+};
+
+export type PlaceFeatureProfileConfig = {
+  id: string;
+  features: PlaceFeature[];
   defaultScope: Scope;
   chatBehavior?: ChatBehavior | null;
 };

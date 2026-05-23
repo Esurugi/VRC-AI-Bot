@@ -25,22 +25,32 @@ export function listVisibleKnowledgeSelectors(input: KnowledgeVisibilityContext)
   const serverPublicKey = `server_public:${input.guildId}`;
   const channelFamilyKey = `channel_family:${input.rootChannelId}`;
   const conversationOnlyKey = `conversation_only:${input.placeId}`;
+  const legacyServerPublicKey = "legacy:server_public";
 
   switch (input.scope) {
     case "server_public":
       return {
         scopes: ["server_public"],
-        visibilityKeys: [serverPublicKey]
+        visibilityKeys: [serverPublicKey, legacyServerPublicKey]
       };
     case "channel_family":
       return {
         scopes: ["server_public", "channel_family"],
-        visibilityKeys: [serverPublicKey, channelFamilyKey]
+        visibilityKeys: [
+          serverPublicKey,
+          channelFamilyKey,
+          legacyServerPublicKey
+        ]
       };
     case "conversation_only":
       return {
         scopes: ["server_public", "channel_family", "conversation_only"],
-        visibilityKeys: [serverPublicKey, channelFamilyKey, conversationOnlyKey]
+        visibilityKeys: [
+          serverPublicKey,
+          channelFamilyKey,
+          conversationOnlyKey,
+          legacyServerPublicKey
+        ]
       };
   }
 }
