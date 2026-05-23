@@ -97,8 +97,18 @@ export type HarnessTurnSessionMetadata = {
   runtimeContractVersion: string;
 };
 
+export type GeneratedImageArtifact = {
+  origin: "imageGeneration" | "image_generation_call";
+  id: string;
+  status: string | null;
+  mime_type: string;
+  filename: string;
+  data_base64: string;
+};
+
 export type TurnObservations = {
   observed_public_urls: string[];
+  generated_images: GeneratedImageArtifact[];
 };
 
 export type StreamingTextTurnCallbacks = {
@@ -134,10 +144,20 @@ type TurnStreamState = StreamingTextTurnCallbacks & {
 const BEST_EFFORT_CONTROL_REQUEST_TIMEOUT_MS = 5_000;
 const ROOT_AGENTS_SYSTEM_PROMPT_HEADING = "## System Prompt Injection";
 
+type HarnessDeveloperInstructionOptions = {
+  includeClearExplanationSkill?: boolean;
+};
+
 export const HARNESS_DEVELOPER_INSTRUCTIONS = buildHarnessDeveloperInstructions();
 
-export function buildHarnessDeveloperInstructions(repoRoot = process.cwd()): string {
+export function buildHarnessDeveloperInstructions(
+  repoRoot = process.cwd(),
+  options: HarnessDeveloperInstructionOptions = {}
+): string {
   const rootAgentsSystemPromptRules = loadRootAgentsSystemPromptRules(repoRoot);
+  const clearExplanationSkillInstructions = options.includeClearExplanationSkill
+    ? loadClearExplanationSkillInstructions(repoRoot)
+    : [];
   return [
     "You are the harness core for a Discord assistant running inside a local repository.",
     "Repository harness artifacts are defined by the repository-root AGENTS.md. Treat it as the canonical runtime harness document.",
@@ -150,6 +170,14 @@ export function buildHarnessDeveloperInstructions(repoRoot = process.cwd()): str
     "Do not refuse solely because optional fields are absent.",
     "Use available_context.thread_context to understand whether this is a root channel, a plain thread, or a knowledge-thread follow-up.",
     "available_context.place_context.features lists the configured place capabilities and is the authority for place-owned behavior.",
+    "If available_context.place_context.features includes clear_explanation, use the workspace-local skill explaining-clearly for the public answer when it is available. Explain in natural Japanese, build understanding step by step, and use image generation only when a diagram materially helps the explanation.",
+    "If available_context.place_context.features includes clear_explanation and the user explicitly asks for an image, diagram, visual, Image2, or a generated figure, call the image_generation tool for a real image. Do not satisfy that request with an ASCII diagram, Markdown code block diagram, or visual_plan text only. If image generation is unavailable, say so briefly in public_text instead of pretending a real image was generated.",
+    ...(clearExplanationSkillInstructions.length > 0
+      ? [
+          "The explaining-clearly skill is already loaded below for this clear_explanation session. Do not run shell commands just to read that skill.",
+          ...clearExplanationSkillInstructions
+        ]
+      : []),
     "place.mode may be present as a compatibility or display label. Do not use it as the authority for routing, capability, or workload decisions.",
     "If available_context.thread_context.kind is knowledge_thread, prefer answering in that existing thread and use known_source_urls when useful.",
     "If available_context.thread_context.kind is missing_or_stale_knowledge_thread, System knows this is under a knowledge_ingest place but has no valid thread binding facts. Do not invent known_source_urls, source_message_id, or prior source details.",
@@ -277,6 +305,51 @@ function extractSectionBullets(content: string, heading: string): string[] {
   return bullets;
 }
 
+function loadClearExplanationSkillInstructions(repoRoot = process.cwd()): string[] {
+  const skillPath = resolve(
+    repoRoot,
+    ".agents",
+    "skills",
+    "explaining-clearly",
+    "SKILL.md"
+  );
+  const principlesPath = resolve(
+    repoRoot,
+    ".agents",
+    "skills",
+    "explaining-clearly",
+    "references",
+    "clarity_principles.md"
+  );
+  const skillContent = readOptionalTextFile(skillPath);
+  if (!skillContent) {
+    return [];
+  }
+
+  const principlesContent = readOptionalTextFile(principlesPath);
+  return [
+    "Loaded workspace-local skill: explaining-clearly/SKILL.md",
+    skillContent,
+    ...(principlesContent
+      ? [
+          "Loaded workspace-local skill reference: explaining-clearly/references/clarity_principles.md",
+          principlesContent
+        ]
+      : [])
+  ];
+}
+
+function readOptionalTextFile(path: string): string | null {
+  try {
+    if (!existsSync(path)) {
+      return null;
+    }
+    return readFileSync(path, "utf8").trim();
+  } catch {
+    return null;
+  }
+}
+
 export class CodexAppServerClient {
   private process: ChildProcessWithoutNullStreams | null = null;
   private readonly pending = new Map<number, PendingRequest>();
@@ -370,7 +443,8 @@ export class CodexAppServerClient {
     sandbox: CodexSandboxMode,
     profile: CodexExecutionProfile = resolveCodexExecutionProfile(
       DEFAULT_CODEX_MODEL_PROFILE
-    )
+    ),
+    options: HarnessDeveloperInstructionOptions = {}
   ): Promise<string> {
     const result = (await this.request(
       "thread/start",
@@ -378,7 +452,7 @@ export class CodexAppServerClient {
         cwd: this.cwd,
         sandbox,
         model: profile.model,
-        developerInstructions: buildHarnessDeveloperInstructions(this.cwd),
+        developerInstructions: buildHarnessDeveloperInstructions(this.cwd, options),
         config: this.threadConfigOverride
       })
     )) as { thread?: { id?: string } };
@@ -399,11 +473,16 @@ export class CodexAppServerClient {
     );
   }
 
-  async resumeThread(threadId: string, sandbox: CodexSandboxMode): Promise<void> {
+  async resumeThread(
+    threadId: string,
+    sandbox: CodexSandboxMode,
+    options: HarnessDeveloperInstructionOptions = {}
+  ): Promise<void> {
     await this.request("thread/resume", {
       threadId,
       sandbox,
       config: this.threadConfigOverride,
+      developerInstructions: buildHarnessDeveloperInstructions(this.cwd, options),
       persistExtendedHistory: false
     });
   }
@@ -698,7 +777,8 @@ export class CodexAppServerClient {
       requestId: input.requestPayload.request_id,
       response: result.response,
       observations: {
-        observed_public_urls: result.observations.observed_public_urls
+        observed_public_urls: result.observations.observed_public_urls,
+        generated_image_count: result.observations.generated_images.length
       },
       sessionIdentity: input.sessionMetadata?.sessionIdentity,
       workloadKind: input.sessionMetadata?.workloadKind,
@@ -852,7 +932,8 @@ export class CodexAppServerClient {
         lastAgentMessage:
           turnSnapshot.lastAgentMessage ?? completionResult.lastAgentMessage,
         observations: {
-          observed_public_urls: sortStrings(turnSnapshot.observedPublicUrls)
+          observed_public_urls: sortStrings(turnSnapshot.observedPublicUrls),
+          generated_images: turnSnapshot.generatedImages
         },
         turnId: completionResult.turnId ?? turnId
       };
@@ -936,6 +1017,7 @@ export class CodexAppServerClient {
   }): Promise<{
     lastAgentMessage: string | null;
     observedPublicUrls: string[];
+    generatedImages: GeneratedImageArtifact[];
   }> {
     for (let attempt = 0; attempt < 5; attempt += 1) {
       const response = (await this.request("thread/read", {
@@ -960,7 +1042,8 @@ export class CodexAppServerClient {
           observedPublicUrls: sortStrings([
             ...snapshot.observedPublicUrls,
             ...input.observedPublicUrls
-          ])
+          ]),
+          generatedImages: snapshot.generatedImages
         };
       }
 
@@ -971,7 +1054,8 @@ export class CodexAppServerClient {
 
     return {
       lastAgentMessage: null,
-      observedPublicUrls: sortStrings(input.observedPublicUrls)
+      observedPublicUrls: sortStrings(input.observedPublicUrls),
+      generatedImages: []
     };
   }
 
@@ -1012,7 +1096,8 @@ export class CodexAppServerClient {
       return {
         lastAgentMessage: tracked.state.value.lastAgentMessage,
         observations: {
-          observed_public_urls: tracked.state.value.observedPublicUrls
+          observed_public_urls: tracked.state.value.observedPublicUrls,
+          generated_images: []
         },
         turnId: tracked.state.value.turnId
       };
@@ -1711,6 +1796,7 @@ type ThreadReadResponse = {
 type TurnSnapshot = {
   lastAgentMessage: string | null;
   observedPublicUrls: string[];
+  generatedImages: GeneratedImageArtifact[];
 };
 
 function findLatestTurnSnapshot(
@@ -1724,7 +1810,8 @@ function findLatestTurnSnapshot(
   if (!turn) {
     return {
       lastAgentMessage: null,
-      observedPublicUrls: []
+      observedPublicUrls: [],
+      generatedImages: []
     };
   }
 
@@ -1734,7 +1821,12 @@ function findLatestTurnSnapshot(
     observedPublicUrls:
       turnId === null
         ? []
-        : extractObservedPublicUrlsFromTurnItems(items, allowExternalFetch, repoCwd)
+        : extractObservedPublicUrlsFromTurnItems(
+            items,
+            allowExternalFetch,
+            repoCwd
+          ),
+    generatedImages: extractGeneratedImagesFromTurnItems(items)
   };
 }
 
@@ -1778,6 +1870,138 @@ function findLastAgentMessageInItems(items: unknown[]): string | null {
   }
 
   return null;
+}
+
+function extractGeneratedImagesFromTurnItems(
+  items: unknown[]
+): GeneratedImageArtifact[] {
+  const artifacts: GeneratedImageArtifact[] = [];
+  const seen = new Set<string>();
+
+  for (const item of items) {
+    const artifact = extractGeneratedImageFromTurnItem(item);
+    if (!artifact) {
+      continue;
+    }
+
+    const key = `${artifact.origin}:${artifact.id}:${artifact.data_base64}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    artifacts.push(artifact);
+  }
+
+  return artifacts;
+}
+
+function extractGeneratedImageFromTurnItem(
+  item: unknown
+): GeneratedImageArtifact | null {
+  if (typeof item !== "object" || item === null || !("type" in item)) {
+    return null;
+  }
+
+  if (item.type === "imageGeneration") {
+    return buildGeneratedImageArtifact({
+      origin: "imageGeneration",
+      item
+    });
+  }
+
+  if (item.type === "image_generation_call") {
+    return buildGeneratedImageArtifact({
+      origin: "image_generation_call",
+      item
+    });
+  }
+
+  return null;
+}
+
+function buildGeneratedImageArtifact(input: {
+  origin: GeneratedImageArtifact["origin"];
+  item: object;
+}): GeneratedImageArtifact | null {
+  const item = input.item as {
+    id?: unknown;
+    status?: unknown;
+    result?: unknown;
+    mime_type?: unknown;
+    mimeType?: unknown;
+    filename?: unknown;
+    name?: unknown;
+  };
+  if (typeof item.result !== "string" || item.result.trim().length === 0) {
+    return null;
+  }
+
+  const normalized = normalizeImageResultData(item.result);
+  if (!normalized) {
+    return null;
+  }
+
+  const id = typeof item.id === "string" && item.id.trim() ? item.id.trim() : "image";
+  const mimeType =
+    typeof item.mime_type === "string" && item.mime_type.trim()
+      ? item.mime_type.trim()
+      : typeof item.mimeType === "string" && item.mimeType.trim()
+        ? item.mimeType.trim()
+        : normalized.mimeType;
+  const filename =
+    typeof item.filename === "string" && item.filename.trim()
+      ? item.filename.trim()
+      : typeof item.name === "string" && item.name.trim()
+        ? item.name.trim()
+        : buildGeneratedImageFilename(id, mimeType);
+
+  return {
+    origin: input.origin,
+    id,
+    status:
+      typeof item.status === "string" && item.status.trim()
+        ? item.status.trim()
+        : null,
+    mime_type: mimeType,
+    filename,
+    data_base64: normalized.base64
+  };
+}
+
+function normalizeImageResultData(value: string): {
+  base64: string;
+  mimeType: string;
+} | null {
+  const trimmed = value.trim();
+  const dataUrl = /^data:([^;,]+);base64,(.+)$/is.exec(trimmed);
+  if (dataUrl) {
+    const mimeType = dataUrl[1]?.trim() || "image/png";
+    const base64 = (dataUrl[2] ?? "").replace(/\s+/g, "");
+    return base64 ? { base64, mimeType } : null;
+  }
+
+  const base64 = trimmed.replace(/\s+/g, "");
+  return base64 ? { base64, mimeType: "image/png" } : null;
+}
+
+function buildGeneratedImageFilename(id: string, mimeType: string): string {
+  const extension = imageExtensionFromMimeType(mimeType);
+  const safeId = id.replace(/[^A-Za-z0-9_.-]+/g, "-").replace(/^-+|-+$/g, "");
+  return `${safeId || "generated-image"}.${extension}`;
+}
+
+function imageExtensionFromMimeType(mimeType: string): string {
+  switch (mimeType.toLowerCase()) {
+    case "image/jpeg":
+    case "image/jpg":
+      return "jpg";
+    case "image/webp":
+      return "webp";
+    case "image/gif":
+      return "gif";
+    default:
+      return "png";
+  }
 }
 
 function extractObservedPublicUrlsFromTurnItems(
@@ -2273,6 +2497,7 @@ export const __testOnly = {
   findLatestTurnSnapshot,
   extractObservedPublicUrlsFromTurnItems,
   extractObservedPublicUrlsFromNotificationParams,
+  extractGeneratedImagesFromTurnItems,
   extractWebSearchActionTypeFromNotificationParams
 };
 

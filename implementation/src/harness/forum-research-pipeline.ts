@@ -211,7 +211,8 @@ export class ForumResearchPipeline {
           `forum output safety retry failed: ${reason}`
         ),
         observations: {
-          observed_public_urls: []
+          observed_public_urls: [],
+          generated_images: []
         }
       };
     }
@@ -661,7 +662,8 @@ export class ForumResearchPipeline {
           }`
         ),
         observations: {
-          observed_public_urls: []
+          observed_public_urls: [],
+          generated_images: []
         },
         primaryReplyAlreadySent: false
       };
@@ -1092,7 +1094,8 @@ function mergeSourceCatalogObservations(
     observed_public_urls: dedupeStrings([
       ...observations.observed_public_urls,
       ...catalogUrls
-    ])
+    ]),
+    generated_images: observations.generated_images
   };
 }
 

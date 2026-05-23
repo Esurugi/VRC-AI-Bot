@@ -8,6 +8,7 @@ import {
 } from "../../discord/message-utils.js";
 import { resolveActorRole, resolveScope } from "../../discord/facts.js";
 import type { AppConfig } from "../../domain/types.js";
+import { isClearExplanationPlace } from "../../domain/place-features.js";
 import { OrderedMessageQueue } from "../../queue/ordered-message-queue.js";
 import { ChatChannelCounterService } from "../chat/chat-channel-counter-service.js";
 import {
@@ -48,6 +49,13 @@ export class MessageIntakeService {
     }
 
     const typedMessage = message as Message<true>;
+    if (
+      isClearExplanationPlace(watchLocation) &&
+      !typedMessage.channel.isThread()
+    ) {
+      return;
+    }
+
     const forumHandling = await this.forumThreadService.evaluateMessage(
       typedMessage,
       watchLocation

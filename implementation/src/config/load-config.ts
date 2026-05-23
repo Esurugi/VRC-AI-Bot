@@ -26,7 +26,8 @@ import {
 const PRIMARY_PLACE_FEATURES = [
   "knowledge_ingest",
   "admin_override",
-  "forum_research"
+  "forum_research",
+  "clear_explanation"
 ] as const;
 
 const envSchema = z.object({
@@ -346,6 +347,7 @@ function isChatRuntimeControlledLocation(location: WatchLocationConfig): boolean
     !hasPlaceFeature(location, "knowledge_ingest") &&
     !hasPlaceFeature(location, "admin_override") &&
     !hasPlaceFeature(location, "forum_research") &&
+    !hasPlaceFeature(location, "clear_explanation") &&
     resolvePlaceChatBehavior(location) !== null
   );
 }

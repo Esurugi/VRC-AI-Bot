@@ -1,16 +1,24 @@
 import { Collection, ChannelType, type Message } from "discord.js";
 
+export type FakeDiscordAttachment = {
+  name: string | null;
+  description: string | null;
+  attachment: unknown;
+};
+
 export type FakeDiscordEvent =
   | {
       type: "reply";
       channelId: string;
       messageId: string;
       content: string;
+      files: FakeDiscordAttachment[];
     }
   | {
       type: "send";
       channelId: string;
       content: string;
+      files: FakeDiscordAttachment[];
     }
   | {
       type: "edit";
@@ -51,6 +59,12 @@ export class FakeDiscordSink {
     return this.events
       .filter((event) => event.type === "reply" || event.type === "send")
       .map((event) => event.content);
+  }
+
+  sentFiles(): FakeDiscordAttachment[] {
+    return this.events
+      .filter((event) => event.type === "reply" || event.type === "send")
+      .flatMap((event) => event.files);
   }
 }
 
@@ -151,14 +165,16 @@ export class FakeDiscordChannel {
     return this.thread;
   }
 
-  async send(input: string | { content?: string | null }): Promise<{
+  async send(input: string | { content?: string | null; files?: unknown[] }): Promise<{
     edit: (editInput: { content: string }) => Promise<void>;
   }> {
     const content = typeof input === "string" ? input : input.content ?? "";
+    const files = typeof input === "string" ? [] : normalizeFiles(input.files);
     this.sink.record({
       type: "send",
       channelId: this.id,
-      content
+      content,
+      files
     });
     return {
       edit: async (editInput) => {
@@ -257,12 +273,13 @@ export function createFakeMessage(input: {
       repliedUser: null
     },
     fetchReference: async () => null,
-    reply: async (replyInput: { content?: string | null }) => {
+    reply: async (replyInput: { content?: string | null; files?: unknown[] }) => {
       input.world.sink.record({
         type: "reply",
         channelId: input.channel.id,
         messageId: input.id,
-        content: replyInput.content ?? ""
+        content: replyInput.content ?? "",
+        files: normalizeFiles(replyInput.files)
       });
     },
     startThread: async (threadInput: { name: string }) =>
@@ -274,4 +291,31 @@ export function createFakeMessage(input: {
 
   void input.urls;
   return message as unknown as Message<true>;
+}
+
+function normalizeFiles(files: unknown[] | undefined): FakeDiscordAttachment[] {
+  return (files ?? []).map((file) => {
+    if (typeof file === "object" && file !== null) {
+      const candidate = file as {
+        name?: unknown;
+        description?: unknown;
+        attachment?: unknown;
+      };
+      return {
+        name: typeof candidate.name === "string" ? candidate.name : null,
+        description:
+          typeof candidate.description === "string"
+            ? candidate.description
+            : null,
+        attachment:
+          "attachment" in candidate ? candidate.attachment : candidate
+      };
+    }
+
+    return {
+      name: null,
+      description: null,
+      attachment: file
+    };
+  });
 }

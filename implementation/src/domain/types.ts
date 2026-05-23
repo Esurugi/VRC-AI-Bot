@@ -20,7 +20,8 @@ export const PLACE_FEATURE_VALUES = [
   "conversation",
   "knowledge_ingest",
   "admin_override",
-  "forum_research"
+  "forum_research",
+  "clear_explanation"
 ] as const;
 export type PlaceFeature = (typeof PLACE_FEATURE_VALUES)[number];
 

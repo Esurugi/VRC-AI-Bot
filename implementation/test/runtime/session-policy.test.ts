@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   CHAT_CONVERSATION_LOW_CODEX_MODEL_PROFILE,
+  CLEAR_EXPLANATION_CODEX_MODEL_PROFILE,
   DEFAULT_CODEX_MODEL_PROFILE,
   FORUM_LONGFORM_CODEX_MODEL_PROFILE,
   SessionPolicyResolver,
@@ -104,6 +105,40 @@ test("forum research feature resolves to forum thread session even when legacy m
   assert.equal(session.bindingKind, "thread");
   assert.equal(session.bindingId, "forum-thread");
   assert.equal(session.modelProfile, FORUM_LONGFORM_CODEX_MODEL_PROFILE);
+});
+
+test("clear explanation feature resolves to thread-lifetime high reasoning session", () => {
+  const resolver = new SessionPolicyResolver();
+  const session = resolver.resolveForMessage({
+    envelope: {
+      guildId: "guild",
+      channelId: "clear-thread",
+      messageId: "message",
+      authorId: "user",
+      placeType: "public_thread",
+      rawPlaceType: "PublicThread",
+      content: "初心者向けに図で説明して",
+      urls: [],
+      receivedAt: new Date().toISOString()
+    },
+    watchLocation: {
+      guildId: "guild",
+      channelId: "clear-root",
+      mode: "chat",
+      features: ["clear_explanation", "conversation"],
+      defaultScope: "server_public",
+      chatBehavior: null
+    },
+    actorRole: "user",
+    scope: "server_public",
+    workspaceWriteActive: false
+  });
+
+  assert.equal(session.workloadKind, "clear_explanation");
+  assert.equal(session.bindingKind, "thread");
+  assert.equal(session.bindingId, "clear-thread");
+  assert.equal(session.lifecyclePolicy, "thread_lifetime");
+  assert.equal(session.modelProfile, CLEAR_EXPLANATION_CODEX_MODEL_PROFILE);
 });
 
 test("knowledge ingest feature resolves to knowledge policy even when legacy mode says chat", () => {

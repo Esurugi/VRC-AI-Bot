@@ -140,7 +140,11 @@ export class SessionManager {
     threadId: string
   ): Promise<{ threadId: string; startedFresh: boolean }> {
     try {
-      await this.codexClient.resumeThread(threadId, identity.sandboxMode);
+      await this.codexClient.resumeThread(
+        threadId,
+        identity.sandboxMode,
+        buildThreadInstructionOptions(identity)
+      );
       appendRuntimeTrace("codex-app-server", "session_resumed", {
         session_identity: identity.sessionIdentity,
         workload_kind: identity.workloadKind,
@@ -171,7 +175,11 @@ export class SessionManager {
     threadId: string
   ): Promise<{ threadId: string; startedFresh: boolean }> {
     try {
-      await this.codexClient.resumeThread(threadId, identity.sandboxMode);
+      await this.codexClient.resumeThread(
+        threadId,
+        identity.sandboxMode,
+        buildThreadInstructionOptions(identity)
+      );
       this.liveSessions.set(identity.sessionIdentity, {
         threadId,
         generation: this.cachedGeneration
@@ -206,7 +214,8 @@ export class SessionManager {
     const executionProfile = resolveCodexExecutionProfile(identity.modelProfile);
     const threadId = await this.codexClient.startThread(
       identity.sandboxMode,
-      executionProfile
+      executionProfile,
+      buildThreadInstructionOptions(identity)
     );
     this.bindSession(identity, threadId);
     appendRuntimeTrace("codex-app-server", "session_started", {
@@ -228,7 +237,8 @@ export class SessionManager {
     const executionProfile = resolveCodexExecutionProfile(identity.modelProfile);
     const threadId = await this.codexClient.startThread(
       identity.sandboxMode,
-      executionProfile
+      executionProfile,
+      buildThreadInstructionOptions(identity)
     );
     appendRuntimeTrace("codex-app-server", "session_started", {
       session_identity: identity.sessionIdentity,
@@ -243,4 +253,12 @@ export class SessionManager {
       startedFresh: true
     };
   }
+}
+
+function buildThreadInstructionOptions(identity: ResolvedSessionIdentity): {
+  includeClearExplanationSkill: boolean;
+} {
+  return {
+    includeClearExplanationSkill: identity.workloadKind === "clear_explanation"
+  };
 }

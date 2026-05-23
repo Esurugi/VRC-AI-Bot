@@ -1,7 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
+  buildHarnessDeveloperInstructions,
   HARNESS_DEVELOPER_INSTRUCTIONS,
   __testOnly
 } from "../../src/codex/app-server-client.js";
@@ -121,6 +125,22 @@ test("harness instructions explain ambient room chat handling", () => {
     HARNESS_DEVELOPER_INSTRUCTIONS,
     /Do not create fixed wording triggers for admin diagnostics/
   );
+  assert.match(
+    HARNESS_DEVELOPER_INSTRUCTIONS,
+    /features includes clear_explanation.*explaining-clearly/
+  );
+  assert.match(
+    HARNESS_DEVELOPER_INSTRUCTIONS,
+    /use image generation only when a diagram materially helps/
+  );
+  assert.match(
+    HARNESS_DEVELOPER_INSTRUCTIONS,
+    /explicitly asks for an image, diagram, visual, Image2, or a generated figure/
+  );
+  assert.match(
+    HARNESS_DEVELOPER_INSTRUCTIONS,
+    /Do not satisfy that request with an ASCII diagram/
+  );
 });
 
 test("harness instructions preserve override pre-edit gates", () => {
@@ -138,6 +158,42 @@ test("harness instructions preserve override pre-edit gates", () => {
   assert.match(HARNESS_DEVELOPER_INSTRUCTIONS, /boundary review gate/i);
   assert.match(HARNESS_DEVELOPER_INSTRUCTIONS, /changed files/i);
   assert.match(HARNESS_DEVELOPER_INSTRUCTIONS, /verification commands/i);
+});
+
+test("clear explanation sessions inline the explaining-clearly skill", () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "vrc-ai-bot-skill-inline-"));
+  const skillRoot = join(repoRoot, ".agents", "skills", "explaining-clearly");
+  mkdirSync(join(skillRoot, "references"), { recursive: true });
+  writeFileSync(
+    join(skillRoot, "SKILL.md"),
+    "Image2 を使う。透明背景が必要なら透明指定を前提にしない。",
+    "utf8"
+  );
+  writeFileSync(
+    join(skillRoot, "references", "clarity_principles.md"),
+    "透明背景の注意を含む原理。",
+    "utf8"
+  );
+
+  const instructions = buildHarnessDeveloperInstructions(repoRoot, {
+    includeClearExplanationSkill: true
+  });
+
+  assert.match(
+    instructions,
+    /The explaining-clearly skill is already loaded below/
+  );
+  assert.match(
+    instructions,
+    /Loaded workspace-local skill: explaining-clearly\/SKILL\.md/
+  );
+  assert.match(
+    instructions,
+    /Loaded workspace-local skill reference: explaining-clearly\/references\/clarity_principles\.md/
+  );
+  assert.match(instructions, /Do not run shell commands just to read that skill/);
+  assert.match(instructions, /透明背景/);
+  assert.match(instructions, /Image2/);
 });
 
 test("observed public URLs require public-source-fetch command output", () => {
@@ -227,4 +283,49 @@ test("public-source-fetch observations reject shell-spoofed commands", () => {
   );
 
   assert.deepEqual(observed, []);
+});
+
+test("generated image observations include app-server imageGeneration items", () => {
+  const images = __testOnly.extractGeneratedImagesFromTurnItems([
+    {
+      type: "imageGeneration",
+      id: "structured-image",
+      status: "completed",
+      result: "iVBORw0KGgo=",
+      revisedPrompt: "diagram"
+    }
+  ]);
+
+  assert.deepEqual(images, [
+    {
+      origin: "imageGeneration",
+      id: "structured-image",
+      status: "completed",
+      mime_type: "image/png",
+      filename: "structured-image.png",
+      data_base64: "iVBORw0KGgo="
+    }
+  ]);
+});
+
+test("generated image observations include raw image_generation_call items", () => {
+  const images = __testOnly.extractGeneratedImagesFromTurnItems([
+    {
+      type: "image_generation_call",
+      id: "raw-image",
+      status: "completed",
+      result: "data:image/webp;base64,AAAA"
+    }
+  ]);
+
+  assert.deepEqual(images, [
+    {
+      origin: "image_generation_call",
+      id: "raw-image",
+      status: "completed",
+      mime_type: "image/webp",
+      filename: "raw-image.webp",
+      data_base64: "AAAA"
+    }
+  ]);
 });

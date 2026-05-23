@@ -22,12 +22,18 @@ export type ScriptedCodexEvent =
       type: "intent";
       phase: HarnessRequest["task"]["phase"];
       mode: HarnessRequest["place"]["mode"];
+      sessionIdentity: string | null;
+      workloadKind: string | null;
+      modelProfile: string | null;
     }
   | {
       type: "answer";
       phase: HarnessRequest["task"]["phase"];
       mode: HarnessRequest["place"]["mode"];
       retryKind: string | null;
+      sessionIdentity: string | null;
+      workloadKind: string | null;
+      modelProfile: string | null;
     }
   | {
       type: "streamingFinal";
@@ -47,7 +53,8 @@ export class ScriptedCodexClient {
   private readonly answerQueue: AnswerTurn[] = [];
   private streamingText = "forum final";
   private streamingObservations: TurnObservations = {
-    observed_public_urls: []
+    observed_public_urls: [],
+    generated_images: []
   };
 
   enqueueIntent(response: HarnessIntentResponse): void {
@@ -64,7 +71,8 @@ export class ScriptedCodexClient {
   }): void {
     this.streamingText = input.text;
     this.streamingObservations = input.observations ?? {
-      observed_public_urls: []
+      observed_public_urls: [],
+      generated_images: []
     };
   }
 
@@ -110,13 +118,17 @@ export class ScriptedCodexClient {
 
   async runHarnessIntentRequest(
     _threadId: string,
-    request: HarnessRequest
+    request: HarnessRequest,
+    sessionMetadata?: HarnessTurnSessionMetadata
   ): Promise<HarnessIntentResponse> {
     this.requests.push(request);
     this.events.push({
       type: "intent",
       phase: request.task.phase,
-      mode: request.place.mode
+      mode: request.place.mode,
+      sessionIdentity: sessionMetadata?.sessionIdentity ?? null,
+      workloadKind: sessionMetadata?.workloadKind ?? null,
+      modelProfile: sessionMetadata?.modelProfile ?? null
     });
     const response = this.intentQueue.shift();
     if (!response) {
@@ -127,7 +139,8 @@ export class ScriptedCodexClient {
 
   async runHarnessRequest(
     _threadId: string,
-    request: HarnessRequest
+    request: HarnessRequest,
+    sessionMetadata?: HarnessTurnSessionMetadata
   ): Promise<{
     response: HarnessResponse;
     observations: TurnObservations;
@@ -137,7 +150,10 @@ export class ScriptedCodexClient {
       type: "answer",
       phase: request.task.phase,
       mode: request.place.mode,
-      retryKind: request.task.retry_context?.kind ?? null
+      retryKind: request.task.retry_context?.kind ?? null,
+      sessionIdentity: sessionMetadata?.sessionIdentity ?? null,
+      workloadKind: sessionMetadata?.workloadKind ?? null,
+      modelProfile: sessionMetadata?.modelProfile ?? null
     });
     const turn = this.answerQueue.shift();
     if (!turn) {
@@ -146,7 +162,8 @@ export class ScriptedCodexClient {
     return {
       response: turn.response,
       observations: turn.observations ?? {
-        observed_public_urls: []
+        observed_public_urls: [],
+        generated_images: []
       }
     };
   }
@@ -166,7 +183,8 @@ export class ScriptedCodexClient {
           prompt_rationale_summary: "test prompt"
         },
         observations: {
-          observed_public_urls: []
+          observed_public_urls: [],
+          generated_images: []
         },
         turnId: null
       };
@@ -182,7 +200,8 @@ export class ScriptedCodexClient {
           final_brief: "finalize from current public context"
         },
         observations: {
-          observed_public_urls: []
+          observed_public_urls: [],
+          generated_images: []
         },
         turnId: null
       };
@@ -210,7 +229,8 @@ export class ScriptedCodexClient {
           citations: []
         },
         observations: {
-          observed_public_urls: []
+          observed_public_urls: [],
+          generated_images: []
         },
         turnId: null
       }),

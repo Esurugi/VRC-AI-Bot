@@ -11,9 +11,11 @@ import type { RetrySchedulerService } from "../../app/retry-scheduler-service.js
 import type { ModerationExecutor } from "../../discord/moderation-executor.js";
 import { writeDiscordRuntimeSnapshot } from "../../discord/runtime-facts.js";
 import {
+  isClearExplanationPlace,
   isConversationPlace,
   isForumResearchPlace
 } from "../../domain/place-features.js";
+import { isThreadEnvelope } from "../../domain/response-boundary.js";
 import type { AppConfig } from "../../domain/types.js";
 import { HarnessRunner } from "../../harness/harness-runner.js";
 import { appendRuntimeTrace } from "../../observability/runtime-trace.js";
@@ -68,6 +70,13 @@ export class MessageProcessingService {
   ) {}
 
   async process(item: QueuedMessage): Promise<void> {
+    if (
+      isClearExplanationPlace(item.watchLocation) &&
+      !isThreadEnvelope(item.envelope)
+    ) {
+      return;
+    }
+
     const acquired = this.store.messageProcessing.tryAcquire(
       item.envelope.messageId,
       item.envelope.channelId,

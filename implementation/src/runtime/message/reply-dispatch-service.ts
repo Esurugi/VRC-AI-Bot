@@ -1,8 +1,10 @@
 import {
+  AttachmentBuilder,
   ChannelType,
   ThreadAutoArchiveDuration,
   type AnyThreadChannel,
   type Channel,
+  type GuildTextBasedChannel,
   type NewsChannel,
   type TextChannel
 } from "discord.js";
@@ -24,6 +26,7 @@ import {
   type HarnessRunner
 } from "../../harness/harness-runner.js";
 import type { HarnessResponse } from "../../harness/contracts.js";
+import type { GeneratedImageArtifact } from "../../codex/app-server-client.js";
 import {
   canonicalizeUrl,
   isAllowedPublicHttpUrl
@@ -90,6 +93,7 @@ export class ReplyDispatchService {
         },
         routed.response
       );
+      await this.sendGeneratedImagesInSamePlace(item, routed.generatedImages);
       return buildSamePlaceReplyTarget(item);
     }
 
@@ -97,7 +101,8 @@ export class ReplyDispatchService {
       item,
       routed.response,
       routed.session,
-      routed.knowledgePersistenceScope
+      routed.knowledgePersistenceScope,
+      routed.generatedImages
     );
   }
 
@@ -105,7 +110,8 @@ export class ReplyDispatchService {
     item: QueuedMessage,
     response: HarnessResponse,
     session: HarnessResolvedSession,
-    knowledgePersistenceScope: Scope | null
+    knowledgePersistenceScope: Scope | null,
+    generatedImages: GeneratedImageArtifact[] = []
   ): Promise<FailureReplyTarget> {
     return this.dispatchHarnessResponseWithContext(
       {
@@ -118,6 +124,8 @@ export class ReplyDispatchService {
         replyInSamePlace: async (content) => this.replyInSamePlace(item, content),
         sendFollowupInSamePlace: async (content) =>
           this.sendFollowupInSamePlace(item, content),
+        sendGeneratedImagesInSamePlace: async (images) =>
+          this.sendGeneratedImagesInSamePlace(item, images),
         resolveSamePlaceReplyTarget: () => buildSamePlaceReplyTarget(item),
         sendToExistingThread: async (content, threadId) => {
           const channel = await this.fetchReplyChannel(threadId);
@@ -130,7 +138,8 @@ export class ReplyDispatchService {
       },
       response,
       session,
-      knowledgePersistenceScope
+      knowledgePersistenceScope,
+      generatedImages
     );
   }
 
@@ -140,6 +149,7 @@ export class ReplyDispatchService {
     response: HarnessResponse;
     session: HarnessResolvedSession;
     knowledgePersistenceScope: Scope | null;
+    generatedImages?: GeneratedImageArtifact[];
   }): Promise<FailureReplyTarget> {
     return this.dispatchHarnessResponseWithContext(
       input.messageContext,
@@ -147,6 +157,8 @@ export class ReplyDispatchService {
         replyInSamePlace: async (content) => this.sendChunksToChannel(input.channel, content),
         sendFollowupInSamePlace: async (content) =>
           this.sendChunksToChannel(input.channel, content),
+        sendGeneratedImagesInSamePlace: async (images) =>
+          this.sendGeneratedImagesToChannel(input.channel, images),
         resolveSamePlaceReplyTarget: () => ({
           channelId: input.channel.id,
           threadId: input.channel.id
@@ -161,7 +173,8 @@ export class ReplyDispatchService {
       },
       input.response,
       input.session,
-      input.knowledgePersistenceScope
+      input.knowledgePersistenceScope,
+      input.generatedImages ?? []
     );
   }
 
@@ -170,13 +183,17 @@ export class ReplyDispatchService {
     dispatchTarget: {
       replyInSamePlace: (content: string) => Promise<void>;
       sendFollowupInSamePlace: (content: string) => Promise<void>;
+      sendGeneratedImagesInSamePlace: (
+        images: GeneratedImageArtifact[]
+      ) => Promise<void>;
       resolveSamePlaceReplyTarget: () => FailureReplyTarget;
       sendToExistingThread: (content: string, threadId: string) => Promise<void>;
       resolveKnowledgeThread: () => Promise<AnyThreadChannel>;
     },
     response: HarnessResponse,
     session: HarnessResolvedSession,
-    knowledgePersistenceScope: Scope | null
+    knowledgePersistenceScope: Scope | null,
+    generatedImages: GeneratedImageArtifact[]
   ): Promise<FailureReplyTarget> {
     this.dependencies.logger.debug(
       {
@@ -249,6 +266,7 @@ export class ReplyDispatchService {
             response
           );
         }
+        await dispatchTarget.sendGeneratedImagesInSamePlace(generatedImages);
         return dispatchTarget.resolveSamePlaceReplyTarget();
       case "failure":
         await dispatchTarget.replyInSamePlace(
@@ -448,6 +466,35 @@ export class ReplyDispatchService {
       channelId: item.envelope.channelId,
       watchMode: item.watchLocation.mode,
       chunkCount: chunks.length
+    });
+  }
+
+  async sendGeneratedImagesInSamePlace(
+    item: QueuedMessage,
+    images: GeneratedImageArtifact[]
+  ): Promise<void> {
+    await this.sendGeneratedImagesToChannel(item.message.channel, images);
+  }
+
+  async sendGeneratedImagesToChannel(
+    channel: GuildTextBasedChannel,
+    images: GeneratedImageArtifact[]
+  ): Promise<void> {
+    if (images.length === 0) {
+      return;
+    }
+
+    const files = images.map(
+      (image) =>
+        new AttachmentBuilder(Buffer.from(image.data_base64, "base64"), {
+          name: image.filename
+        })
+    );
+    await channel.send({
+      files,
+      allowedMentions: {
+        parse: []
+      }
     });
   }
 

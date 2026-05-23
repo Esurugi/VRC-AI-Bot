@@ -45,6 +45,7 @@ function isChatRuntimeControlledPlace(
     !hasPlaceFeature(watchLocation, "knowledge_ingest") &&
     !hasPlaceFeature(watchLocation, "admin_override") &&
     !hasPlaceFeature(watchLocation, "forum_research") &&
+    !hasPlaceFeature(watchLocation, "clear_explanation") &&
     resolvePlaceChatBehavior(watchLocation) !== null
   );
 }

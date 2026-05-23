@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { FailureClassifier } from "../../src/app/failure-classifier.js";
 import { NOOP_BOT_MODERATION_INTEGRATION } from "../../src/app/moderation-integration.js";
 import type { RetrySchedulerService } from "../../src/app/retry-scheduler-service.js";
+import type { TurnObservations } from "../../src/codex/app-server-client.js";
 import { SessionManager } from "../../src/codex/session-manager.js";
 import { SessionPolicyResolver } from "../../src/codex/session-policy.js";
 import type { ModerationExecutor } from "../../src/discord/moderation-executor.js";
@@ -28,6 +29,7 @@ import { SqliteStore } from "../../src/storage/sqlite-store.js";
 import {
   FakeDiscordWorld,
   createFakeMessage,
+  type FakeDiscordAttachment,
   type FakeDiscordChannel,
   type FakeDiscordEvent
 } from "../support/fake-discord-sink.js";
@@ -44,6 +46,16 @@ const logger = {
   warn: () => {},
   error: () => {}
 } as never;
+
+const CLEAR_EXPLANATION_ROOT_CHANNEL_ID = "1507630781479260230";
+const STRUCTURED_IMAGE_BASE64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+const RAW_IMAGE_BASE64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAAC0lEQVR42mP8z8AABQMBgY8n8N8AAAAASUVORK5CYII=";
+const FIRST_TURN_IMAGE_BASE64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mO8dOnSfwAJigNfR4Cw5QAAAABJRU5ErkJggg==";
+const RETRY_TURN_IMAGE_BASE64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QzwAEjDAGjWQJxwAAAABJRU5ErkJggg==";
 
 test("AE-E2E-01 url_watch root URL creates one public knowledge thread and sends the public summary there", async (t) => {
   const workflow = createWorkflow(t);
@@ -784,6 +796,217 @@ test("forum_research feature with chat mode still uses forum research flow", asy
   );
 });
 
+test("clear_explanation root channel messages are ignored without guidance or harness routing", async (t) => {
+  const workflow = createWorkflow(t);
+  const root = workflow.world.createTextChannel({
+    id: CLEAR_EXPLANATION_ROOT_CHANNEL_ID
+  });
+
+  await workflow.processMessage({
+    id: "message-clear-explanation-root",
+    channel: root,
+    content: "初心者向けに MCP をわかりやすく解説して",
+    urls: [],
+    watchLocation: clearExplanationLocation()
+  });
+
+  assert.equal(workflow.codex.requests.length, 0);
+  assert.equal(workflow.eventsOf("reply").length, 0);
+  assert.equal(workflow.eventsOf("send").length, 0);
+  assert.equal(workflow.eventsOf("createThread").length, 0);
+});
+
+test("clear_explanation thread messages use a thread-lifetime high reasoning explanation session", async (t) => {
+  const workflow = createWorkflow(t);
+  const root = workflow.world.createTextChannel({
+    id: CLEAR_EXPLANATION_ROOT_CHANNEL_ID
+  });
+  const thread = workflow.world.createThread({
+    id: "clear-explanation-thread",
+    parent: root
+  });
+
+  workflow.codex.enqueueIntent(intent({ outcome: "chat_reply" }));
+  workflow.codex.enqueueAnswer({
+    response: response({
+      outcome: "chat_reply",
+      public_text: "用語を分けて、順番に説明します。",
+      sources_used: []
+    })
+  });
+
+  await workflow.processMessage({
+    id: "message-clear-explanation-thread",
+    channel: thread,
+    content: "RAG と fine tuning の違いを図解つきで教えて",
+    urls: [],
+    watchLocation: clearExplanationLocation(),
+    placeType: "public_thread"
+  });
+
+  const answerEvent = workflow.codex.events.find(
+    (event) => event.type === "answer"
+  );
+
+  assert.equal(answerEvent?.workloadKind, "clear_explanation");
+  assert.equal(
+    answerEvent?.modelProfile,
+    "clear_explanation:gpt-5.5:high"
+  );
+  assert.match(answerEvent?.sessionIdentity ?? "", /workload=clear_explanation/);
+  assert.match(answerEvent?.sessionIdentity ?? "", /binding_kind=thread/);
+  assert.match(answerEvent?.sessionIdentity ?? "", /binding_id=clear-explanation-thread/);
+  assert.match(answerEvent?.sessionIdentity ?? "", /lifecycle=thread_lifetime/);
+  assert.deepEqual(
+    workflow.codex.requests.map((request) => ({
+      rootChannelId: request.place.root_channel_id,
+      threadId: request.place.thread_id,
+      threadKind: request.available_context.thread_context.kind,
+      features: request.available_context.place_context.features
+    })),
+    [
+      {
+        rootChannelId: CLEAR_EXPLANATION_ROOT_CHANNEL_ID,
+        threadId: "clear-explanation-thread",
+        threadKind: "plain_thread",
+        features: ["clear_explanation", "conversation"]
+      },
+      {
+        rootChannelId: CLEAR_EXPLANATION_ROOT_CHANNEL_ID,
+        threadId: "clear-explanation-thread",
+        threadKind: "plain_thread",
+        features: ["clear_explanation", "conversation"]
+      }
+    ]
+  );
+  assert.deepEqual(workflow.eventsOf("reply").map((event) => event.channelId), [
+    "clear-explanation-thread"
+  ]);
+});
+
+test("clear_explanation sends long plain text in Discord-safe chunks and attaches generated images from app-server results", async (t) => {
+  const workflow = createWorkflow(t);
+  const root = workflow.world.createTextChannel({
+    id: CLEAR_EXPLANATION_ROOT_CHANNEL_ID
+  });
+  const thread = workflow.world.createThread({
+    id: "clear-explanation-image-thread",
+    parent: root
+  });
+  const longText = buildLongExplanationText();
+
+  workflow.codex.enqueueIntent(intent({ outcome: "chat_reply" }));
+  workflow.codex.enqueueAnswer({
+    response: response({
+      outcome: "chat_reply",
+      public_text: longText,
+      sources_used: []
+    }),
+    observations: imageGenerationObservations([
+      {
+        origin: "imageGeneration",
+        id: "structured-image",
+        filename: "clear-explanation-structured.png",
+        base64: STRUCTURED_IMAGE_BASE64
+      },
+      {
+        origin: "image_generation_call",
+        id: "raw-image",
+        filename: "clear-explanation-raw.png",
+        base64: RAW_IMAGE_BASE64
+      }
+    ])
+  });
+
+  await workflow.processMessage({
+    id: "message-clear-explanation-images",
+    channel: thread,
+    content: "仕組みを画像つきで順番に説明して",
+    urls: [],
+    watchLocation: clearExplanationLocation(),
+    placeType: "public_thread"
+  });
+
+  const visibleTextEvents: Array<{ content: string }> = [
+    ...workflow.eventsOf("reply"),
+    ...workflow.eventsOf("send")
+  ];
+  assert.ok(visibleTextEvents.length >= 2, "long replies must be split");
+  assert.equal(
+    visibleTextEvents.every((event) => event.content.length <= 1900),
+    true
+  );
+  assert.deepEqual(sentFileNames(workflow.sink.sentFiles()), [
+    "clear-explanation-structured.png",
+    "clear-explanation-raw.png"
+  ]);
+});
+
+test("clear_explanation output safety retry publishes only retry-turn generated images", async (t) => {
+  const workflow = createWorkflow(t);
+  const root = workflow.world.createTextChannel({
+    id: CLEAR_EXPLANATION_ROOT_CHANNEL_ID
+  });
+  const thread = workflow.world.createThread({
+    id: "clear-explanation-safety-thread",
+    parent: root
+  });
+
+  workflow.codex.enqueueIntent(intent({ outcome: "chat_reply" }));
+  workflow.codex.enqueueAnswer({
+    response: response({
+      outcome: "chat_reply",
+      public_text: "未観測ソースつきの初回説明です。",
+      sources_used: ["https://not-observed.example.com/unsafe"]
+    }),
+    observations: imageGenerationObservations([
+      {
+        origin: "imageGeneration",
+        id: "unsafe-first-image",
+        filename: "unsafe-first-turn.png",
+        base64: FIRST_TURN_IMAGE_BASE64
+      }
+    ])
+  });
+  workflow.codex.enqueueAnswer({
+    response: response({
+      outcome: "chat_reply",
+      public_text: "公開可能な範囲で説明し直します。",
+      sources_used: []
+    }),
+    observations: imageGenerationObservations([
+      {
+        origin: "imageGeneration",
+        id: "safe-retry-image",
+        filename: "safe-retry-turn.png",
+        base64: RETRY_TURN_IMAGE_BASE64
+      }
+    ])
+  });
+
+  await workflow.processMessage({
+    id: "message-clear-explanation-safety-retry",
+    channel: thread,
+    content: "画像つきで噛み砕いて説明して",
+    urls: [],
+    watchLocation: clearExplanationLocation(),
+    placeType: "public_thread"
+  });
+
+  assert.deepEqual(
+    workflow.codex.requests.map((request) => request.task.retry_context?.kind ?? request.task.phase),
+    ["intent", "answer", "output_safety"]
+  );
+  assert.deepEqual(sentFileNames(workflow.sink.sentFiles()), [
+    "safe-retry-turn.png"
+  ]);
+  assert.equal(
+    workflow.sink.sentTexts().some((content) => content.includes("未観測ソース")),
+    false,
+    "unsafe first-turn text must not be published"
+  );
+});
+
 // TODO(AE-E2E-06): override start/use/close needs the slash-command bootstrap
 // service plus override session storage in the same workflow fixture. Keep it as
 // a real E2E, not a helper call-count test: the oracle should be dedicated
@@ -821,7 +1044,8 @@ function createWorkflow(t: test.TestContext) {
     urlWatchLocation(),
     chatLocation(),
     adminLocation(),
-    forumLocation()
+    forumLocation(),
+    clearExplanationLocation()
   ];
   const replyDispatchService = new ReplyDispatchService({
     store,
@@ -996,6 +1220,55 @@ function forumFeatureChatLocation(): WatchLocationConfig {
     features: ["forum_research", "conversation"],
     chatBehavior: null
   };
+}
+
+function clearExplanationLocation(): WatchLocationConfig {
+  return {
+    guildId: "guild-1",
+    channelId: CLEAR_EXPLANATION_ROOT_CHANNEL_ID,
+    mode: "chat",
+    defaultScope: "server_public",
+    features: ["clear_explanation", "conversation"] as unknown as NonNullable<
+      WatchLocationConfig["features"]
+    >,
+    chatBehavior: null
+  };
+}
+
+function buildLongExplanationText(): string {
+  return [
+    "まず全体像です。",
+    "入力、処理、出力の三つに分けると、どこで何が起きているかを追いやすくなります。".repeat(20),
+    "次に具体例です。",
+    "利用者の質問を小さな単位に分け、必要な情報を集め、最後に読みやすい順番へ並べ直します。".repeat(20),
+    "最後に注意点です。",
+    "図は理解を助ける補助なので、本文と矛盾しない範囲で扱います。".repeat(20)
+  ].join("\n\n");
+}
+
+function imageGenerationObservations(
+  images: Array<{
+    origin: "imageGeneration" | "image_generation_call";
+    id: string;
+    filename: string;
+    base64: string;
+  }>
+): TurnObservations {
+  return {
+    observed_public_urls: [],
+    generated_images: images.map((image) => ({
+      origin: image.origin,
+      id: image.id,
+      status: "completed",
+      mime_type: "image/png",
+      filename: image.filename,
+      data_base64: image.base64
+    }))
+  } as unknown as TurnObservations;
+}
+
+function sentFileNames(files: FakeDiscordAttachment[]): string[] {
+  return files.map((file) => file.name).filter((name): name is string => name !== null);
 }
 
 function seedKnowledgeThread(store: SqliteStore, threadId: string): void {

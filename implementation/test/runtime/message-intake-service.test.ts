@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { shouldShowProcessingUi } from "../../src/runtime/message/processing-visibility.js";
+import {
+  shouldShowProcessingReaction,
+  shouldShowProcessingUi
+} from "../../src/runtime/message/processing-visibility.js";
 
 test("ambient room chat does not add a processing reaction", () => {
   assert.equal(
@@ -75,6 +78,23 @@ test("forum feature keeps the processing reaction even when legacy mode says cha
         mode: "chat",
         defaultScope: "server_public",
         features: ["forum_research", "conversation"],
+        chatBehavior: null
+      },
+      chatEngagement: null
+    }),
+    true
+  );
+});
+
+test("clear explanation feature keeps the processing reaction in dedicated threads", () => {
+  assert.equal(
+    shouldShowProcessingReaction({
+      watchLocation: {
+        guildId: "g1",
+        channelId: "c1",
+        mode: "chat",
+        defaultScope: "server_public",
+        features: ["clear_explanation", "conversation"],
         chatBehavior: null
       },
       chatEngagement: null

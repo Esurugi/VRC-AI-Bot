@@ -33,6 +33,12 @@ export function isForumResearchPlace(
   return hasPlaceFeature(watchLocation, "forum_research");
 }
 
+export function isClearExplanationPlace(
+  watchLocation: WatchLocationConfig
+): boolean {
+  return hasPlaceFeature(watchLocation, "clear_explanation");
+}
+
 export function isKnowledgeIngestPlace(
   watchLocation: WatchLocationConfig
 ): boolean {
@@ -65,6 +71,7 @@ export function isAmbientConversationPlace(
     isConversationPlace(watchLocation) &&
     !isKnowledgeIngestPlace(watchLocation) &&
     !isForumResearchPlace(watchLocation) &&
+    !isClearExplanationPlace(watchLocation) &&
     !hasPlaceFeature(watchLocation, "admin_override") &&
     resolvePlaceChatBehavior(watchLocation) === "ambient_room_chat"
   );
@@ -83,6 +90,10 @@ export function inferLegacyWatchModeFromFeatures(
 
   if (features.includes("forum_research")) {
     return "forum_longform";
+  }
+
+  if (features.includes("clear_explanation")) {
+    return "chat";
   }
 
   if (features.includes("knowledge_ingest")) {

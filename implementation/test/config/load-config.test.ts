@@ -27,6 +27,10 @@ test("loadConfig resolves feature profiles before assigning them to channels", (
         "research-forum": {
           features: ["forum_research", "conversation"],
           defaultScope: "server_public"
+        },
+        "clear-explanation": {
+          features: ["clear_explanation", "conversation"],
+          defaultScope: "server_public"
         }
       },
       assignments: [
@@ -49,6 +53,11 @@ test("loadConfig resolves feature profiles before assigning them to channels", (
           guildId: "guild",
           channelId: "forum-root",
           featureProfile: "research-forum"
+        },
+        {
+          guildId: "guild",
+          channelId: "clear-root",
+          featureProfile: "clear-explanation"
         }
       ]
     });
@@ -95,6 +104,14 @@ test("loadConfig resolves feature profiles before assigning them to channels", (
             featureProfileId: "research-forum",
             mode: "forum_longform",
             features: ["forum_research", "conversation"],
+            defaultScope: "server_public",
+            chatBehavior: null
+          },
+          {
+            channelId: "clear-root",
+            featureProfileId: "clear-explanation",
+            mode: "chat",
+            features: ["clear_explanation", "conversation"],
             defaultScope: "server_public",
             chatBehavior: null
           }
@@ -186,6 +203,36 @@ test("loadConfig rejects feature profiles with multiple primary features", () =>
       assert.throws(
         () => loadConfig(workspace),
         /feature profile: mixed declares multiple primary place features: knowledge_ingest, admin_override/
+      );
+    });
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("loadConfig treats clear explanation as a primary place feature", () => {
+  const workspace = createTempWorkspace();
+  try {
+    writeJson(join(workspace, "watch-locations.json"), {
+      featureProfiles: {
+        mixed: {
+          features: ["clear_explanation", "forum_research", "conversation"],
+          defaultScope: "conversation_only"
+        }
+      },
+      assignments: [
+        {
+          guildId: "guild",
+          channelId: "mixed-root",
+          featureProfile: "mixed"
+        }
+      ]
+    });
+
+    withEnv(workspace, () => {
+      assert.throws(
+        () => loadConfig(workspace),
+        /feature profile: mixed declares multiple primary place features: forum_research, clear_explanation/
       );
     });
   } finally {

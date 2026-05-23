@@ -13,6 +13,7 @@ import type {
 } from "../domain/types.js";
 import {
   hasPlaceFeature,
+  isClearExplanationPlace,
   isConversationPlace,
   isForumResearchPlace,
   isKnowledgeIngestPlace
@@ -155,6 +156,7 @@ function isConversationChannelPlace(
     isConversationPlace(watchLocation) &&
     !isKnowledgeIngestPlace(watchLocation) &&
     !isForumResearchPlace(watchLocation) &&
+    !isClearExplanationPlace(watchLocation) &&
     !hasPlaceFeature(watchLocation, "admin_override")
   );
 }

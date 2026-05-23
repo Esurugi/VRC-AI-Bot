@@ -7,7 +7,8 @@ import {
   type ResolvedSessionIdentity
 } from "../codex/session-policy.js";
 import type {
-  CodexAppServerClient
+  CodexAppServerClient,
+  GeneratedImageArtifact
 } from "../codex/app-server-client.js";
 import type {
   ActorRole,
@@ -120,6 +121,7 @@ export class HarnessRunner {
     moderationSignal: HarnessIntentResponse["moderation_signal"];
     violationCounterSuspended: boolean;
     primaryReplyAlreadySent: boolean;
+    generatedImages: GeneratedImageArtifact[];
   }> {
     const normalizedInput = {
       ...input,
@@ -191,6 +193,7 @@ export class HarnessRunner {
         knowledgePersistenceScope: null,
         moderationSignal: intent.moderation_signal,
         primaryReplyAlreadySent: false,
+        generatedImages: [],
         violationCounterSuspended: Boolean(
           overrideContext.active &&
             overrideContext.sameActor &&
@@ -272,6 +275,7 @@ export class HarnessRunner {
       knowledgePersistenceScope,
       moderationSignal: intent.moderation_signal,
       primaryReplyAlreadySent: answerFlow.primaryReplyAlreadySent,
+      generatedImages: answerFlow.generatedImages,
       violationCounterSuspended: Boolean(
         overrideContext.active &&
           overrideContext.sameActor &&
@@ -290,6 +294,7 @@ export class HarnessRunner {
     response: HarnessResponse;
     primaryReplyAlreadySent: boolean;
     approvedEvidenceUrls: string[];
+    generatedImages: GeneratedImageArtifact[];
   }> {
     const linkedKnowledgeSources = input.threadContext.knowledgeEntries.map((entry) => ({
       sourceId: entry.sourceId,
@@ -388,7 +393,8 @@ export class HarnessRunner {
         return {
           response: buildKnowledgeThreadFailure(input.input),
           primaryReplyAlreadySent: false,
-          approvedEvidenceUrls: []
+          approvedEvidenceUrls: [],
+          generatedImages: []
         };
       }
     }
@@ -410,7 +416,8 @@ export class HarnessRunner {
       return {
         response,
         primaryReplyAlreadySent: firstTurn.primaryReplyAlreadySent,
-        approvedEvidenceUrls: extractApprovedPublicUrls(firstEvaluation.allowedSources)
+        approvedEvidenceUrls: extractApprovedPublicUrls(firstEvaluation.allowedSources),
+        generatedImages: observations.generated_images
       };
     }
 
@@ -418,7 +425,8 @@ export class HarnessRunner {
       return {
         response: buildOutputSafetyRefusal(input.input, firstEvaluation.reason),
         primaryReplyAlreadySent: false,
-        approvedEvidenceUrls: []
+        approvedEvidenceUrls: [],
+        generatedImages: []
       };
     }
 
@@ -505,20 +513,23 @@ export class HarnessRunner {
         return {
           response: buildKnowledgeThreadFailure(input.input),
           primaryReplyAlreadySent: false,
-          approvedEvidenceUrls: []
+          approvedEvidenceUrls: [],
+          generatedImages: []
         };
       }
       return {
         response: secondPass,
         primaryReplyAlreadySent: false,
-        approvedEvidenceUrls: extractApprovedPublicUrls(secondEvaluation.allowedSources)
+        approvedEvidenceUrls: extractApprovedPublicUrls(secondEvaluation.allowedSources),
+        generatedImages: secondTurn.observations.generated_images
       };
     }
 
     return {
       response: buildOutputSafetyRefusal(input.input, secondEvaluation.reason),
       primaryReplyAlreadySent: false,
-      approvedEvidenceUrls: []
+      approvedEvidenceUrls: [],
+      generatedImages: []
     };
   }
 
