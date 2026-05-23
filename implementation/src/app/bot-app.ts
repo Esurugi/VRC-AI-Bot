@@ -3,64 +3,36 @@ import { once } from "node:events";
 
 import {
   ChannelType,
-  Client,
   Events,
-  GatewayIntentBits,
   type Channel,
   type ChatInputCommandInteraction,
   type Message,
   type NewsChannel,
   type TextChannel
 } from "discord.js";
-import pino, { type Logger } from "pino";
 
-import { CodexAppServerClient } from "../codex/app-server-client.js";
-import { SessionManager } from "../codex/session-manager.js";
-import { SessionPolicyResolver } from "../codex/session-policy.js";
-import { DiscordModerationExecutor } from "../discord/moderation-executor.js";
-import { buildSanctionStateChangeReply } from "./replies.js";
+import {
+  createBotApplicationDependencies,
+  type BotApplicationDependencies,
+  type BotApplicationResolvedDependencies
+} from "./bot-application-dependencies.js";
 import { loadConfig } from "../config/load-config.js";
 import type { AppConfig } from "../domain/types.js";
-import { HarnessRunner } from "../harness/harness-runner.js";
-import { OrderedMessageQueue } from "../queue/ordered-message-queue.js";
-import { SqliteStore } from "../storage/database.js";
-import { FailureClassifier } from "./failure-classifier.js";
-import type {
-  BotModerationIntegration,
-  PostResponseModerationInput,
-  SanctionNotificationPayload
-} from "./moderation-integration.js";
-import { createBotModerationIntegration } from "./sanction-policy-service.js";
-import { RetrySchedulerService } from "./retry-scheduler-service.js";
-import { AdminCommandService } from "../runtime/admin/admin-command-service.js";
-import { AdminOverrideBootstrapService } from "../runtime/admin/admin-override-bootstrap-service.js";
-import { OverrideBootstrapPromptContextService } from "../runtime/admin/override-bootstrap-prompt-context-service.js";
 import {
   buildOverrideCommandDefinitions,
   mergeOverrideCommandDefinitions
 } from "../runtime/admin/admin-command-service.js";
-import { ChatChannelCounterService } from "../runtime/chat/chat-channel-counter-service.js";
-import { ChatEngagementPolicy } from "../runtime/chat/chat-engagement-policy.js";
-import { ChatRuntimeControlService } from "../runtime/chat/chat-runtime-control-service.js";
-import { RecentChatHistoryService } from "../runtime/chat/recent-chat-history-service.js";
-import { ForumFirstTurnPreprocessor } from "../runtime/forum/forum-first-turn-preprocessor.js";
-import { ForumResearchPromptRefiner } from "../runtime/forum/forum-research-prompt-refiner.js";
-import { ForumResearchSupervisor } from "../runtime/forum/forum-research-supervisor.js";
-import { ForumThreadService } from "../runtime/forum/forum-thread-service.js";
-import { MessageIntakeService } from "../runtime/message/message-intake-service.js";
-import { MessageProcessingService } from "../runtime/message/message-processing-service.js";
-import { PlainTextAttachmentService } from "../runtime/message/plain-text-attachment-service.js";
+import { buildSanctionStateChangeReply } from "../runtime/message/replies.js";
 import {
   findAdminControlWatchLocation,
   ReplyDispatchService,
   resolveKnowledgeIngestRouting
 } from "../runtime/message/reply-dispatch-service.js";
-import { StartupMessageRecoveryService } from "../runtime/message/startup-message-recovery-service.js";
-import { RetryJobRunner } from "../runtime/scheduling/retry-job-runner.js";
-import {
-  resolveNextWeeklyMeetupAnnouncementAt,
-  WeeklyMeetupAnnouncementService
-} from "../runtime/scheduling/weekly-meetup-announcement-service.js";
+import type {
+  PostResponseModerationInput,
+  SanctionNotificationPayload
+} from "../runtime/moderation/moderation-integration.js";
+import { resolveNextWeeklyMeetupAnnouncementAt } from "../runtime/scheduling/weekly-meetup-announcement-service.js";
 import type { QueuedMessage, RoutedHarnessMessage } from "../runtime/types.js";
 
 const RUNTIME_LOCK_LEASE_MS = 30_000;
@@ -73,74 +45,39 @@ export {
   resolveKnowledgeIngestRouting
 };
 
-type BotApplicationDependencies = {
-  client?: Client;
-  logger?: Logger;
-  store?: SqliteStore;
-  codexClient?: CodexAppServerClient;
-  sessionPolicyResolver?: SessionPolicyResolver;
-  sessionManager?: SessionManager;
-  harnessRunner?: HarnessRunner;
-  failureClassifier?: FailureClassifier;
-  retryScheduler?: RetrySchedulerService;
-  moderationExecutor?: DiscordModerationExecutor;
-  moderationIntegration?: BotModerationIntegration;
-  replyDispatchService?: ReplyDispatchService;
-  messageProcessingService?: MessageProcessingService;
-  messageIntakeService?: MessageIntakeService;
-  startupMessageRecoveryService?: StartupMessageRecoveryService;
-  retryJobRunner?: RetryJobRunner;
-  adminCommandService?: AdminCommandService;
-  adminOverrideBootstrapService?: AdminOverrideBootstrapService;
-  overrideBootstrapPromptContextService?: OverrideBootstrapPromptContextService;
-  chatChannelCounterService?: ChatChannelCounterService;
-  chatEngagementPolicy?: ChatEngagementPolicy;
-  chatRuntimeControlService?: ChatRuntimeControlService;
-  recentChatHistoryService?: RecentChatHistoryService;
-  forumFirstTurnPreprocessor?: ForumFirstTurnPreprocessor;
-  forumResearchPromptRefiner?: ForumResearchPromptRefiner;
-  forumResearchSupervisor?: ForumResearchSupervisor;
-  forumThreadService?: ForumThreadService;
-  plainTextAttachmentService?: PlainTextAttachmentService;
-  weeklyMeetupAnnouncementService?: WeeklyMeetupAnnouncementService;
-  setTimeoutFn?: typeof setTimeout;
-  clearTimeoutFn?: typeof clearTimeout;
-  queue?: OrderedMessageQueue<QueuedMessage>;
-};
-
 export class BotApplication {
-  private readonly client: Client;
-  private readonly logger: Logger;
-  readonly store: SqliteStore;
-  private readonly codexClient: CodexAppServerClient;
-  private readonly sessionPolicyResolver: SessionPolicyResolver;
-  private readonly sessionManager: SessionManager;
-  private readonly harnessRunner: HarnessRunner;
-  private readonly failureClassifier: FailureClassifier;
-  private readonly retryScheduler: RetrySchedulerService;
-  private readonly moderationExecutor: DiscordModerationExecutor;
-  private readonly moderationIntegration: BotModerationIntegration;
-  private readonly replyDispatchService: ReplyDispatchService;
-  private readonly messageProcessingService: MessageProcessingService;
-  private readonly messageIntakeService: MessageIntakeService;
-  private readonly startupMessageRecoveryService: StartupMessageRecoveryService;
-  private readonly retryJobRunner: RetryJobRunner;
-  private readonly adminCommandService: AdminCommandService;
-  private readonly adminOverrideBootstrapService: AdminOverrideBootstrapService;
-  private readonly overrideBootstrapPromptContextService: OverrideBootstrapPromptContextService;
-  private readonly chatChannelCounterService: ChatChannelCounterService;
-  private readonly chatEngagementPolicy: ChatEngagementPolicy;
-  private readonly chatRuntimeControlService: ChatRuntimeControlService;
-  private readonly recentChatHistoryService: RecentChatHistoryService;
-  private readonly forumFirstTurnPreprocessor: ForumFirstTurnPreprocessor;
-  private readonly forumResearchPromptRefiner: ForumResearchPromptRefiner;
-  private readonly forumResearchSupervisor: ForumResearchSupervisor;
-  private readonly forumThreadService: ForumThreadService;
-  private readonly plainTextAttachmentService: PlainTextAttachmentService;
-  private readonly weeklyMeetupAnnouncementService: WeeklyMeetupAnnouncementService;
+  private readonly client: BotApplicationResolvedDependencies["client"];
+  private readonly logger: BotApplicationResolvedDependencies["logger"];
+  readonly store: BotApplicationResolvedDependencies["store"];
+  private readonly codexClient: BotApplicationResolvedDependencies["codexClient"];
+  private readonly sessionPolicyResolver: BotApplicationResolvedDependencies["sessionPolicyResolver"];
+  private readonly sessionManager: BotApplicationResolvedDependencies["sessionManager"];
+  private readonly harnessRunner: BotApplicationResolvedDependencies["harnessRunner"];
+  private readonly failureClassifier: BotApplicationResolvedDependencies["failureClassifier"];
+  private readonly retryScheduler: BotApplicationResolvedDependencies["retryScheduler"];
+  private readonly moderationExecutor: BotApplicationResolvedDependencies["moderationExecutor"];
+  private readonly moderationIntegration: BotApplicationResolvedDependencies["moderationIntegration"];
+  private readonly replyDispatchService: BotApplicationResolvedDependencies["replyDispatchService"];
+  private readonly messageProcessingService: BotApplicationResolvedDependencies["messageProcessingService"];
+  private readonly messageIntakeService: BotApplicationResolvedDependencies["messageIntakeService"];
+  private readonly startupMessageRecoveryService: BotApplicationResolvedDependencies["startupMessageRecoveryService"];
+  private readonly retryJobRunner: BotApplicationResolvedDependencies["retryJobRunner"];
+  private readonly adminCommandService: BotApplicationResolvedDependencies["adminCommandService"];
+  private readonly adminOverrideBootstrapService: BotApplicationResolvedDependencies["adminOverrideBootstrapService"];
+  private readonly overrideBootstrapPromptContextService: BotApplicationResolvedDependencies["overrideBootstrapPromptContextService"];
+  private readonly chatChannelCounterService: BotApplicationResolvedDependencies["chatChannelCounterService"];
+  private readonly chatEngagementPolicy: BotApplicationResolvedDependencies["chatEngagementPolicy"];
+  private readonly chatRuntimeControlService: BotApplicationResolvedDependencies["chatRuntimeControlService"];
+  private readonly recentChatHistoryService: BotApplicationResolvedDependencies["recentChatHistoryService"];
+  private readonly forumFirstTurnPreprocessor: BotApplicationResolvedDependencies["forumFirstTurnPreprocessor"];
+  private readonly forumResearchPromptRefiner: BotApplicationResolvedDependencies["forumResearchPromptRefiner"];
+  private readonly forumResearchSupervisor: BotApplicationResolvedDependencies["forumResearchSupervisor"];
+  private readonly forumThreadService: BotApplicationResolvedDependencies["forumThreadService"];
+  private readonly plainTextAttachmentService: BotApplicationResolvedDependencies["plainTextAttachmentService"];
+  private readonly weeklyMeetupAnnouncementService: BotApplicationResolvedDependencies["weeklyMeetupAnnouncementService"];
   private readonly setTimeoutFn: typeof setTimeout;
   private readonly clearTimeoutFn: typeof clearTimeout;
-  private readonly queue: OrderedMessageQueue<QueuedMessage>;
+  private readonly queue: BotApplicationResolvedDependencies["queue"];
   private readonly runtimeInstanceId = randomUUID();
 
   private started = false;
@@ -152,184 +89,58 @@ export class BotApplication {
     private readonly config: AppConfig,
     dependencies: BotApplicationDependencies = {}
   ) {
-    this.logger =
-      dependencies.logger ??
-      pino({
-        level: config.botLogLevel
-      });
-    this.store = dependencies.store ?? new SqliteStore(config.botDbPath, process.cwd());
-    this.client =
-      dependencies.client ??
-      new Client({
-        intents: [
-          GatewayIntentBits.Guilds,
-          GatewayIntentBits.GuildMessages,
-          GatewayIntentBits.GuildMembers,
-          GatewayIntentBits.MessageContent
-        ]
-      });
-    this.codexClient =
-      dependencies.codexClient ??
-      new CodexAppServerClient(
-        config.codexAppServerCommand,
-        process.cwd(),
-        config.codexHomePath,
-        this.logger
-      );
-    this.sessionPolicyResolver =
-      dependencies.sessionPolicyResolver ?? new SessionPolicyResolver();
-    this.sessionManager =
-      dependencies.sessionManager ??
-      new SessionManager(this.store, this.codexClient, this.logger);
-    this.forumResearchSupervisor =
-      dependencies.forumResearchSupervisor ??
-      new ForumResearchSupervisor(this.codexClient, this.logger);
-    this.forumResearchPromptRefiner =
-      dependencies.forumResearchPromptRefiner ??
-      new ForumResearchPromptRefiner(this.codexClient, this.logger);
-    this.forumFirstTurnPreprocessor =
-      dependencies.forumFirstTurnPreprocessor ??
-      new ForumFirstTurnPreprocessor(
-        this.store,
-        this.sessionPolicyResolver,
-        this.logger
-      );
-    this.harnessRunner =
-      dependencies.harnessRunner ??
-      new HarnessRunner(
-        this.store,
-        this.codexClient,
-        this.sessionPolicyResolver,
-        this.sessionManager,
-        this.forumResearchPromptRefiner,
-        this.forumResearchSupervisor,
-        this.logger
-      );
-    this.recentChatHistoryService =
-      dependencies.recentChatHistoryService ??
-      new RecentChatHistoryService(this.logger);
-    this.failureClassifier =
-      dependencies.failureClassifier ?? new FailureClassifier();
-    this.retryScheduler =
-      dependencies.retryScheduler ?? new RetrySchedulerService(this.store, this.logger);
-    this.moderationExecutor =
-      dependencies.moderationExecutor ??
-      new DiscordModerationExecutor(this.client, this.logger);
-    this.moderationIntegration =
-      dependencies.moderationIntegration ??
-      createBotModerationIntegration(this.store, this.logger);
-    this.replyDispatchService =
-      dependencies.replyDispatchService ??
-      new ReplyDispatchService({
-        store: this.store,
-        harnessRunner: this.harnessRunner,
-        sessionManager: this.sessionManager,
-        sessionPolicyResolver: this.sessionPolicyResolver,
-        watchLocations: config.watchLocations,
-        logger: this.logger,
+    const resolvedDependencies = createBotApplicationDependencies(
+      config,
+      dependencies,
+      {
         fetchChannel: (channelId) => this.fetchChannel(channelId)
-      });
-    this.chatEngagementPolicy =
-      dependencies.chatEngagementPolicy ?? new ChatEngagementPolicy();
+      }
+    );
+
+    this.client = resolvedDependencies.client;
+    this.logger = resolvedDependencies.logger;
+    this.store = resolvedDependencies.store;
+    this.codexClient = resolvedDependencies.codexClient;
+    this.sessionPolicyResolver = resolvedDependencies.sessionPolicyResolver;
+    this.sessionManager = resolvedDependencies.sessionManager;
+    this.harnessRunner = resolvedDependencies.harnessRunner;
+    this.failureClassifier = resolvedDependencies.failureClassifier;
+    this.retryScheduler = resolvedDependencies.retryScheduler;
+    this.moderationExecutor = resolvedDependencies.moderationExecutor;
+    this.moderationIntegration = resolvedDependencies.moderationIntegration;
+    this.replyDispatchService = resolvedDependencies.replyDispatchService;
     this.messageProcessingService =
-      dependencies.messageProcessingService ??
-      new MessageProcessingService(
-        this.config,
-        this.store,
-        this.harnessRunner,
-        this.forumFirstTurnPreprocessor,
-        this.recentChatHistoryService,
-        this.chatEngagementPolicy,
-        this.failureClassifier,
-        this.retryScheduler,
-        this.moderationIntegration,
-        this.moderationExecutor,
-        this.replyDispatchService,
-        this.logger
-      );
-    this.queue =
-      dependencies.queue ??
-      new OrderedMessageQueue<QueuedMessage>((item) =>
-        this.messageProcessingService.process(item)
-      );
-    this.chatChannelCounterService =
-      dependencies.chatChannelCounterService ??
-      new ChatChannelCounterService(this.store);
-    this.chatRuntimeControlService =
-      dependencies.chatRuntimeControlService ??
-      new ChatRuntimeControlService(this.config.chatRuntimeControls ?? null);
-    this.forumThreadService =
-      dependencies.forumThreadService ?? new ForumThreadService();
-    this.plainTextAttachmentService =
-      dependencies.plainTextAttachmentService ??
-      new PlainTextAttachmentService(this.logger);
-    this.messageIntakeService =
-      dependencies.messageIntakeService ??
-      new MessageIntakeService(
-        this.config,
-        this.queue,
-        this.chatChannelCounterService,
-        this.chatEngagementPolicy,
-        this.chatRuntimeControlService,
-        this.forumThreadService,
-        this.plainTextAttachmentService,
-        this.logger
-      );
+      resolvedDependencies.messageProcessingService;
+    this.messageIntakeService = resolvedDependencies.messageIntakeService;
     this.startupMessageRecoveryService =
-      dependencies.startupMessageRecoveryService ??
-      new StartupMessageRecoveryService({
-        watchLocations: config.watchLocations,
-        store: this.store,
-        fetchChannel: (channelId) => this.fetchChannel(channelId),
-        messageIntakeService: this.messageIntakeService,
-        logger: this.logger
-      });
+      resolvedDependencies.startupMessageRecoveryService;
+    this.retryJobRunner = resolvedDependencies.retryJobRunner;
+    this.adminCommandService = resolvedDependencies.adminCommandService;
     this.adminOverrideBootstrapService =
-      dependencies.adminOverrideBootstrapService ??
-      new AdminOverrideBootstrapService(
-        this.harnessRunner,
-        this.replyDispatchService,
-        this.failureClassifier,
-        this.moderationIntegration,
-        this.moderationExecutor,
-        this.logger
-      );
+      resolvedDependencies.adminOverrideBootstrapService;
     this.overrideBootstrapPromptContextService =
-      dependencies.overrideBootstrapPromptContextService ??
-      new OverrideBootstrapPromptContextService(this.logger);
-    this.retryJobRunner =
-      dependencies.retryJobRunner ??
-      new RetryJobRunner(
-        this.config,
-        this.client,
-        this.store,
-        this.retryScheduler,
-        this.queue,
-        this.replyDispatchService,
-        this.messageProcessingService,
-        this.plainTextAttachmentService,
-        this.logger
-      );
+      resolvedDependencies.overrideBootstrapPromptContextService;
+    this.chatChannelCounterService =
+      resolvedDependencies.chatChannelCounterService;
+    this.chatEngagementPolicy = resolvedDependencies.chatEngagementPolicy;
+    this.chatRuntimeControlService =
+      resolvedDependencies.chatRuntimeControlService;
+    this.recentChatHistoryService =
+      resolvedDependencies.recentChatHistoryService;
+    this.forumFirstTurnPreprocessor =
+      resolvedDependencies.forumFirstTurnPreprocessor;
+    this.forumResearchPromptRefiner =
+      resolvedDependencies.forumResearchPromptRefiner;
+    this.forumResearchSupervisor =
+      resolvedDependencies.forumResearchSupervisor;
+    this.forumThreadService = resolvedDependencies.forumThreadService;
+    this.plainTextAttachmentService =
+      resolvedDependencies.plainTextAttachmentService;
     this.weeklyMeetupAnnouncementService =
-      dependencies.weeklyMeetupAnnouncementService ??
-      new WeeklyMeetupAnnouncementService(this.config, this.store, this.logger, {
-        fetchChannel: (channelId) => this.fetchChannel(channelId)
-      });
-    this.adminCommandService =
-      dependencies.adminCommandService ??
-      new AdminCommandService(
-        this.client,
-        this.config,
-        this.store,
-        this.sessionManager,
-        this.sessionPolicyResolver,
-        this.adminOverrideBootstrapService,
-        this.overrideBootstrapPromptContextService,
-        this.weeklyMeetupAnnouncementService,
-        this.logger
-      );
-    this.setTimeoutFn = dependencies.setTimeoutFn ?? setTimeout;
-    this.clearTimeoutFn = dependencies.clearTimeoutFn ?? clearTimeout;
+      resolvedDependencies.weeklyMeetupAnnouncementService;
+    this.setTimeoutFn = resolvedDependencies.setTimeoutFn;
+    this.clearTimeoutFn = resolvedDependencies.clearTimeoutFn;
+    this.queue = resolvedDependencies.queue;
   }
 
   async start(): Promise<void> {

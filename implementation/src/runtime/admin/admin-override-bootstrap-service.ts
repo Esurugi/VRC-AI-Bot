@@ -1,12 +1,12 @@
 import { ChannelType, type AnyThreadChannel } from "discord.js";
 import type { Logger } from "pino";
 
-import { buildFailureNotice } from "../../app/replies.js";
-import type { FailureClassifier, FailureStage } from "../../app/failure-classifier.js";
+import { buildFailureNotice } from "../message/replies.js";
+import type { FailureClassifier, FailureStage } from "../failure/failure-classifier.js";
 import type {
   BotModerationIntegration,
   PostResponseModerationInput
-} from "../../app/moderation-integration.js";
+} from "../moderation/moderation-integration.js";
 import type { ModerationExecutor } from "../../discord/moderation-executor.js";
 import { resolvePlaceType, extractUrls } from "../../discord/message-utils.js";
 import type {

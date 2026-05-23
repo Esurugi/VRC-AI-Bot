@@ -1,13 +1,13 @@
 import type { GuildTextBasedChannel } from "discord.js";
 import type { Logger } from "pino";
 
-import type { FailureClassifier } from "../../app/failure-classifier.js";
+import type { FailureClassifier } from "../failure/failure-classifier.js";
 import type {
   BotModerationIntegration,
   PostResponseModerationInput
-} from "../../app/moderation-integration.js";
-import { buildFailureNotice } from "../../app/replies.js";
-import type { RetrySchedulerService } from "../../app/retry-scheduler-service.js";
+} from "../moderation/moderation-integration.js";
+import { buildFailureNotice } from "./replies.js";
+import type { RetrySchedulerService } from "../scheduling/retry-scheduler-service.js";
 import type { ModerationExecutor } from "../../discord/moderation-executor.js";
 import { writeDiscordRuntimeSnapshot } from "../../discord/runtime-facts.js";
 import {

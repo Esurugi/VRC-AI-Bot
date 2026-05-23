@@ -16,7 +16,7 @@ import {
 } from "discord.js";
 import type { Logger } from "pino";
 
-import { splitPlainTextReplies } from "../../app/replies.js";
+import { splitPlainTextReplies } from "../message/replies.js";
 import { SessionManager } from "../../codex/session-manager.js";
 import { SessionPolicyResolver } from "../../codex/session-policy.js";
 import { resolvePlaceType } from "../../discord/message-utils.js";

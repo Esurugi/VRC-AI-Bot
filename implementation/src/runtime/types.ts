@@ -1,6 +1,6 @@
 import type { Message } from "discord.js";
 
-import type { FailureStage } from "../app/failure-classifier.js";
+import type { FailureStage } from "./failure/failure-classifier.js";
 import type {
   ActorRole,
   ChatEngagementFact,
