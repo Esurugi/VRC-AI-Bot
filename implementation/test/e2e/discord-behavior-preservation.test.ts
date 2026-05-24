@@ -22,6 +22,10 @@ import { ForumResearchSupervisor } from "../../src/runtime/forum/forum-research-
 import { ForumFirstTurnPreprocessor } from "../../src/runtime/forum/forum-first-turn-preprocessor.js";
 import { ChatEngagementPolicy } from "../../src/runtime/chat/chat-engagement-policy.js";
 import { RecentChatHistoryService } from "../../src/runtime/chat/recent-chat-history-service.js";
+import {
+  CLEAR_EXPLANATION_REDIRECT_NOTICE,
+  ClearExplanationRoutingGate
+} from "../../src/runtime/clear-explanation/clear-explanation-routing-gate.js";
 import { MessageProcessingService } from "../../src/runtime/message/message-processing-service.js";
 import { ReplyDispatchService } from "../../src/runtime/message/reply-dispatch-service.js";
 import type { QueuedMessage } from "../../src/runtime/types.js";
@@ -884,6 +888,124 @@ test("clear_explanation thread messages use a thread-lifetime high reasoning exp
   ]);
 });
 
+test("clear_explanation first-turn gate redirects general questions before starting the explanation session", async (t) => {
+  const workflow = createWorkflow(t);
+  const root = workflow.world.createTextChannel({
+    id: CLEAR_EXPLANATION_ROOT_CHANNEL_ID
+  });
+  const thread = workflow.world.createThread({
+    id: "clear-explanation-redirect-thread",
+    parent: root
+  });
+
+  workflow.codex.enqueueClearExplanationGateDecision({
+    decision: "redirect_to_general_question",
+    reason: "short general question"
+  });
+
+  await workflow.processMessage({
+    id: "message-clear-explanation-general",
+    channel: thread,
+    content: "おすすめの VRChat ワールドある？",
+    urls: [],
+    watchLocation: clearExplanationLocation(),
+    placeType: "public_thread"
+  });
+
+  assert.deepEqual(
+    workflow.codex.events
+      .filter((event) => event.type === "json")
+      .map((event) => ({
+        kind: event.kind,
+        modelProfile: event.modelProfile
+      })),
+    [
+      {
+        kind: "clear_explanation_route_gate",
+        modelProfile: "clear_explanation_gate:gpt-5.3-codex-spark:low"
+      }
+    ]
+  );
+  assert.equal(
+    workflow.codex.events.some((event) => event.type === "answer"),
+    false
+  );
+  assert.deepEqual(workflow.eventsOf("send").map((event) => event.content), [
+    CLEAR_EXPLANATION_REDIRECT_NOTICE
+  ]);
+  assert.equal(
+    workflow.store.clearExplanationGateStates.get("clear-explanation-redirect-thread")
+      ?.decision,
+    "redirect_to_general_question"
+  );
+});
+
+test("clear_explanation gate runs only once per thread and fails open", async (t) => {
+  const workflow = createWorkflow(t);
+  const root = workflow.world.createTextChannel({
+    id: CLEAR_EXPLANATION_ROOT_CHANNEL_ID
+  });
+  const thread = workflow.world.createThread({
+    id: "clear-explanation-gate-once-thread",
+    parent: root
+  });
+
+  workflow.codex.enqueueClearExplanationGateError();
+  workflow.codex.enqueueIntent(intent({ outcome: "chat_reply" }));
+  workflow.codex.enqueueAnswer({
+    response: response({
+      outcome: "chat_reply",
+      public_text: "まず前提から説明します。",
+      sources_used: []
+    })
+  });
+
+  await workflow.processMessage({
+    id: "message-clear-explanation-gate-failure",
+    channel: thread,
+    content: "Attention の仕組みを初心者向けに教えて",
+    urls: [],
+    watchLocation: clearExplanationLocation(),
+    placeType: "public_thread"
+  });
+
+  workflow.codex.enqueueClearExplanationGateDecision({
+    decision: "redirect_to_general_question",
+    reason: "would redirect if gate reran"
+  });
+  workflow.codex.enqueueIntent(intent({ outcome: "chat_reply" }));
+  workflow.codex.enqueueAnswer({
+    response: response({
+      outcome: "chat_reply",
+      public_text: "続きとして、別の角度から説明します。",
+      sources_used: []
+    })
+  });
+
+  await workflow.processMessage({
+    id: "message-clear-explanation-gate-followup",
+    channel: thread,
+    content: "もう少し噛み砕いて",
+    urls: [],
+    watchLocation: clearExplanationLocation(),
+    placeType: "public_thread"
+  });
+
+  assert.equal(
+    workflow.codex.events.filter((event) => event.type === "json").length,
+    1
+  );
+  assert.deepEqual(workflow.eventsOf("reply").map((event) => event.content), [
+    "まず前提から説明します。",
+    "続きとして、別の角度から説明します。"
+  ]);
+  assert.equal(
+    workflow.store.clearExplanationGateStates.get("clear-explanation-gate-once-thread")
+      ?.reason,
+    "gate_failed_open"
+  );
+});
+
 test("clear_explanation sends long plain text in Discord-safe chunks and attaches generated images from app-server results", async (t) => {
   const workflow = createWorkflow(t);
   const root = workflow.world.createTextChannel({
@@ -1056,6 +1178,11 @@ function createWorkflow(t: test.TestContext) {
     logger,
     fetchChannel: async (channelId) => world.getChannel(channelId) as never
   });
+  const clearExplanationRoutingGate = new ClearExplanationRoutingGate(
+    store,
+    codexClient,
+    logger
+  );
   const service = new MessageProcessingService(
     appConfig(watchLocations),
     store,
@@ -1063,6 +1190,7 @@ function createWorkflow(t: test.TestContext) {
     new ForumFirstTurnPreprocessor(store, sessionPolicyResolver, logger),
     new RecentChatHistoryService(logger),
     new ChatEngagementPolicy(),
+    clearExplanationRoutingGate,
     new FailureClassifier(),
     {
       clear: () => {},

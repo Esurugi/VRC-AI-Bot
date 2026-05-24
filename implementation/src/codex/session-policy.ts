@@ -23,6 +23,8 @@ export const FORUM_LONGFORM_CODEX_MODEL_PROFILE = "forum:gpt-5.5:high";
 export const FORUM_LONGFORM_LOW_CODEX_MODEL_PROFILE = "forum:gpt-5.5:low";
 export const CLEAR_EXPLANATION_CODEX_MODEL_PROFILE =
   "clear_explanation:gpt-5.5:high";
+export const CLEAR_EXPLANATION_GATE_CODEX_MODEL_PROFILE =
+  "clear_explanation_gate:gpt-5.3-codex-spark:low";
 export const RUNTIME_CONTRACT_VERSION = "2026-05-21.session-policy.v3";
 
 export const SESSION_WORKLOAD_KIND_VALUES = [

@@ -101,6 +101,43 @@ test("startup recovery falls back to the root cursor for active threads without 
   assert.deepEqual(thread.fetchCalls, ["1500"]);
 });
 
+test("startup recovery replays recent active thread messages when a feature thread has no cursor and root cursor misses them", async () => {
+  const handled: string[] = [];
+  const thread = createThreadChannel({
+    id: "clear-thread-1",
+    messageBatches: [[], [createMessage("3001", 21), createMessage("3002", 22)]]
+  });
+  const service = new StartupMessageRecoveryService({
+    watchLocations: [
+      createWatchLocation({
+        mode: "chat",
+        features: ["clear_explanation", "conversation"],
+        chatBehavior: null
+      })
+    ],
+    store: createStore({
+      "watch-root": "5000"
+    }),
+    fetchChannel: async () =>
+      createRootChannel({
+        id: "watch-root",
+        activeThreads: [thread],
+        messageBatches: []
+      }),
+    messageIntakeService: {
+      handle: async (message: Message<true>) => {
+        handled.push(message.id);
+      }
+    } as unknown as MessageIntakeService,
+    logger: createLogger()
+  });
+
+  await service.recoverPendingMessages();
+
+  assert.deepEqual(handled, ["3001", "3002"]);
+  assert.deepEqual(thread.fetchCalls, ["5000", ""]);
+});
+
 test("chat startup recovery skips root backlog replay and advances the root cursor", async () => {
   const handled: string[] = [];
   const store = createStore({
@@ -242,6 +279,37 @@ test("startup recovery uses forum feature policy when legacy mode says chat", as
         mode: "chat",
         features: ["forum_research", "conversation"],
         chatBehavior: null
+      })
+    ],
+    store: createStore({
+      "watch-root": "1000"
+    }),
+    fetchChannel: async () =>
+      createRootChannel({
+        id: "watch-root",
+        messageBatches: [[createMessage("1001", 1)]]
+      }),
+    messageIntakeService: {
+      handle: async (message: Message<true>) => {
+        handled.push(message.id);
+      }
+    } as unknown as MessageIntakeService,
+    logger: createLogger()
+  });
+
+  await service.recoverPendingMessages();
+
+  assert.deepEqual(handled, ["1001"]);
+});
+
+test("startup recovery replays clear explanation feature even if chat behavior is configured", async () => {
+  const handled: string[] = [];
+  const service = new StartupMessageRecoveryService({
+    watchLocations: [
+      createWatchLocation({
+        mode: "chat",
+        features: ["clear_explanation", "conversation"],
+        chatBehavior: "directed_help_chat"
       })
     ],
     store: createStore({

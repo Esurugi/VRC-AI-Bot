@@ -28,6 +28,10 @@ import {
   ForumFirstTurnPreprocessor,
   type ForumFirstTurnPreparation
 } from "../forum/forum-first-turn-preprocessor.js";
+import {
+  CLEAR_EXPLANATION_REDIRECT_NOTICE,
+  ClearExplanationRoutingGate
+} from "../clear-explanation/clear-explanation-routing-gate.js";
 import { SqliteStore, type RetryJobRow } from "../../storage/database.js";
 import {
   buildRetrySchedulerEnvelope,
@@ -61,6 +65,7 @@ export class MessageProcessingService {
     private readonly forumFirstTurnPreprocessor: ForumFirstTurnPreprocessor,
     private readonly recentChatHistoryService: RecentChatHistoryService,
     private readonly chatEngagementPolicy: ChatEngagementPolicy,
+    private readonly clearExplanationRoutingGate: ClearExplanationRoutingGate,
     private readonly failureClassifier: FailureClassifier,
     private readonly retryScheduler: RetrySchedulerService,
     private readonly moderationIntegration: BotModerationIntegration,
@@ -130,6 +135,12 @@ export class MessageProcessingService {
       let replyTarget = buildSamePlaceReplyTarget(item);
       let forumBootstrap: ForumFirstTurnPreparation;
       try {
+        const redirected = await this.redirectClearExplanationIfNeeded(item);
+        if (redirected) {
+          this.markMessageCompleted(item);
+          return;
+        }
+
         forumBootstrap =
           await this.forumFirstTurnPreprocessor.resolveEffectiveContentOverride({
             message: item.message,
@@ -244,6 +255,29 @@ export class MessageProcessingService {
       return null;
     }
     return toChatEngagementFact({ evaluation });
+  }
+
+  private async redirectClearExplanationIfNeeded(item: QueuedMessage): Promise<boolean> {
+    if (
+      !isClearExplanationPlace(item.watchLocation) ||
+      !isThreadEnvelope(item.envelope)
+    ) {
+      return false;
+    }
+
+    const decision = await this.clearExplanationRoutingGate.decide({
+      envelope: item.envelope,
+      watchLocation: item.watchLocation
+    });
+    if (decision !== "redirect_to_general_question") {
+      return false;
+    }
+
+    await this.replyDispatchService.sendFollowupInSamePlace(
+      item,
+      CLEAR_EXPLANATION_REDIRECT_NOTICE
+    );
+    return true;
   }
 
   private buildForumCallbacks(

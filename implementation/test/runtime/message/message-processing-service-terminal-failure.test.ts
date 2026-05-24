@@ -237,6 +237,9 @@ function createService(
           isDirectedToBot: false
         })
       } as never),
+    {
+      decide: async () => "allow_clear_explanation"
+    } as never,
     overrides.failureClassifier ?? ({} as never),
     retryScheduler as never,
     {

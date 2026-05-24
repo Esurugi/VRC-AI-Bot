@@ -209,4 +209,18 @@ export type ScheduledDeliveryRow = {
   message_id: string | null;
 };
 
+export type ClearExplanationGateDecision =
+  | "allow_clear_explanation"
+  | "redirect_to_general_question";
+
+export type ClearExplanationGateStateRow = {
+  thread_id: string;
+  root_channel_id: string;
+  first_message_id: string;
+  decision: ClearExplanationGateDecision;
+  reason: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export type { Scope, VisibleCandidate };

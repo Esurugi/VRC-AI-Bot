@@ -5,6 +5,7 @@ import { resolveCodexExecutionProfile } from "../../src/codex/execution-profile.
 import {
   AMBIENT_ROOM_CHAT_CODEX_MODEL_PROFILE,
   CHAT_CONVERSATION_LOW_CODEX_MODEL_PROFILE,
+  CLEAR_EXPLANATION_GATE_CODEX_MODEL_PROFILE,
   DEFAULT_CODEX_MODEL_PROFILE,
   FORUM_LONGFORM_CODEX_MODEL_PROFILE
 } from "../../src/codex/session-policy.js";
@@ -37,4 +38,14 @@ test("default and forum high profiles stay on gpt-5.5", () => {
     model: "gpt-5.5",
     reasoningEffort: "high"
   });
+});
+
+test("clear explanation gate uses Codex Spark with low reasoning", () => {
+  assert.deepEqual(
+    resolveCodexExecutionProfile(CLEAR_EXPLANATION_GATE_CODEX_MODEL_PROFILE),
+    {
+      model: "gpt-5.3-codex-spark",
+      reasoningEffort: "low"
+    }
+  );
 });

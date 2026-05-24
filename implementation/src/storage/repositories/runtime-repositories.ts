@@ -4,6 +4,8 @@ import type { WatchLocationConfig } from "../../domain/types.js";
 import type {
   AppRuntimeLockRow,
   ChatChannelCounterRow,
+  ClearExplanationGateDecision,
+  ClearExplanationGateStateRow,
   ForumResearchPromptArtifactRow,
   ForumResearchStateRow,
   MessageProcessingRow,
@@ -111,6 +113,61 @@ export class ScheduledDeliveryRepository {
         input.deliveredAt,
         input.channelId,
         input.messageId
+      );
+  }
+}
+
+export class ClearExplanationGateStateRepository {
+  constructor(private readonly db: Database.Database) {}
+
+  get(threadId: string): ClearExplanationGateStateRow | null {
+    return (
+      (this.db
+        .prepare(`
+          SELECT
+            thread_id,
+            root_channel_id,
+            first_message_id,
+            decision,
+            reason,
+            created_at,
+            updated_at
+          FROM clear_explanation_gate_state
+          WHERE thread_id = ?
+        `)
+        .get(threadId) as ClearExplanationGateStateRow | undefined) ?? null
+    );
+  }
+
+  mark(input: {
+    threadId: string;
+    rootChannelId: string;
+    firstMessageId: string;
+    decision: ClearExplanationGateDecision;
+    reason: string | null;
+  }): void {
+    this.db
+      .prepare(`
+        INSERT INTO clear_explanation_gate_state (
+          thread_id,
+          root_channel_id,
+          first_message_id,
+          decision,
+          reason
+        ) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(thread_id) DO UPDATE SET
+          root_channel_id = excluded.root_channel_id,
+          first_message_id = clear_explanation_gate_state.first_message_id,
+          decision = clear_explanation_gate_state.decision,
+          reason = clear_explanation_gate_state.reason,
+          updated_at = CURRENT_TIMESTAMP
+      `)
+      .run(
+        input.threadId,
+        input.rootChannelId,
+        input.firstMessageId,
+        input.decision,
+        input.reason
       );
   }
 }

@@ -16,6 +16,7 @@ import { ChatChannelCounterService } from "../runtime/chat/chat-channel-counter-
 import { ChatEngagementPolicy } from "../runtime/chat/chat-engagement-policy.js";
 import { ChatRuntimeControlService } from "../runtime/chat/chat-runtime-control-service.js";
 import { RecentChatHistoryService } from "../runtime/chat/recent-chat-history-service.js";
+import { ClearExplanationRoutingGate } from "../runtime/clear-explanation/clear-explanation-routing-gate.js";
 import { FailureClassifier } from "../runtime/failure/failure-classifier.js";
 import { ForumFirstTurnPreprocessor } from "../runtime/forum/forum-first-turn-preprocessor.js";
 import { ForumResearchPromptRefiner } from "../runtime/forum/forum-research-prompt-refiner.js";
@@ -58,6 +59,7 @@ export type BotApplicationDependencies = {
   chatEngagementPolicy?: ChatEngagementPolicy;
   chatRuntimeControlService?: ChatRuntimeControlService;
   recentChatHistoryService?: RecentChatHistoryService;
+  clearExplanationRoutingGate?: ClearExplanationRoutingGate;
   forumFirstTurnPreprocessor?: ForumFirstTurnPreprocessor;
   forumResearchPromptRefiner?: ForumResearchPromptRefiner;
   forumResearchSupervisor?: ForumResearchSupervisor;
@@ -150,6 +152,9 @@ export function createBotApplicationDependencies(
     });
   const chatEngagementPolicy =
     dependencies.chatEngagementPolicy ?? new ChatEngagementPolicy();
+  const clearExplanationRoutingGate =
+    dependencies.clearExplanationRoutingGate ??
+    new ClearExplanationRoutingGate(store, codexClient, logger);
   const messageProcessingService =
     dependencies.messageProcessingService ??
     new MessageProcessingService(
@@ -159,6 +164,7 @@ export function createBotApplicationDependencies(
       forumFirstTurnPreprocessor,
       recentChatHistoryService,
       chatEngagementPolicy,
+      clearExplanationRoutingGate,
       failureClassifier,
       retryScheduler,
       moderationIntegration,
@@ -269,6 +275,7 @@ export function createBotApplicationDependencies(
     chatEngagementPolicy,
     chatRuntimeControlService,
     recentChatHistoryService,
+    clearExplanationRoutingGate,
     forumFirstTurnPreprocessor,
     forumResearchPromptRefiner,
     forumResearchSupervisor,

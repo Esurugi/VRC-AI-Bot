@@ -3,6 +3,7 @@ import {
   AMBIENT_ROOM_CHAT_CODEX_MODEL_PROFILE,
   CHAT_CONVERSATION_LOW_CODEX_MODEL_PROFILE,
   CLEAR_EXPLANATION_CODEX_MODEL_PROFILE,
+  CLEAR_EXPLANATION_GATE_CODEX_MODEL_PROFILE,
   DEFAULT_CODEX_MODEL,
   DEFAULT_CODEX_MODEL_PROFILE,
   FORUM_LONGFORM_CODEX_MODEL_PROFILE,
@@ -15,6 +16,7 @@ export type CodexExecutionProfile = {
 };
 
 const MINI_CODEX_MODEL = "gpt-5.5-mini";
+const CODEX_SPARK_MODEL = "gpt-5.3-codex-spark";
 
 export function resolveCodexExecutionProfile(
   modelProfile: string
@@ -40,6 +42,11 @@ export function resolveCodexExecutionProfile(
     case FORUM_LONGFORM_LOW_CODEX_MODEL_PROFILE:
       return {
         model: DEFAULT_CODEX_MODEL,
+        reasoningEffort: "low"
+      };
+    case CLEAR_EXPLANATION_GATE_CODEX_MODEL_PROFILE:
+      return {
+        model: CODEX_SPARK_MODEL,
         reasoningEffort: "low"
       };
     default:
