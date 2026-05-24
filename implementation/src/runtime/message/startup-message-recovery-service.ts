@@ -2,6 +2,7 @@ import {
   ChannelType,
   type AnyThreadChannel,
   type Channel,
+  type ForumChannel,
   type NewsChannel,
   type TextChannel
 } from "discord.js";
@@ -27,7 +28,8 @@ type StartupMessageRecoveryDependencies = {
   batchSize?: number;
 };
 
-type RecoverableChannel = TextChannel | NewsChannel | AnyThreadChannel;
+type RecoverableRootChannel = TextChannel | NewsChannel | ForumChannel;
+type RecoverableMessageChannel = TextChannel | NewsChannel | AnyThreadChannel;
 type RecoveryMode = "replay" | "cursor_only";
 
 export class StartupMessageRecoveryService {
@@ -48,13 +50,14 @@ export class StartupMessageRecoveryService {
     if (!rootChannel) {
       return;
     }
-    const recoveryMode = resolveRecoveryMode(watchLocation);
+    const rootRecoveryMode = resolveRootRecoveryMode(watchLocation);
+    const threadRecoveryMode = resolveThreadRecoveryMode(watchLocation);
 
     const rootCursor =
       this.dependencies.store.channelCursors.get(watchLocation.channelId)
         ?.last_processed_message_id ?? null;
-    if (rootCursor) {
-      await this.recoverChannelMessages(rootChannel, rootCursor, recoveryMode);
+    if (rootCursor && isRecoverableMessageChannel(rootChannel)) {
+      await this.recoverChannelMessages(rootChannel, rootCursor, rootRecoveryMode);
     }
 
     const activeThreads = await this.fetchActiveThreads(rootChannel);
@@ -63,7 +66,7 @@ export class StartupMessageRecoveryService {
         this.dependencies.store.channelCursors.get(thread.id)?.last_processed_message_id ??
         null;
       if (threadCursor) {
-        await this.recoverChannelMessages(thread, threadCursor, recoveryMode);
+        await this.recoverChannelMessages(thread, threadCursor, threadRecoveryMode);
         continue;
       }
 
@@ -71,14 +74,14 @@ export class StartupMessageRecoveryService {
         const recoveredFromRootCursor = await this.recoverChannelMessages(
           thread,
           rootCursor,
-          recoveryMode
+          threadRecoveryMode
         );
-        if (recoveredFromRootCursor || recoveryMode === "cursor_only") {
+        if (recoveredFromRootCursor || threadRecoveryMode === "cursor_only") {
           continue;
         }
       }
 
-      if (recoveryMode === "replay") {
+      if (threadRecoveryMode === "replay") {
         await this.recoverRecentChannelMessages(thread);
       }
     }
@@ -86,7 +89,7 @@ export class StartupMessageRecoveryService {
 
   private async fetchRecoverableRootChannel(
     channelId: string
-  ): Promise<TextChannel | NewsChannel | null> {
+  ): Promise<RecoverableRootChannel | null> {
     const channel = await this.dependencies.fetchChannel(channelId);
     if (!isRecoverableRootChannel(channel)) {
       return null;
@@ -95,7 +98,7 @@ export class StartupMessageRecoveryService {
   }
 
   private async fetchActiveThreads(
-    channel: TextChannel | NewsChannel
+    channel: RecoverableRootChannel
   ): Promise<AnyThreadChannel[]> {
     try {
       const fetched = await channel.threads.fetchActive();
@@ -113,7 +116,7 @@ export class StartupMessageRecoveryService {
   }
 
   private async recoverChannelMessages(
-    channel: RecoverableChannel,
+    channel: RecoverableMessageChannel,
     afterMessageId: string,
     recoveryMode: RecoveryMode
   ): Promise<boolean> {
@@ -174,7 +177,9 @@ export class StartupMessageRecoveryService {
     }
   }
 
-  private async recoverRecentChannelMessages(channel: RecoverableChannel): Promise<void> {
+  private async recoverRecentChannelMessages(
+    channel: RecoverableMessageChannel
+  ): Promise<void> {
     let fetched;
     try {
       fetched = await channel.messages.fetch({
@@ -232,21 +237,37 @@ function compareMessagesAscending(
 
 function isRecoverableRootChannel(
   channel: Channel | null
-): channel is TextChannel | NewsChannel {
+): channel is RecoverableRootChannel {
   if (!channel) {
     return false;
   }
 
   return (
     channel.type === ChannelType.GuildText ||
+    channel.type === ChannelType.GuildAnnouncement ||
+    channel.type === ChannelType.GuildForum
+  );
+}
+
+function isRecoverableMessageChannel(
+  channel: RecoverableRootChannel
+): channel is TextChannel | NewsChannel {
+  return (
+    channel.type === ChannelType.GuildText ||
     channel.type === ChannelType.GuildAnnouncement
   );
 }
 
-function resolveRecoveryMode(watchLocation: WatchLocationConfig): RecoveryMode {
+function resolveRootRecoveryMode(watchLocation: WatchLocationConfig): RecoveryMode {
   return isPlainChatRecoveryPlace(watchLocation)
     ? "cursor_only"
     : "replay";
+}
+
+function resolveThreadRecoveryMode(watchLocation: WatchLocationConfig): RecoveryMode {
+  return isConversationPlace(watchLocation)
+    ? "replay"
+    : resolveRootRecoveryMode(watchLocation);
 }
 
 function isPlainChatRecoveryPlace(watchLocation: WatchLocationConfig): boolean {

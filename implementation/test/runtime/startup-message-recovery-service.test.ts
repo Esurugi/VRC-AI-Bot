@@ -5,6 +5,7 @@ import {
   ChannelType,
   Collection,
   type AnyThreadChannel,
+  type ForumChannel,
   type Message,
   type NewsChannel,
   type TextChannel
@@ -138,6 +139,40 @@ test("startup recovery replays recent active thread messages when a feature thre
   assert.deepEqual(thread.fetchCalls, ["5000", ""]);
 });
 
+test("startup recovery replays active threads under a forum root channel", async () => {
+  const handled: string[] = [];
+  const thread = createThreadChannel({
+    id: "clear-forum-thread",
+    messageBatches: [[createMessage("6001", 61)]]
+  });
+  const service = new StartupMessageRecoveryService({
+    watchLocations: [
+      createWatchLocation({
+        mode: "chat",
+        features: ["clear_explanation", "conversation"],
+        chatBehavior: null
+      })
+    ],
+    store: createStore({}),
+    fetchChannel: async () =>
+      createForumRootChannel({
+        id: "watch-root",
+        activeThreads: [thread]
+      }),
+    messageIntakeService: {
+      handle: async (message: Message<true>) => {
+        handled.push(message.id);
+      }
+    } as unknown as MessageIntakeService,
+    logger: createLogger()
+  });
+
+  await service.recoverPendingMessages();
+
+  assert.deepEqual(handled, ["6001"]);
+  assert.deepEqual(thread.fetchCalls, [""]);
+});
+
 test("chat startup recovery skips root backlog replay and advances the root cursor", async () => {
   const handled: string[] = [];
   const store = createStore({
@@ -168,7 +203,7 @@ test("chat startup recovery skips root backlog replay and advances the root curs
   assert.deepEqual(store.upserts, [{ channelId: "watch-root", messageId: "1002" }]);
 });
 
-test("chat startup recovery skips active thread backlog replay and advances the thread cursor", async () => {
+test("chat startup recovery replays active thread backlog using the thread cursor", async () => {
   const handled: string[] = [];
   const thread = createThreadChannel({
     id: "thread-1",
@@ -197,20 +232,19 @@ test("chat startup recovery skips active thread backlog replay and advances the 
 
   await service.recoverPendingMessages();
 
-  assert.deepEqual(handled, []);
+  assert.deepEqual(handled, ["2001", "2002"]);
   assert.deepEqual(thread.fetchCalls, ["2000"]);
-  assert.equal(store.cursors["thread-1"], "2002");
-  assert.deepEqual(store.upserts, [{ channelId: "thread-1", messageId: "2002" }]);
+  assert.deepEqual(store.upserts, []);
 });
 
-test("chat startup recovery falls back to the root cursor for active threads without their own cursor and seeds the thread cursor", async () => {
+test("chat startup recovery falls back to recent active thread messages when the root cursor misses them", async () => {
   const handled: string[] = [];
   const thread = createThreadChannel({
     id: "thread-1",
-    messageBatches: [[createMessage("3001", 21)]]
+    messageBatches: [[], [createMessage("3001", 21)]]
   });
   const store = createStore({
-    "watch-root": "1500"
+    "watch-root": "5000"
   });
   const service = new StartupMessageRecoveryService({
     watchLocations: [createWatchLocation("chat")],
@@ -231,10 +265,9 @@ test("chat startup recovery falls back to the root cursor for active threads wit
 
   await service.recoverPendingMessages();
 
-  assert.deepEqual(handled, []);
-  assert.deepEqual(thread.fetchCalls, ["1500"]);
-  assert.equal(store.cursors["thread-1"], "3001");
-  assert.deepEqual(store.upserts, [{ channelId: "thread-1", messageId: "3001" }]);
+  assert.deepEqual(handled, ["3001"]);
+  assert.deepEqual(thread.fetchCalls, ["5000", ""]);
+  assert.deepEqual(store.upserts, []);
 });
 
 test("startup recovery uses conversation feature policy when legacy mode says url watch", async () => {
@@ -401,6 +434,21 @@ function createRootChannel(input: {
       })
     }
   } as unknown as TextChannel;
+}
+
+function createForumRootChannel(input: {
+  id: string;
+  activeThreads?: AnyThreadChannel[];
+}): ForumChannel {
+  return {
+    id: input.id,
+    type: ChannelType.GuildForum,
+    threads: {
+      fetchActive: async () => ({
+        threads: createCollection(input.activeThreads ?? [])
+      })
+    }
+  } as unknown as ForumChannel;
 }
 
 function createThreadChannel(input: {
