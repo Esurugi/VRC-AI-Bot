@@ -159,6 +159,7 @@ export class BotApplication {
     ) {
       throw new Error("bot runtime lock is already held by another instance");
     }
+    this.startLeaseHeartbeat();
 
     try {
       this.chatChannelCounterService.resetAll();
@@ -169,7 +170,6 @@ export class BotApplication {
         await once(this.client, Events.ClientReady);
       }
       await this.adminCommandService.registerCommands();
-      this.startLeaseHeartbeat();
       await this.seedInitialCursors();
       await this.startupMessageRecoveryService.recoverPendingMessages();
       await this.retryJobRunner.drainDueJobs();
