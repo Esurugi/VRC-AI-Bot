@@ -21,7 +21,7 @@ import { FailureClassifier } from "../runtime/failure/failure-classifier.js";
 import { ForumFirstTurnPreprocessor } from "../runtime/forum/forum-first-turn-preprocessor.js";
 import { ForumResearchPromptRefiner } from "../runtime/forum/forum-research-prompt-refiner.js";
 import { ForumResearchSupervisor } from "../runtime/forum/forum-research-supervisor.js";
-import { ForumThreadService } from "../runtime/forum/forum-thread-service.js";
+import { FeatureThreadService } from "../runtime/thread/feature-thread-service.js";
 import { MessageIntakeService } from "../runtime/message/message-intake-service.js";
 import { MessageProcessingService } from "../runtime/message/message-processing-service.js";
 import { PlainTextAttachmentService } from "../runtime/message/plain-text-attachment-service.js";
@@ -63,7 +63,7 @@ export type BotApplicationDependencies = {
   forumFirstTurnPreprocessor?: ForumFirstTurnPreprocessor;
   forumResearchPromptRefiner?: ForumResearchPromptRefiner;
   forumResearchSupervisor?: ForumResearchSupervisor;
-  forumThreadService?: ForumThreadService;
+  featureThreadService?: FeatureThreadService;
   plainTextAttachmentService?: PlainTextAttachmentService;
   weeklyMeetupAnnouncementService?: WeeklyMeetupAnnouncementService;
   setTimeoutFn?: typeof setTimeout;
@@ -182,7 +182,8 @@ export function createBotApplicationDependencies(
   const chatRuntimeControlService =
     dependencies.chatRuntimeControlService ??
     new ChatRuntimeControlService(config.chatRuntimeControls ?? null);
-  const forumThreadService = dependencies.forumThreadService ?? new ForumThreadService();
+  const featureThreadService =
+    dependencies.featureThreadService ?? new FeatureThreadService();
   const plainTextAttachmentService =
     dependencies.plainTextAttachmentService ?? new PlainTextAttachmentService(logger);
   const messageIntakeService =
@@ -193,7 +194,7 @@ export function createBotApplicationDependencies(
       chatChannelCounterService,
       chatEngagementPolicy,
       chatRuntimeControlService,
-      forumThreadService,
+      featureThreadService,
       plainTextAttachmentService,
       logger
     );
@@ -279,7 +280,7 @@ export function createBotApplicationDependencies(
     forumFirstTurnPreprocessor,
     forumResearchPromptRefiner,
     forumResearchSupervisor,
-    forumThreadService,
+    featureThreadService,
     plainTextAttachmentService,
     weeklyMeetupAnnouncementService,
     setTimeoutFn: dependencies.setTimeoutFn ?? setTimeout,

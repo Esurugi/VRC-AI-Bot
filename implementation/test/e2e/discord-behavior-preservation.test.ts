@@ -23,7 +23,8 @@ import { ForumFirstTurnPreprocessor } from "../../src/runtime/forum/forum-first-
 import { ChatEngagementPolicy } from "../../src/runtime/chat/chat-engagement-policy.js";
 import { RecentChatHistoryService } from "../../src/runtime/chat/recent-chat-history-service.js";
 import {
-  CLEAR_EXPLANATION_REDIRECT_NOTICE,
+  CLEAR_EXPLANATION_DECLINE_NOTICE,
+  CLEAR_EXPLANATION_FORUM_REDIRECT_NOTICE,
   ClearExplanationRoutingGate
 } from "../../src/runtime/clear-explanation/clear-explanation-routing-gate.js";
 import { MessageProcessingService } from "../../src/runtime/message/message-processing-service.js";
@@ -888,7 +889,7 @@ test("clear_explanation thread messages use a thread-lifetime high reasoning exp
   ]);
 });
 
-test("clear_explanation first-turn gate redirects general questions before starting the explanation session", async (t) => {
+test("clear_explanation first-turn gate redirects broad analysis to forum research before starting the explanation session", async (t) => {
   const workflow = createWorkflow(t);
   const root = workflow.world.createTextChannel({
     id: CLEAR_EXPLANATION_ROOT_CHANNEL_ID
@@ -899,14 +900,14 @@ test("clear_explanation first-turn gate redirects general questions before start
   });
 
   workflow.codex.enqueueClearExplanationGateDecision({
-    decision: "redirect_to_general_question",
-    reason: "short general question"
+    decision: "redirect_to_forum_research",
+    reason: "broad strategic analysis"
   });
 
   await workflow.processMessage({
-    id: "message-clear-explanation-general",
+    id: "message-clear-explanation-forum-research",
     channel: thread,
-    content: "おすすめの VRChat ワールドある？",
+    content: "AI活用に縛られず、つくりたいものが見つからない場合にとれるアプローチを検討して",
     urls: [],
     watchLocation: clearExplanationLocation(),
     placeType: "public_thread"
@@ -931,12 +932,75 @@ test("clear_explanation first-turn gate redirects general questions before start
     false
   );
   assert.deepEqual(workflow.eventsOf("send").map((event) => event.content), [
-    CLEAR_EXPLANATION_REDIRECT_NOTICE
+    CLEAR_EXPLANATION_FORUM_REDIRECT_NOTICE
   ]);
   assert.equal(
     workflow.store.clearExplanationGateStates.get("clear-explanation-redirect-thread")
       ?.decision,
-    "redirect_to_general_question"
+    "redirect_to_forum_research"
+  );
+
+  await workflow.processMessage({
+    id: "message-clear-explanation-forum-research-followup",
+    channel: thread,
+    content: "補足すると、AI以外の観点も含めたいです",
+    urls: [],
+    watchLocation: clearExplanationLocation(),
+    placeType: "public_thread",
+    mentionsBot: true
+  });
+
+  assert.equal(
+    workflow.codex.events.filter((event) => event.type === "json").length,
+    1
+  );
+  assert.deepEqual(workflow.eventsOf("send").map((event) => event.content), [
+    CLEAR_EXPLANATION_FORUM_REDIRECT_NOTICE,
+    CLEAR_EXPLANATION_FORUM_REDIRECT_NOTICE
+  ]);
+});
+
+test("clear_explanation first-turn gate declines casual questions without routing them to the chat channel", async (t) => {
+  const workflow = createWorkflow(t);
+  const root = workflow.world.createTextChannel({
+    id: CLEAR_EXPLANATION_ROOT_CHANNEL_ID
+  });
+  const thread = workflow.world.createThread({
+    id: "clear-explanation-decline-thread",
+    parent: root
+  });
+
+  workflow.codex.enqueueClearExplanationGateDecision({
+    decision: "decline_clear_explanation",
+    reason: "casual recommendation"
+  });
+
+  await workflow.processMessage({
+    id: "message-clear-explanation-casual",
+    channel: thread,
+    content: "おすすめの VRChat ワールドある？",
+    urls: [],
+    watchLocation: clearExplanationLocation(),
+    placeType: "public_thread"
+  });
+
+  assert.equal(
+    workflow.codex.events.some((event) => event.type === "answer"),
+    false
+  );
+  assert.deepEqual(workflow.eventsOf("send").map((event) => event.content), [
+    CLEAR_EXPLANATION_DECLINE_NOTICE
+  ]);
+  assert.equal(
+    workflow.eventsOf("send").some((event) =>
+      event.content.includes("1365210184657670207")
+    ),
+    false
+  );
+  assert.equal(
+    workflow.store.clearExplanationGateStates.get("clear-explanation-decline-thread")
+      ?.decision,
+    "decline_clear_explanation"
   );
 });
 
@@ -970,8 +1034,8 @@ test("clear_explanation gate runs only once per thread and fails open", async (t
   });
 
   workflow.codex.enqueueClearExplanationGateDecision({
-    decision: "redirect_to_general_question",
-    reason: "would redirect if gate reran"
+    decision: "decline_clear_explanation",
+    reason: "would decline if gate reran"
   });
   workflow.codex.enqueueIntent(intent({ outcome: "chat_reply" }));
   workflow.codex.enqueueAnswer({

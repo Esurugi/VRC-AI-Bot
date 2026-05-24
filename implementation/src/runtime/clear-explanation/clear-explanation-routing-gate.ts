@@ -5,13 +5,20 @@ import type { CodexAppServerClient } from "../../codex/app-server-client.js";
 import { CLEAR_EXPLANATION_GATE_CODEX_MODEL_PROFILE } from "../../codex/session-policy.js";
 import type { MessageEnvelope, WatchLocationConfig } from "../../domain/types.js";
 import type { SqliteStore } from "../../storage/database.js";
+import type { ClearExplanationGateDecision } from "../../storage/types.js";
 
-export const GENERAL_QUESTION_CHANNEL_ID = "1365210184657670207";
-export const CLEAR_EXPLANATION_REDIRECT_NOTICE =
-  `この内容は <#${GENERAL_QUESTION_CHANNEL_ID}> の「なんでも質問」の方が向いていそうです。ここは概念や仕組みをじっくり理解するための場所なので、短い質問・相談・調べもの・雑談はそちらに送ってください。`;
+export const FORUM_RESEARCH_CHANNEL_ID = "1365209960396361738";
+export const CLEAR_EXPLANATION_FORUM_REDIRECT_NOTICE =
+  `この内容は <#${FORUM_RESEARCH_CHANNEL_ID}> の「高度質問」の方が向いていそうです。広い検討・調査・比較・設計相談のように、じっくり考える必要がある質問はそちらに投稿してください。`;
+export const CLEAR_EXPLANATION_DECLINE_NOTICE =
+  "ここは概念や仕組みをじっくり理解するための場所なので、この内容は教えてティラピコ向きではなさそうです。このスレッドでは処理しません。";
 
 const gateDecisionSchema = z.object({
-  decision: z.enum(["allow_clear_explanation", "redirect_to_general_question"]),
+  decision: z.enum([
+    "allow_clear_explanation",
+    "redirect_to_forum_research",
+    "decline_clear_explanation"
+  ]),
   reason: z.string().nullable()
 });
 
@@ -26,7 +33,11 @@ export const clearExplanationRoutingGateJsonSchema = {
   properties: {
     decision: {
       type: "string",
-      enum: ["allow_clear_explanation", "redirect_to_general_question"]
+      enum: [
+        "allow_clear_explanation",
+        "redirect_to_forum_research",
+        "decline_clear_explanation"
+      ]
     },
     reason: {
       type: ["string", "null"]
@@ -44,11 +55,11 @@ export class ClearExplanationRoutingGate {
   async decide(input: {
     envelope: MessageEnvelope;
     watchLocation: WatchLocationConfig;
-  }): Promise<ClearExplanationRoutingGateDecision["decision"]> {
+  }): Promise<ClearExplanationGateDecision> {
     const threadId = input.envelope.channelId;
     const existingState = this.store.clearExplanationGateStates.get(threadId);
     if (existingState) {
-      return "allow_clear_explanation";
+      return existingState.decision;
     }
 
     const existingClearSession = this.store.codexSessions.findThreadBinding({
@@ -77,12 +88,14 @@ export class ClearExplanationRoutingGate {
         inputPayload: {
           kind: "clear_explanation_route_gate",
           contract:
-            "Classify whether this first clear_explanation thread message should be handled by 教えてティラピコ or redirected to なんでも質問.",
+            "Classify whether this first clear_explanation thread message should be handled by 教えてティラピコ, redirected to 高度質問, or declined without sending it to another fixed channel.",
           policy: {
             allow_clear_explanation:
-              "Use only when the user is clearly asking for conceptual understanding, mechanisms, background, step-by-step explanation, comparisons, or an educational explanation that benefits from 教えてティラピコ.",
-            redirect_to_general_question:
-              "Use for short factual questions, lookup/recommendation requests, troubleshooting or personal consultation not framed as conceptual understanding, casual chat, bot/meta questions, or any ambiguous message."
+              "Use only when the user is clearly asking for a bounded educational explanation: concepts, mechanisms, background, step-by-step understanding, terminology, or comparisons that can be taught directly in the current thread.",
+            redirect_to_forum_research:
+              "Use when the user asks for broad analysis, open-ended consideration, strategy, design consultation, research, evaluation, synthesis across viewpoints, or anything that should receive the 高度質問 / forum_research workflow rather than a direct teaching answer. If the message is ambiguous between 教えてティラピコ and 高度質問, choose redirect_to_forum_research.",
+            decline_clear_explanation:
+              "Use for casual chat, bot/meta questions, short factual questions, lookup/recommendation requests, troubleshooting, personal consultation, or anything not suitable for 教えてティラピコ or 高度質問. Do not route these to the雑談 channel."
           },
           place: {
             root_channel_id: input.watchLocation.channelId,

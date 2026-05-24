@@ -58,7 +58,10 @@ export class ScriptedCodexClient {
   private readonly answerQueue: AnswerTurn[] = [];
   private readonly clearExplanationGateQueue: Array<
     | {
-        decision: "allow_clear_explanation" | "redirect_to_general_question";
+        decision:
+          | "allow_clear_explanation"
+          | "redirect_to_forum_research"
+          | "decline_clear_explanation";
         reason: string | null;
       }
     | Error
@@ -78,7 +81,10 @@ export class ScriptedCodexClient {
   }
 
   enqueueClearExplanationGateDecision(input: {
-    decision: "allow_clear_explanation" | "redirect_to_general_question";
+    decision:
+      | "allow_clear_explanation"
+      | "redirect_to_forum_research"
+      | "decline_clear_explanation";
     reason?: string | null;
   }): void {
     this.clearExplanationGateQueue.push({

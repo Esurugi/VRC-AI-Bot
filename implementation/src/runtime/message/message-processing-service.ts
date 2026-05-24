@@ -29,7 +29,8 @@ import {
   type ForumFirstTurnPreparation
 } from "../forum/forum-first-turn-preprocessor.js";
 import {
-  CLEAR_EXPLANATION_REDIRECT_NOTICE,
+  CLEAR_EXPLANATION_DECLINE_NOTICE,
+  CLEAR_EXPLANATION_FORUM_REDIRECT_NOTICE,
   ClearExplanationRoutingGate
 } from "../clear-explanation/clear-explanation-routing-gate.js";
 import { SqliteStore, type RetryJobRow } from "../../storage/database.js";
@@ -269,13 +270,15 @@ export class MessageProcessingService {
       envelope: item.envelope,
       watchLocation: item.watchLocation
     });
-    if (decision !== "redirect_to_general_question") {
+    if (decision === "allow_clear_explanation") {
       return false;
     }
 
     await this.replyDispatchService.sendFollowupInSamePlace(
       item,
-      CLEAR_EXPLANATION_REDIRECT_NOTICE
+      decision === "redirect_to_forum_research"
+        ? CLEAR_EXPLANATION_FORUM_REDIRECT_NOTICE
+        : CLEAR_EXPLANATION_DECLINE_NOTICE
     );
     return true;
   }

@@ -166,7 +166,7 @@ function createBotApplicationHarness(options: HarnessOptions = {}): {
     forumFirstTurnPreprocessor: {},
     forumResearchPromptRefiner: {},
     forumResearchSupervisor: {},
-    forumThreadService: {},
+    featureThreadService: {},
     plainTextAttachmentService: {},
     weeklyMeetupAnnouncementService,
     queue: {}

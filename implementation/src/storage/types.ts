@@ -211,6 +211,8 @@ export type ScheduledDeliveryRow = {
 
 export type ClearExplanationGateDecision =
   | "allow_clear_explanation"
+  | "redirect_to_forum_research"
+  | "decline_clear_explanation"
   | "redirect_to_general_question";
 
 export type ClearExplanationGateStateRow = {
