@@ -19,6 +19,7 @@ import { OverrideSessionRepository } from "./repositories/override-repository.js
 import {
   AppRuntimeLockRepository,
   ChatChannelCounterRepository,
+  ClearExplanationGateStateRepository,
   ForumResearchPromptArtifactRepository,
   ForumResearchStateRepository,
   MessageProcessingRepository,
@@ -46,6 +47,7 @@ export class SqliteStore {
   readonly runtimeLock: AppRuntimeLockRepository;
   readonly chatChannelCounters: ChatChannelCounterRepository;
   readonly scheduledDeliveries: ScheduledDeliveryRepository;
+  readonly clearExplanationGateStates: ClearExplanationGateStateRepository;
 
   constructor(dbPath: string, private readonly projectRoot = process.cwd()) {
     mkdirSync(dirname(dbPath), { recursive: true });
@@ -72,6 +74,7 @@ export class SqliteStore {
     this.runtimeLock = new AppRuntimeLockRepository(this.db);
     this.chatChannelCounters = new ChatChannelCounterRepository(this.db);
     this.scheduledDeliveries = new ScheduledDeliveryRepository(this.db);
+    this.clearExplanationGateStates = new ClearExplanationGateStateRepository(this.db);
   }
 
   migrate(): void {

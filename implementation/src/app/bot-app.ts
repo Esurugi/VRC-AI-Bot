@@ -72,7 +72,7 @@ export class BotApplication {
   private readonly forumFirstTurnPreprocessor: BotApplicationResolvedDependencies["forumFirstTurnPreprocessor"];
   private readonly forumResearchPromptRefiner: BotApplicationResolvedDependencies["forumResearchPromptRefiner"];
   private readonly forumResearchSupervisor: BotApplicationResolvedDependencies["forumResearchSupervisor"];
-  private readonly forumThreadService: BotApplicationResolvedDependencies["forumThreadService"];
+  private readonly featureThreadService: BotApplicationResolvedDependencies["featureThreadService"];
   private readonly plainTextAttachmentService: BotApplicationResolvedDependencies["plainTextAttachmentService"];
   private readonly weeklyMeetupAnnouncementService: BotApplicationResolvedDependencies["weeklyMeetupAnnouncementService"];
   private readonly setTimeoutFn: typeof setTimeout;
@@ -133,7 +133,7 @@ export class BotApplication {
       resolvedDependencies.forumResearchPromptRefiner;
     this.forumResearchSupervisor =
       resolvedDependencies.forumResearchSupervisor;
-    this.forumThreadService = resolvedDependencies.forumThreadService;
+    this.featureThreadService = resolvedDependencies.featureThreadService;
     this.plainTextAttachmentService =
       resolvedDependencies.plainTextAttachmentService;
     this.weeklyMeetupAnnouncementService =
@@ -159,6 +159,7 @@ export class BotApplication {
     ) {
       throw new Error("bot runtime lock is already held by another instance");
     }
+    this.startLeaseHeartbeat();
 
     try {
       this.chatChannelCounterService.resetAll();
@@ -169,7 +170,6 @@ export class BotApplication {
         await once(this.client, Events.ClientReady);
       }
       await this.adminCommandService.registerCommands();
-      this.startLeaseHeartbeat();
       await this.seedInitialCursors();
       await this.startupMessageRecoveryService.recoverPendingMessages();
       await this.retryJobRunner.drainDueJobs();

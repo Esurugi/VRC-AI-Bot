@@ -2,6 +2,7 @@ import {
   ChannelType,
   type AnyThreadChannel,
   type Channel,
+  type ForumChannel,
   type NewsChannel,
   type TextChannel
 } from "discord.js";
@@ -27,7 +28,8 @@ type StartupMessageRecoveryDependencies = {
   batchSize?: number;
 };
 
-type RecoverableChannel = TextChannel | NewsChannel | AnyThreadChannel;
+type RecoverableRootChannel = TextChannel | NewsChannel | ForumChannel;
+type RecoverableMessageChannel = TextChannel | NewsChannel | AnyThreadChannel;
 type RecoveryMode = "replay" | "cursor_only";
 
 export class StartupMessageRecoveryService {
@@ -48,31 +50,46 @@ export class StartupMessageRecoveryService {
     if (!rootChannel) {
       return;
     }
-    const recoveryMode = resolveRecoveryMode(watchLocation);
+    const rootRecoveryMode = resolveRootRecoveryMode(watchLocation);
+    const threadRecoveryMode = resolveThreadRecoveryMode(watchLocation);
 
     const rootCursor =
       this.dependencies.store.channelCursors.get(watchLocation.channelId)
         ?.last_processed_message_id ?? null;
-    if (rootCursor) {
-      await this.recoverChannelMessages(rootChannel, rootCursor, recoveryMode);
+    if (rootCursor && isRecoverableMessageChannel(rootChannel)) {
+      await this.recoverChannelMessages(rootChannel, rootCursor, rootRecoveryMode);
     }
 
     const activeThreads = await this.fetchActiveThreads(rootChannel);
     for (const thread of activeThreads) {
       const threadCursor =
         this.dependencies.store.channelCursors.get(thread.id)?.last_processed_message_id ??
-        rootCursor;
-      if (!threadCursor) {
+        null;
+      if (threadCursor) {
+        await this.recoverChannelMessages(thread, threadCursor, threadRecoveryMode);
         continue;
       }
 
-      await this.recoverChannelMessages(thread, threadCursor, recoveryMode);
+      if (rootCursor) {
+        const recoveredFromRootCursor = await this.recoverChannelMessages(
+          thread,
+          rootCursor,
+          threadRecoveryMode
+        );
+        if (recoveredFromRootCursor || threadRecoveryMode === "cursor_only") {
+          continue;
+        }
+      }
+
+      if (threadRecoveryMode === "replay") {
+        await this.recoverRecentChannelMessages(thread);
+      }
     }
   }
 
   private async fetchRecoverableRootChannel(
     channelId: string
-  ): Promise<TextChannel | NewsChannel | null> {
+  ): Promise<RecoverableRootChannel | null> {
     const channel = await this.dependencies.fetchChannel(channelId);
     if (!isRecoverableRootChannel(channel)) {
       return null;
@@ -81,7 +98,7 @@ export class StartupMessageRecoveryService {
   }
 
   private async fetchActiveThreads(
-    channel: TextChannel | NewsChannel
+    channel: RecoverableRootChannel
   ): Promise<AnyThreadChannel[]> {
     try {
       const fetched = await channel.threads.fetchActive();
@@ -99,11 +116,12 @@ export class StartupMessageRecoveryService {
   }
 
   private async recoverChannelMessages(
-    channel: RecoverableChannel,
+    channel: RecoverableMessageChannel,
     afterMessageId: string,
     recoveryMode: RecoveryMode
-  ): Promise<void> {
+  ): Promise<boolean> {
     let cursor = afterMessageId;
+    let recoveredAny = false;
 
     while (true) {
       let fetched;
@@ -122,12 +140,13 @@ export class StartupMessageRecoveryService {
           },
           "failed to fetch startup backlog messages"
         );
-        return;
+        return recoveredAny;
       }
 
       if (fetched.size === 0) {
-        return;
+        return recoveredAny;
       }
+      recoveredAny = true;
 
       const orderedMessages = [...fetched.values()].sort(compareMessagesAscending);
       this.dependencies.logger.debug(
@@ -151,10 +170,50 @@ export class StartupMessageRecoveryService {
         this.dependencies.store.channelCursors.upsert(channel.id, lastMessage.id);
       }
       if (!lastMessage || fetched.size < this.batchSize) {
-        return;
+        return recoveredAny;
       }
 
       cursor = lastMessage.id;
+    }
+  }
+
+  private async recoverRecentChannelMessages(
+    channel: RecoverableMessageChannel
+  ): Promise<void> {
+    let fetched;
+    try {
+      fetched = await channel.messages.fetch({
+        limit: this.batchSize,
+        cache: false
+      });
+    } catch (error) {
+      this.dependencies.logger.warn(
+        {
+          channelId: channel.id,
+          error: error instanceof Error ? error.message : String(error)
+        },
+        "failed to fetch recent startup backlog messages"
+      );
+      return;
+    }
+
+    if (fetched.size === 0) {
+      return;
+    }
+
+    const orderedMessages = [...fetched.values()].sort(compareMessagesAscending);
+    this.dependencies.logger.debug(
+      {
+        channelId: channel.id,
+        recoveredCount: orderedMessages.length,
+        recoveryMode: "replay",
+        recoveryCursor: "recent"
+      },
+      "replaying recent startup backlog messages"
+    );
+
+    for (const message of orderedMessages) {
+      await this.dependencies.messageIntakeService.handle(message);
     }
   }
 }
@@ -178,28 +237,46 @@ function compareMessagesAscending(
 
 function isRecoverableRootChannel(
   channel: Channel | null
-): channel is TextChannel | NewsChannel {
+): channel is RecoverableRootChannel {
   if (!channel) {
     return false;
   }
 
   return (
     channel.type === ChannelType.GuildText ||
+    channel.type === ChannelType.GuildAnnouncement ||
+    channel.type === ChannelType.GuildForum
+  );
+}
+
+function isRecoverableMessageChannel(
+  channel: RecoverableRootChannel
+): channel is TextChannel | NewsChannel {
+  return (
+    channel.type === ChannelType.GuildText ||
     channel.type === ChannelType.GuildAnnouncement
   );
 }
 
-function resolveRecoveryMode(watchLocation: WatchLocationConfig): RecoveryMode {
-  if (
-    isForumResearchPlace(watchLocation) ||
-    isKnowledgeIngestPlace(watchLocation) ||
-    hasPlaceFeature(watchLocation, "admin_override")
-  ) {
-    return "replay";
-  }
-
-  return isConversationPlace(watchLocation) &&
-    resolvePlaceChatBehavior(watchLocation) !== null
+function resolveRootRecoveryMode(watchLocation: WatchLocationConfig): RecoveryMode {
+  return isPlainChatRecoveryPlace(watchLocation)
     ? "cursor_only"
     : "replay";
+}
+
+function resolveThreadRecoveryMode(watchLocation: WatchLocationConfig): RecoveryMode {
+  return isConversationPlace(watchLocation)
+    ? "replay"
+    : resolveRootRecoveryMode(watchLocation);
+}
+
+function isPlainChatRecoveryPlace(watchLocation: WatchLocationConfig): boolean {
+  return (
+    isConversationPlace(watchLocation) &&
+    !isKnowledgeIngestPlace(watchLocation) &&
+    !isForumResearchPlace(watchLocation) &&
+    !hasPlaceFeature(watchLocation, "admin_override") &&
+    !hasPlaceFeature(watchLocation, "clear_explanation") &&
+    resolvePlaceChatBehavior(watchLocation) !== null
+  );
 }

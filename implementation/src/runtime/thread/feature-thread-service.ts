@@ -2,9 +2,10 @@ import type { Message } from "discord.js";
 
 import { hasPlaceFeature } from "../../domain/place-features.js";
 import type { WatchLocationConfig } from "../../domain/types.js";
-import type { ChatEngagementEvaluation } from "../chat/chat-engagement-policy.js";
+import type { ChatEngagementEvaluation } from "../chat/chat-engagement-types.js";
+import { resolveBotDirectedEngagement } from "../chat/bot-directed-engagement.js";
 
-export type ForumThreadHandling =
+export type FeatureThreadHandling =
   | {
       decision: "pass";
     }
@@ -16,12 +17,12 @@ export type ForumThreadHandling =
       engagement: ChatEngagementEvaluation;
     };
 
-export class ForumThreadService {
+export class FeatureThreadService {
   async evaluateMessage(
     message: Message<true>,
     watchLocation: WatchLocationConfig
-  ): Promise<ForumThreadHandling> {
-    if (!hasPlaceFeature(watchLocation, "forum_research")) {
+  ): Promise<FeatureThreadHandling> {
+    if (!usesDedicatedThreadEngagement(watchLocation)) {
       return {
         decision: "pass"
       };
@@ -44,15 +45,14 @@ export class ForumThreadService {
       };
     }
 
-    const botUserId = message.client.user?.id;
-    if (botUserId && message.mentions.users.has(botUserId)) {
+    const directed = await resolveBotDirectedEngagement({
+      message,
+      botUserId: message.client.user?.id
+    });
+    if (directed !== null) {
       return {
         decision: "handle",
-        engagement: {
-          decision: "always",
-          triggerKind: "direct_mention",
-          isDirectedToBot: true
-        }
+        engagement: directed
       };
     }
 
@@ -68,6 +68,15 @@ export class ForumThreadService {
     const handling = await this.evaluateMessage(message, watchLocation);
     return handling.decision !== "ignore";
   }
+}
+
+function usesDedicatedThreadEngagement(
+  watchLocation: WatchLocationConfig
+): boolean {
+  return (
+    hasPlaceFeature(watchLocation, "forum_research") ||
+    hasPlaceFeature(watchLocation, "clear_explanation")
+  );
 }
 
 async function isThreadStarterMessage(message: Message<true>): Promise<boolean> {

@@ -38,6 +38,11 @@ export type ScriptedCodexEvent =
   | {
       type: "streamingFinal";
       text: string;
+    }
+  | {
+      type: "json";
+      kind: string | null;
+      modelProfile: string | null;
     };
 
 type AnswerTurn = {
@@ -51,6 +56,16 @@ export class ScriptedCodexClient {
   private threadOrdinal = 0;
   private readonly intentQueue: HarnessIntentResponse[] = [];
   private readonly answerQueue: AnswerTurn[] = [];
+  private readonly clearExplanationGateQueue: Array<
+    | {
+        decision:
+          | "allow_clear_explanation"
+          | "redirect_to_forum_research"
+          | "decline_clear_explanation";
+        reason: string | null;
+      }
+    | Error
+  > = [];
   private streamingText = "forum final";
   private streamingObservations: TurnObservations = {
     observed_public_urls: [],
@@ -63,6 +78,23 @@ export class ScriptedCodexClient {
 
   enqueueAnswer(turn: AnswerTurn): void {
     this.answerQueue.push(turn);
+  }
+
+  enqueueClearExplanationGateDecision(input: {
+    decision:
+      | "allow_clear_explanation"
+      | "redirect_to_forum_research"
+      | "decline_clear_explanation";
+    reason?: string | null;
+  }): void {
+    this.clearExplanationGateQueue.push({
+      decision: input.decision,
+      reason: input.reason ?? null
+    });
+  }
+
+  enqueueClearExplanationGateError(error = new Error("scripted gate failure")): void {
+    this.clearExplanationGateQueue.push(error);
   }
 
   setForumStreamingTurn(input: {
@@ -107,8 +139,17 @@ export class ScriptedCodexClient {
     return;
   }
 
-  async startEphemeralThread(): Promise<string> {
+  async startEphemeralThread(
+    _sandbox?: CodexSandboxMode,
+    modelProfile?: string
+  ): Promise<string> {
     this.threadOrdinal += 1;
+    this.events.push({
+      type: "startThread",
+      threadId: `codex-ephemeral-${this.threadOrdinal}`,
+      sandbox: _sandbox ?? "read-only",
+      modelProfile: modelProfile ?? "unknown"
+    });
     return `codex-ephemeral-${this.threadOrdinal}`;
   }
 
@@ -170,11 +211,37 @@ export class ScriptedCodexClient {
 
   async runJsonTurn(input: {
     inputPayload: { kind?: string };
+    modelProfile?: string;
   }): Promise<{
     response: unknown;
     observations: TurnObservations;
     turnId: string | null;
   }> {
+    this.events.push({
+      type: "json",
+      kind: input.inputPayload.kind ?? null,
+      modelProfile: input.modelProfile ?? null
+    });
+
+    if (input.inputPayload.kind === "clear_explanation_route_gate") {
+      const queued = this.clearExplanationGateQueue.shift();
+      if (queued instanceof Error) {
+        throw queued;
+      }
+
+      return {
+        response: queued ?? {
+          decision: "allow_clear_explanation",
+          reason: "default scripted allow"
+        },
+        observations: {
+          observed_public_urls: [],
+          generated_images: []
+        },
+        turnId: null
+      };
+    }
+
     if (input.inputPayload.kind === "forum_research_prompt_refiner") {
       return {
         response: {

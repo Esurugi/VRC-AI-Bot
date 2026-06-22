@@ -16,11 +16,12 @@ import { ChatChannelCounterService } from "../runtime/chat/chat-channel-counter-
 import { ChatEngagementPolicy } from "../runtime/chat/chat-engagement-policy.js";
 import { ChatRuntimeControlService } from "../runtime/chat/chat-runtime-control-service.js";
 import { RecentChatHistoryService } from "../runtime/chat/recent-chat-history-service.js";
+import { ClearExplanationRoutingGate } from "../runtime/clear-explanation/clear-explanation-routing-gate.js";
 import { FailureClassifier } from "../runtime/failure/failure-classifier.js";
 import { ForumFirstTurnPreprocessor } from "../runtime/forum/forum-first-turn-preprocessor.js";
 import { ForumResearchPromptRefiner } from "../runtime/forum/forum-research-prompt-refiner.js";
 import { ForumResearchSupervisor } from "../runtime/forum/forum-research-supervisor.js";
-import { ForumThreadService } from "../runtime/forum/forum-thread-service.js";
+import { FeatureThreadService } from "../runtime/thread/feature-thread-service.js";
 import { MessageIntakeService } from "../runtime/message/message-intake-service.js";
 import { MessageProcessingService } from "../runtime/message/message-processing-service.js";
 import { PlainTextAttachmentService } from "../runtime/message/plain-text-attachment-service.js";
@@ -58,10 +59,11 @@ export type BotApplicationDependencies = {
   chatEngagementPolicy?: ChatEngagementPolicy;
   chatRuntimeControlService?: ChatRuntimeControlService;
   recentChatHistoryService?: RecentChatHistoryService;
+  clearExplanationRoutingGate?: ClearExplanationRoutingGate;
   forumFirstTurnPreprocessor?: ForumFirstTurnPreprocessor;
   forumResearchPromptRefiner?: ForumResearchPromptRefiner;
   forumResearchSupervisor?: ForumResearchSupervisor;
-  forumThreadService?: ForumThreadService;
+  featureThreadService?: FeatureThreadService;
   plainTextAttachmentService?: PlainTextAttachmentService;
   weeklyMeetupAnnouncementService?: WeeklyMeetupAnnouncementService;
   setTimeoutFn?: typeof setTimeout;
@@ -150,6 +152,11 @@ export function createBotApplicationDependencies(
     });
   const chatEngagementPolicy =
     dependencies.chatEngagementPolicy ?? new ChatEngagementPolicy();
+  const featureThreadService =
+    dependencies.featureThreadService ?? new FeatureThreadService();
+  const clearExplanationRoutingGate =
+    dependencies.clearExplanationRoutingGate ??
+    new ClearExplanationRoutingGate(store, codexClient, logger);
   const messageProcessingService =
     dependencies.messageProcessingService ??
     new MessageProcessingService(
@@ -159,6 +166,8 @@ export function createBotApplicationDependencies(
       forumFirstTurnPreprocessor,
       recentChatHistoryService,
       chatEngagementPolicy,
+      featureThreadService,
+      clearExplanationRoutingGate,
       failureClassifier,
       retryScheduler,
       moderationIntegration,
@@ -176,7 +185,6 @@ export function createBotApplicationDependencies(
   const chatRuntimeControlService =
     dependencies.chatRuntimeControlService ??
     new ChatRuntimeControlService(config.chatRuntimeControls ?? null);
-  const forumThreadService = dependencies.forumThreadService ?? new ForumThreadService();
   const plainTextAttachmentService =
     dependencies.plainTextAttachmentService ?? new PlainTextAttachmentService(logger);
   const messageIntakeService =
@@ -187,7 +195,7 @@ export function createBotApplicationDependencies(
       chatChannelCounterService,
       chatEngagementPolicy,
       chatRuntimeControlService,
-      forumThreadService,
+      featureThreadService,
       plainTextAttachmentService,
       logger
     );
@@ -269,10 +277,11 @@ export function createBotApplicationDependencies(
     chatEngagementPolicy,
     chatRuntimeControlService,
     recentChatHistoryService,
+    clearExplanationRoutingGate,
     forumFirstTurnPreprocessor,
     forumResearchPromptRefiner,
     forumResearchSupervisor,
-    forumThreadService,
+    featureThreadService,
     plainTextAttachmentService,
     weeklyMeetupAnnouncementService,
     setTimeoutFn: dependencies.setTimeoutFn ?? setTimeout,

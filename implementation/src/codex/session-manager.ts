@@ -143,7 +143,8 @@ export class SessionManager {
       await this.codexClient.resumeThread(
         threadId,
         identity.sandboxMode,
-        buildThreadInstructionOptions(identity)
+        buildThreadInstructionOptions(identity),
+        buildThreadSandboxOptions(identity)
       );
       appendRuntimeTrace("codex-app-server", "session_resumed", {
         session_identity: identity.sessionIdentity,
@@ -178,7 +179,8 @@ export class SessionManager {
       await this.codexClient.resumeThread(
         threadId,
         identity.sandboxMode,
-        buildThreadInstructionOptions(identity)
+        buildThreadInstructionOptions(identity),
+        buildThreadSandboxOptions(identity)
       );
       this.liveSessions.set(identity.sessionIdentity, {
         threadId,
@@ -215,7 +217,8 @@ export class SessionManager {
     const threadId = await this.codexClient.startThread(
       identity.sandboxMode,
       executionProfile,
-      buildThreadInstructionOptions(identity)
+      buildThreadInstructionOptions(identity),
+      buildThreadSandboxOptions(identity)
     );
     this.bindSession(identity, threadId);
     appendRuntimeTrace("codex-app-server", "session_started", {
@@ -238,7 +241,8 @@ export class SessionManager {
     const threadId = await this.codexClient.startThread(
       identity.sandboxMode,
       executionProfile,
-      buildThreadInstructionOptions(identity)
+      buildThreadInstructionOptions(identity),
+      buildThreadSandboxOptions(identity)
     );
     appendRuntimeTrace("codex-app-server", "session_started", {
       session_identity: identity.sessionIdentity,
@@ -260,5 +264,17 @@ function buildThreadInstructionOptions(identity: ResolvedSessionIdentity): {
 } {
   return {
     includeClearExplanationSkill: identity.workloadKind === "clear_explanation"
+  };
+}
+
+function buildThreadSandboxOptions(identity: ResolvedSessionIdentity): {
+  allowNamespaceSandboxFallback: boolean;
+} {
+  return {
+    allowNamespaceSandboxFallback:
+      identity.workloadKind === "admin_override" &&
+      identity.sandboxMode === "workspace-write" &&
+      identity.lifecyclePolicy === "explicit_close" &&
+      identity.actorId !== null
   };
 }

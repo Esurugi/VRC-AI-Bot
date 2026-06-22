@@ -17,7 +17,7 @@ import {
   toChatEngagementFact
 } from "../chat/chat-engagement-policy.js";
 import { ChatRuntimeControlService } from "../chat/chat-runtime-control-service.js";
-import { ForumThreadService } from "../forum/forum-thread-service.js";
+import { FeatureThreadService } from "../thread/feature-thread-service.js";
 import type { QueuedMessage } from "../types.js";
 import { PlainTextAttachmentService } from "./plain-text-attachment-service.js";
 import { shouldShowProcessingReaction } from "./processing-visibility.js";
@@ -29,7 +29,7 @@ export class MessageIntakeService {
     private readonly chatChannelCounterService: ChatChannelCounterService,
     private readonly chatEngagementPolicy: ChatEngagementPolicy,
     private readonly chatRuntimeControlService: ChatRuntimeControlService,
-    private readonly forumThreadService: ForumThreadService,
+    private readonly featureThreadService: FeatureThreadService,
     private readonly plainTextAttachmentService: PlainTextAttachmentService,
     private readonly logger: Logger
   ) {}
@@ -56,11 +56,11 @@ export class MessageIntakeService {
       return;
     }
 
-    const forumHandling = await this.forumThreadService.evaluateMessage(
+    const featureThreadHandling = await this.featureThreadService.evaluateMessage(
       typedMessage,
       watchLocation
     );
-    if (forumHandling.decision === "ignore") {
+    if (featureThreadHandling.decision === "ignore") {
       return;
     }
 
@@ -84,8 +84,8 @@ export class MessageIntakeService {
     const scope = resolveScope(typedMessage, watchLocation);
 
     const engagement =
-      forumHandling.decision === "handle"
-        ? forumHandling.engagement
+      featureThreadHandling.decision === "handle"
+        ? featureThreadHandling.engagement
         : await this.chatEngagementPolicy.evaluate({
             message: typedMessage,
             envelope,

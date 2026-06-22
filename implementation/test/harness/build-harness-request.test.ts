@@ -197,3 +197,36 @@ test("buildHarnessRequest derives chat behavior from configured conversation pro
   });
   assert.equal(knowledgeRequest.available_context.chat_behavior, null);
 });
+
+test("buildHarnessRequest separates FxTwitter API into public fetch candidates for X status URLs", () => {
+  const request = buildHarnessRequest({
+    actorRole: "user",
+    scope: "server_public",
+    watchLocation: {
+      guildId: "guild",
+      channelId: "knowledge-root",
+      mode: "url_watch",
+      defaultScope: "server_public",
+      features: ["knowledge_ingest", "conversation"]
+    },
+    envelope: {
+      guildId: "guild",
+      channelId: "knowledge-root",
+      messageId: "message-x",
+      authorId: "user-1",
+      placeType: "guild_text",
+      rawPlaceType: "GuildText",
+      content: "https://x.com/am921543266/status/2068900130397569096?s=46",
+      urls: ["https://x.com/am921543266/status/2068900130397569096?s=46"],
+      receivedAt: "2026-06-22T00:00:00.000Z"
+    },
+    taskKind: "route_message"
+  });
+
+  assert.deepEqual(request.available_context.fetchable_public_urls, [
+    "https://x.com/am921543266/status/2068900130397569096?s=46"
+  ]);
+  assert.deepEqual(request.available_context.public_fetch_candidates, [
+    "https://api.fxtwitter.com/2/status/2068900130397569096"
+  ]);
+});

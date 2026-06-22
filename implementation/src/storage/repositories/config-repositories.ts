@@ -218,6 +218,37 @@ export class CodexSessionBindingRepository {
     );
   }
 
+  findThreadBinding(input: {
+    workloadKind: SessionWorkloadKind;
+    bindingId: string;
+  }): CodexSessionBindingRow | null {
+    const row = this.db
+      .prepare(
+        `
+          SELECT
+            session_identity,
+            workload_kind,
+            binding_kind,
+            binding_id,
+            actor_id,
+            sandbox_mode,
+            model_profile,
+            runtime_contract_version,
+            lifecycle_policy,
+            codex_thread_id,
+            created_at,
+            updated_at
+          FROM codex_session_binding
+          WHERE workload_kind = ? AND binding_kind = 'thread' AND binding_id = ?
+        `
+      )
+      .get(input.workloadKind, input.bindingId) as
+      | CodexSessionBindingRow
+      | undefined;
+
+    return row ?? null;
+  }
+
   upsert(input: {
     sessionIdentity: string;
     workloadKind: SessionWorkloadKind;

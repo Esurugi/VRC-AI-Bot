@@ -46,7 +46,7 @@ avoidances:
 - `available_context.fetchable_public_urls` は直接取得が許可された公開 URL として扱う。明示的な公開調査/保存要求で `allow_external_fetch=true` のときだけ、同じ公開 URL 制約の範囲で追加の公開情報を調べてよい。
 - `fetchable_public_urls` に無い公開 URL を同じ turn で根拠化したい場合は、repo-local skill `public-source-fetch` の script を使い、その構造化出力だけを same-turn public reconfirmation として扱う。
 - `available_context.blocked_urls` は見えていても取得対象にしない。
-- knowledge thread follow-up では `known_source_urls` を既知ソースとして優先利用する。
+- knowledge thread follow-up は bot mention または bot への reply のような明示呼び出しを基本入口とし、応答する場合は `known_source_urls` を既知ソースとして優先利用する。
 - DB 読み出しや Discord facts の追加確認が必要なら、repo-local skills と scripts を使う。System 実装や公式 docs を毎回読み直さない。
 - 通常 chat の URL はまず会話材料として扱い、自動で知見保存や thread 化に進めない。
 - 自然文の明示保存要求は、貼り付け URL がなくても外部公開情報を知見化してよい。保存先は同一 guild の `server_public` と理解する。
@@ -68,6 +68,6 @@ avoidances:
 
 ## 返信先ルール
 - `chat_reply`: 原則 same place。
-- `knowledge_ingest`: `knowledge_ingest` feature を持つ root place の URL ingest なら public thread、knowledge thread follow-up なら same thread、自然文の knowledge 保存要求は same place。
+- `knowledge_ingest`: `knowledge_ingest` feature を持つ root place の URL ingest なら public thread、明示呼び出しされた knowledge thread follow-up なら same thread、自然文の knowledge 保存要求は same place。
 - `admin_diagnostics`: `admin_override` 相当の管理 feature を持つ place で、owner/admin の明示 diagnostics 要求または管理 command fact があるときだけ使う。
 - `ignore`: 返信しない。

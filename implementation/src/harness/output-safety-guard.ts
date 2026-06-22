@@ -51,7 +51,7 @@ export class OutputSafetyGuard {
         safeCanonicalizeUrl(url)
       )
     );
-    const observedPublicUrls = new Set(
+    const observedEvidencePublicUrls = new Set(
       (input.observedPublicUrls ?? []).map((url) => safeCanonicalizeUrl(url))
     );
     const linkedSourceIds = new Set(input.linkedKnowledgeSources.map((source) => source.sourceId));
@@ -66,7 +66,7 @@ export class OutputSafetyGuard {
     for (const canonicalUrl of explicitlyFetchableUrls) {
       allowedSources.add(canonicalUrl);
     }
-    for (const canonicalUrl of observedPublicUrls) {
+    for (const canonicalUrl of observedEvidencePublicUrls) {
       allowedSources.add(canonicalUrl);
     }
 
@@ -109,7 +109,7 @@ export class OutputSafetyGuard {
 
         if (
           explicitlyFetchableUrls.has(canonicalUrl) ||
-          observedPublicUrls.has(canonicalUrl) ||
+          observedEvidencePublicUrls.has(canonicalUrl) ||
           linkedCanonicalUrls.has(canonicalUrl)
         ) {
           allowedSources.add(source);

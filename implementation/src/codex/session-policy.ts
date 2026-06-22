@@ -11,18 +11,21 @@ import {
   isThreadEnvelope
 } from "../domain/response-boundary.js";
 import {
+  hasPlaceFeature,
   isClearExplanationPlace,
   isForumResearchPlace
 } from "../domain/place-features.js";
 
 export const DEFAULT_CODEX_MODEL_PROFILE = "default:gpt-5.5";
 export const DEFAULT_CODEX_MODEL = "gpt-5.5";
-export const CHAT_CONVERSATION_LOW_CODEX_MODEL_PROFILE = "chat:gpt-5.5-mini:low";
-export const AMBIENT_ROOM_CHAT_CODEX_MODEL_PROFILE = "ambient:gpt-5.5-mini:low";
+export const CHAT_CONVERSATION_LOW_CODEX_MODEL_PROFILE = "chat:gpt-5.5:low";
+export const AMBIENT_ROOM_CHAT_CODEX_MODEL_PROFILE = "ambient:gpt-5.5:low";
 export const FORUM_LONGFORM_CODEX_MODEL_PROFILE = "forum:gpt-5.5:high";
 export const FORUM_LONGFORM_LOW_CODEX_MODEL_PROFILE = "forum:gpt-5.5:low";
 export const CLEAR_EXPLANATION_CODEX_MODEL_PROFILE =
   "clear_explanation:gpt-5.5:high";
+export const CLEAR_EXPLANATION_GATE_CODEX_MODEL_PROFILE =
+  "clear_explanation_gate:gpt-5.3-codex-spark:low";
 export const RUNTIME_CONTRACT_VERSION = "2026-05-21.session-policy.v3";
 
 export const SESSION_WORKLOAD_KIND_VALUES = [
@@ -76,7 +79,7 @@ type ResolveMessageSessionInput = {
 
 export class SessionPolicyResolver {
   resolveForMessage(input: ResolveMessageSessionInput): ResolvedSessionIdentity {
-    if (input.workspaceWriteActive) {
+    if (canUseAdminOverrideSession(input)) {
       return this.resolveAdminOverrideThread({
         threadId: input.envelope.channelId,
         actorId: input.envelope.authorId
@@ -113,7 +116,10 @@ export class SessionPolicyResolver {
       });
     }
 
-    if (isAmbientRoomChat(input.watchLocation)) {
+    if (
+      isAmbientRoomChat(input.watchLocation) &&
+      !isThreadEnvelope(input.envelope)
+    ) {
       return this.buildIdentity({
         workloadKind: "ambient_chat",
         bindingKind: "message_origin",
@@ -224,6 +230,15 @@ export class SessionPolicyResolver {
       sessionIdentity: formatSessionIdentity(identity)
     };
   }
+}
+
+function canUseAdminOverrideSession(input: ResolveMessageSessionInput): boolean {
+  return (
+    input.workspaceWriteActive &&
+    input.actorRole !== "user" &&
+    hasPlaceFeature(input.watchLocation, "admin_override") &&
+    isThreadEnvelope(input.envelope)
+  );
 }
 
 export function formatSessionIdentity(parts: SessionIdentityParts): string {

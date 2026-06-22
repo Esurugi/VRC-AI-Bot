@@ -240,6 +240,7 @@ export function createFakeMessage(input: {
   authorId?: string;
   urls?: string[];
   mentionsBot?: boolean;
+  replyToBot?: boolean;
 }): Message<true> {
   const authorId = input.authorId ?? "user-1";
   const message = {
@@ -270,9 +271,27 @@ export function createFakeMessage(input: {
         has: (userId: string) =>
           input.mentionsBot === true && userId === input.world.client.user.id
       },
-      repliedUser: null
+      repliedUser:
+        input.replyToBot === true
+          ? {
+              id: input.world.client.user.id
+            }
+          : null
     },
-    fetchReference: async () => null,
+    reference:
+      input.replyToBot === true
+        ? {
+            messageId: "bot-message"
+          }
+        : null,
+    fetchReference: async () =>
+      input.replyToBot === true
+        ? {
+            author: {
+              id: input.world.client.user.id
+            }
+          }
+        : null,
     reply: async (replyInput: { content?: string | null; files?: unknown[] }) => {
       input.world.sink.record({
         type: "reply",
