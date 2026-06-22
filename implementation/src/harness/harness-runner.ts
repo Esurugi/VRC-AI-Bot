@@ -25,6 +25,10 @@ import {
 import { isExplicitBotDirectedEngagement } from "../domain/response-boundary.js";
 import { KnowledgePersistenceService } from "../knowledge/knowledge-persistence-service.js";
 import {
+  fetchPublicSource,
+  type PublicSourceFetchResult
+} from "../knowledge/public-source-fetch.js";
+import {
   DEFAULT_OVERRIDE_FLAGS,
   type OverrideContext
 } from "../override/types.js";
@@ -89,6 +93,8 @@ export type HarnessResolvedSession = {
   startedFresh: boolean;
 };
 
+type PublicSourceFetcher = (url: string) => Promise<PublicSourceFetchResult>;
+
 export class HarnessRunner {
   private readonly knowledgePersistence: KnowledgePersistenceService;
   private readonly outputSafetyGuard: OutputSafetyGuard;
@@ -102,7 +108,8 @@ export class HarnessRunner {
     private readonly sessionManager: SessionManager,
     private readonly forumResearchPromptRefiner: ForumResearchPromptRefiner,
     private readonly forumResearchSupervisor: ForumResearchSupervisor,
-    private readonly logger: Logger
+    private readonly logger: Logger,
+    private readonly publicSourceFetcher: PublicSourceFetcher = fetchPublicSource
   ) {
     this.knowledgePersistence = new KnowledgePersistenceService(store, logger);
     this.outputSafetyGuard = new OutputSafetyGuard(store);
@@ -226,10 +233,12 @@ export class HarnessRunner {
       chatEngagement: normalizedInput.chatEngagement ?? null,
       recentRoomEvents: normalizedInput.recentRoomEvents ?? []
     });
+    const answerRequestWithPublicFacts =
+      await this.attachReadablePublicSourceFacts(answerRequest);
     const answerFlow = await this.runAnswerFlow({
       input: normalizedInput,
       threadContext,
-      request: answerRequest,
+      request: answerRequestWithPublicFacts,
       session: resolvedSession,
       fetchablePublicUrlCount
     });
@@ -374,7 +383,8 @@ export class HarnessRunner {
         discordRuntimeFactsPath:
           input.request.available_context.discord_runtime_facts_path,
         chatEngagement: input.request.available_context.chat_engagement,
-        recentRoomEvents: input.request.available_context.recent_room_events
+        recentRoomEvents: input.request.available_context.recent_room_events,
+        publicSourceFacts: input.request.available_context.public_source_facts ?? []
       });
       const knowledgeRetryTurn = await this.codexClient.runHarnessRequest(
         input.session.threadId,
@@ -470,7 +480,8 @@ export class HarnessRunner {
       discordRuntimeFactsPath:
         input.request.available_context.discord_runtime_facts_path,
       chatEngagement: input.request.available_context.chat_engagement,
-      recentRoomEvents: input.request.available_context.recent_room_events
+      recentRoomEvents: input.request.available_context.recent_room_events,
+      publicSourceFacts: input.request.available_context.public_source_facts ?? []
     });
     const secondTurn =
       isForumResearch && firstTurn.state
@@ -532,6 +543,71 @@ export class HarnessRunner {
       approvedEvidenceUrls: [],
       generatedImages: []
     };
+  }
+
+  private async attachReadablePublicSourceFacts(
+    request: HarnessRequest
+  ): Promise<HarnessRequest> {
+    if (!request.capabilities.allow_external_fetch) {
+      return request;
+    }
+
+    const readableUrlGroups = groupReadablePublicUrls(
+      request.available_context.fetchable_public_urls
+    );
+    if (readableUrlGroups.length === 0) {
+      return request;
+    }
+
+    const facts: NonNullable<
+      HarnessRequest["available_context"]["public_source_facts"]
+    > = [...(request.available_context.public_source_facts ?? [])];
+    for (const group of readableUrlGroups) {
+      const fact = await this.fetchFirstReadablePublicSource(group);
+      if (fact) {
+        facts.push(fact);
+      }
+    }
+
+    if (facts.length === (request.available_context.public_source_facts ?? []).length) {
+      return request;
+    }
+
+    return {
+      ...request,
+      available_context: {
+        ...request.available_context,
+        public_source_facts: dedupePublicSourceFacts(facts)
+      }
+    };
+  }
+
+  private async fetchFirstReadablePublicSource(
+    urls: string[]
+  ): Promise<
+    | NonNullable<
+        HarnessRequest["available_context"]["public_source_facts"]
+      >[number]
+    | null
+  > {
+    for (const url of urls) {
+      try {
+        const result = await this.publicSourceFetcher(url);
+        if (!isReadablePublicSourceFetchResult(result)) {
+          continue;
+        }
+        return toPublicSourceFact(result);
+      } catch (error) {
+        this.logger.debug(
+          {
+            url,
+            error: error instanceof Error ? error.message : String(error)
+          },
+          "readable public source fetch failed"
+        );
+      }
+    }
+    return null;
   }
 
   private traceOutputSafetyDecision(
@@ -905,6 +981,88 @@ function extractApprovedPublicUrls(values: string[]): string[] {
       .filter((value) => isAllowedPublicHttpUrl(value))
       .map((value) => canonicalizeUrl(value))
   );
+}
+
+function groupReadablePublicUrls(urls: string[]): string[][] {
+  const groups = new Map<string, string[]>();
+
+  for (const url of urls) {
+    const key = getReadableXStatusGroupKey(url);
+    if (!key) {
+      continue;
+    }
+    const group = groups.get(key) ?? [];
+    group.push(url);
+    groups.set(key, group);
+  }
+
+  return [...groups.values()];
+}
+
+function getReadableXStatusGroupKey(url: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+
+  const hostname = parsed.hostname.toLowerCase();
+  if (hostname === "api.fxtwitter.com") {
+    const match = parsed.pathname.match(/^\/2\/status\/(\d+)(?:\/|$)/);
+    return match?.[1] ? `x-status:${match[1]}` : null;
+  }
+
+  if (hostname === "r.jina.ai") {
+    const match = parsed.pathname.match(
+      /^\/https:\/\/x\.com\/(?:[^/]+|i\/web)\/status(?:es)?\/(\d+)(?:\/|$)/i
+    );
+    return match?.[1] ? `x-status:${match[1]}` : null;
+  }
+
+  return null;
+}
+
+function isReadablePublicSourceFetchResult(result: PublicSourceFetchResult): boolean {
+  return (
+    result.status >= 200 &&
+    result.status < 400 &&
+    (Boolean(result.title?.trim()) || Boolean(result.text?.trim()))
+  );
+}
+
+function toPublicSourceFact(
+  result: PublicSourceFetchResult
+): NonNullable<HarnessRequest["available_context"]["public_source_facts"]>[number] {
+  return {
+    requested_url: canonicalizeUrl(result.requestedUrl),
+    final_url: canonicalizeUrl(result.finalUrl),
+    canonical_url: canonicalizeUrl(result.canonicalUrl),
+    status: result.status,
+    content_type: result.contentType,
+    title: result.title,
+    text: result.text
+  };
+}
+
+function dedupePublicSourceFacts(
+  values: NonNullable<HarnessRequest["available_context"]["public_source_facts"]>
+): NonNullable<HarnessRequest["available_context"]["public_source_facts"]> {
+  const seen = new Set<string>();
+  const deduped: NonNullable<
+    HarnessRequest["available_context"]["public_source_facts"]
+  > = [];
+
+  for (const value of values) {
+    const key = value.canonical_url;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    deduped.push(value);
+  }
+
+  return deduped;
 }
 
 function dedupeKnowledgeWrites(

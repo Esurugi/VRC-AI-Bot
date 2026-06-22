@@ -198,7 +198,7 @@ test("buildHarnessRequest derives chat behavior from configured conversation pro
   assert.equal(knowledgeRequest.available_context.chat_behavior, null);
 });
 
-test("buildHarnessRequest separates X status mirrors into public fetch candidates", () => {
+test("buildHarnessRequest normalizes X status URLs into readable fetchable URLs", () => {
   const request = buildHarnessRequest({
     actorRole: "user",
     scope: "server_public",
@@ -224,15 +224,13 @@ test("buildHarnessRequest separates X status mirrors into public fetch candidate
   });
 
   assert.deepEqual(request.available_context.fetchable_public_urls, [
-    "https://x.com/am921543266/status/2068900130397569096?s=46"
-  ]);
-  assert.deepEqual(request.available_context.public_fetch_candidates, [
     "https://api.fxtwitter.com/2/status/2068900130397569096",
     "https://r.jina.ai/https://x.com/am921543266/status/2068900130397569096"
   ]);
+  assert.deepEqual(request.available_context.public_fetch_candidates, []);
 });
 
-test("buildHarnessRequest derives X status candidates from mirror URLs", () => {
+test("buildHarnessRequest normalizes X status mirror URLs into readable fetchable URLs", () => {
   const request = buildHarnessRequest({
     actorRole: "user",
     scope: "server_public",
@@ -257,13 +255,14 @@ test("buildHarnessRequest derives X status candidates from mirror URLs", () => {
     taskKind: "route_message"
   });
 
-  assert.deepEqual(request.available_context.public_fetch_candidates, [
+  assert.deepEqual(request.available_context.fetchable_public_urls, [
     "https://api.fxtwitter.com/2/status/2033636701848174967",
     "https://r.jina.ai/https://x.com/OpenAIDevs/status/2033636701848174967"
   ]);
+  assert.deepEqual(request.available_context.public_fetch_candidates, []);
 });
 
-test("buildHarnessRequest derives X status candidates from i/web status URLs", () => {
+test("buildHarnessRequest normalizes i/web X status URLs into readable fetchable URLs", () => {
   const request = buildHarnessRequest({
     actorRole: "user",
     scope: "server_public",
@@ -288,8 +287,9 @@ test("buildHarnessRequest derives X status candidates from i/web status URLs", (
     taskKind: "route_message"
   });
 
-  assert.deepEqual(request.available_context.public_fetch_candidates, [
+  assert.deepEqual(request.available_context.fetchable_public_urls, [
     "https://api.fxtwitter.com/2/status/2033636701848174967",
     "https://r.jina.ai/https://x.com/i/web/status/2033636701848174967"
   ]);
+  assert.deepEqual(request.available_context.public_fetch_candidates, []);
 });

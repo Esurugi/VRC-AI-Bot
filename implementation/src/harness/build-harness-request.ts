@@ -44,6 +44,9 @@ export function buildHarnessRequest(input: {
   discordRuntimeFactsPath?: string | null;
   chatEngagement?: ChatEngagementFact | null;
   recentRoomEvents?: RecentRoomEventFact[];
+  publicSourceFacts?: NonNullable<
+    HarnessRequest["available_context"]["public_source_facts"]
+  >;
   retryContext?:
     | {
         kind: "output_safety";
@@ -92,10 +95,10 @@ export function buildHarnessRequest(input: {
     discordRuntimeFactsPath = null,
     chatEngagement = null,
     recentRoomEvents = [],
+    publicSourceFacts = [],
     retryContext = null
   } = input;
   const fetchablePublicUrls: string[] = [];
-  const publicFetchCandidates: string[] = [];
   const blockedUrls: string[] = [];
   const isKnowledgePlace =
     isKnowledgeIngestPlace(watchLocation) ||
@@ -112,8 +115,7 @@ export function buildHarnessRequest(input: {
 
   for (const url of envelope.urls) {
     if (isAllowedPublicHttpUrl(url)) {
-      fetchablePublicUrls.push(url);
-      publicFetchCandidates.push(...buildSamePostPublicFetchCandidates(url));
+      fetchablePublicUrls.push(...toFetchablePublicUrls(url));
       continue;
     }
     blockedUrls.push(url);
@@ -182,7 +184,8 @@ export function buildHarnessRequest(input: {
       },
       discord_runtime_facts_path: discordRuntimeFactsPath,
       fetchable_public_urls: dedupeStrings(fetchablePublicUrls),
-      public_fetch_candidates: dedupeStrings(publicFetchCandidates),
+      public_fetch_candidates: [],
+      public_source_facts: publicSourceFacts,
       blocked_urls: dedupeStrings(blockedUrls),
       chat_engagement: chatEngagement,
       recent_room_events: recentRoomEvents,
@@ -210,10 +213,10 @@ export function buildHarnessRequest(input: {
   };
 }
 
-function buildSamePostPublicFetchCandidates(url: string): string[] {
+function toFetchablePublicUrls(url: string): string[] {
   const xStatus = extractXTwitterStatus(url);
   if (!xStatus) {
-    return [];
+    return [url];
   }
 
   const fxTwitterApiUrl = `https://api.fxtwitter.com/2/status/${xStatus.id}`;

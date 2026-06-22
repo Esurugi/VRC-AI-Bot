@@ -83,7 +83,11 @@ test("harness instructions explain ambient room chat handling", () => {
   );
   assert.match(
     HARNESS_DEVELOPER_INSTRUCTIONS,
-    /fetchable_public_urls are already-approved direct public URLs[\s\S]*public_fetch_candidates are narrow public fetch leads[\s\S]*not observed source evidence/i
+    /public_source_facts are public URL bodies already fetched by System[\s\S]*use their title\/text as source facts/i
+  );
+  assert.match(
+    HARNESS_DEVELOPER_INSTRUCTIONS,
+    /fetchable_public_urls are already-approved direct public URLs[\s\S]*X\/Twitter status URLs are normalized[\s\S]*api\.fxtwitter\.com[\s\S]*r\.jina\.ai\/https:\/\/x\.com/i
   );
   assert.match(
     HARNESS_DEVELOPER_INSTRUCTIONS,
@@ -238,7 +242,7 @@ test("namespace sandbox probe reuses the configured codex app-server command", (
   );
 });
 
-test("harness instructions allow narrow FxTwitter evidence for X/Twitter status URLs", () => {
+test("harness instructions treat X/Twitter status URLs as normalized readable fetchable URLs", () => {
   assert.match(
     HARNESS_DEVELOPER_INSTRUCTIONS,
     /X\/Twitter status URL/i
@@ -257,32 +261,21 @@ test("harness instructions allow narrow FxTwitter evidence for X/Twitter status 
   );
   assert.match(
     HARNESS_DEVELOPER_INSTRUCTIONS,
-    /fxtwitter\.com\/\{handle\}\/status\/\{id\}/i
-  );
-  assert.match(
-    HARNESS_DEVELOPER_INSTRUCTIONS,
-    /Jina Reader over the canonical X URL/i
-  );
-  assert.match(
-    HARNESS_DEVELOPER_INSTRUCTIONS,
     /https:\/\/r\.jina\.ai\/https:\/\/x\.com\/\{handle\}\/status\/\{id\}/i
   );
   assert.match(
     HARNESS_DEVELOPER_INSTRUCTIONS,
-    /use available_context\.public_fetch_candidates in order[\s\S]*Run public-source-fetch on the next candidate before saying the post body cannot be read/i
+    /prefer available_context\.public_source_facts when System has already fetched the readable post body/i
   );
   assert.match(
     HARNESS_DEVELOPER_INSTRUCTIONS,
-    /HTTP 2xx\/3xx[\s\S]*non-empty title or text[\s\S]*sources_used[\s\S]*knowledge_writes/i
+    /use the readable URLs already present in available_context\.fetchable_public_urls in order/i
   );
   assert.match(
     HARNESS_DEVELOPER_INSTRUCTIONS,
-    /no title\/text, 4xx, or 5xx is fetched-but-unreadable/i
+    /FxTwitter API URL first[\s\S]*Jina Reader URL over the canonical x\.com status URL/i
   );
-  assert.match(
-    HARNESS_DEVELOPER_INSTRUCTIONS,
-    /FxTwitter JSON or Jina Reader text[\s\S]*title\/text contain the public status author and\/or text/i
-  );
+  assert.doesNotMatch(HARNESS_DEVELOPER_INSTRUCTIONS, /available_context\.public_fetch_candidates in order/i);
 });
 
 test("clear explanation sessions inline the explaining-clearly skill", () => {
