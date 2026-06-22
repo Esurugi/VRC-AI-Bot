@@ -1,11 +1,4 @@
-import type { Message } from "discord.js";
-
-import type {
-  ChatEngagementFact,
-  ChatEngagementTriggerKind,
-  MessageEnvelope,
-  WatchLocationConfig
-} from "../../domain/types.js";
+import type { ChatEngagementFact } from "../../domain/types.js";
 import {
   isKnowledgePlaceRootShare,
   isThreadEnvelope
@@ -16,24 +9,17 @@ import {
   isKnowledgeIngestPlace,
   resolvePlaceChatBehavior
 } from "../../domain/place-features.js";
-
-export type ChatEngagementDecision = "always" | "sparse" | "ignore";
-export type DirectedChatTriggerKind = Exclude<
-  ChatEngagementTriggerKind,
-  "sparse_periodic" | "ambient_room"
->;
-
-export type ChatEngagementFacts = {
-  message: Message<true>;
-  envelope: MessageEnvelope;
-  watchLocation: WatchLocationConfig;
-};
-
-export type ChatEngagementEvaluation = {
-  decision: ChatEngagementDecision;
-  triggerKind: ChatEngagementTriggerKind | null;
-  isDirectedToBot: boolean;
-};
+import { resolveBotDirectedEngagement } from "./bot-directed-engagement.js";
+import type {
+  ChatEngagementEvaluation,
+  ChatEngagementFacts
+} from "./chat-engagement-types.js";
+export type {
+  ChatEngagementDecision,
+  ChatEngagementEvaluation,
+  ChatEngagementFacts,
+  DirectedChatTriggerKind
+} from "./chat-engagement-types.js";
 
 export class ChatEngagementPolicy {
   async evaluate(input: ChatEngagementFacts): Promise<ChatEngagementEvaluation> {
@@ -41,7 +27,6 @@ export class ChatEngagementPolicy {
 
     if (isKnowledgeIngestPlace(input.watchLocation)) {
       if (
-        isThreadEnvelope(input.envelope) ||
         isKnowledgePlaceRootShare({
           envelope: input.envelope,
           watchLocation: input.watchLocation
@@ -54,7 +39,7 @@ export class ChatEngagementPolicy {
         };
       }
 
-      const directed = await resolveExplicitBotDirectedEvaluation({
+      const directed = await resolveBotDirectedEngagement({
         message: input.message,
         botUserId
       });
@@ -77,7 +62,7 @@ export class ChatEngagementPolicy {
       };
     }
 
-    const directed = await resolveExplicitBotDirectedEvaluation({
+    const directed = await resolveBotDirectedEngagement({
       message: input.message,
       botUserId
     });
@@ -94,27 +79,19 @@ export class ChatEngagementPolicy {
       };
     }
 
-    if (isAmbientConversationPlace(input.watchLocation)) {
-      if (containsQuestionMarker(input.envelope.content)) {
-        return {
-          decision: "always",
-          triggerKind: "ambient_room",
-          isDirectedToBot: false
-        };
-      }
-
+    if (chatBehavior !== null && isThreadEnvelope(input.envelope)) {
       return {
-        decision: "sparse",
+        decision: "ignore",
         triggerKind: null,
         isDirectedToBot: false
       };
     }
 
-    if (containsQuestionMarker(input.envelope.content)) {
+    if (isAmbientConversationPlace(input.watchLocation)) {
       return {
-        decision: "always",
-        triggerKind: "question_marker",
-        isDirectedToBot: true
+        decision: "sparse",
+        triggerKind: null,
+        isDirectedToBot: false
       };
     }
 
@@ -153,48 +130,4 @@ export function toChatEngagementFact(input: {
     sparse_ordinal: input.ordinaryMessageCount ?? null,
     ordinary_message_count: input.ordinaryMessageCount ?? null
   };
-}
-
-async function isReplyToBot(message: Message<true>): Promise<boolean> {
-  if (!message.reference?.messageId) {
-    return false;
-  }
-
-  if (message.mentions.repliedUser?.id === message.client.user?.id) {
-    return true;
-  }
-
-  try {
-    const referenced = await message.fetchReference();
-    return referenced.author.id === message.client.user?.id;
-  } catch {
-    return false;
-  }
-}
-
-function containsQuestionMarker(content: string): boolean {
-  return content.includes("?") || content.includes("？");
-}
-
-async function resolveExplicitBotDirectedEvaluation(input: {
-  message: Message<true>;
-  botUserId: string | undefined;
-}): Promise<ChatEngagementEvaluation | null> {
-  if (input.botUserId !== undefined && input.message.mentions.users.has(input.botUserId)) {
-    return {
-      decision: "always",
-      triggerKind: "direct_mention",
-      isDirectedToBot: true
-    };
-  }
-
-  if (await isReplyToBot(input.message)) {
-    return {
-      decision: "always",
-      triggerKind: "reply_to_bot",
-      isDirectedToBot: true
-    };
-  }
-
-  return null;
 }

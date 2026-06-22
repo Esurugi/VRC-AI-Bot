@@ -6,7 +6,7 @@ import {
   shouldShowProcessingUi
 } from "../../src/runtime/message/processing-visibility.js";
 
-test("ambient room chat does not add a processing reaction", () => {
+test("ambient room chat trigger does not add a processing reaction", () => {
   assert.equal(
     shouldShowProcessingUi({
       watchLocation: {
@@ -18,6 +18,27 @@ test("ambient room chat does not add a processing reaction", () => {
       },
       chatEngagement: {
         trigger_kind: "ambient_room",
+        is_directed_to_bot: false,
+        sparse_ordinal: null,
+        ordinary_message_count: null
+      }
+    }),
+    false
+  );
+});
+
+test("question marker trigger does not add a processing reaction", () => {
+  assert.equal(
+    shouldShowProcessingUi({
+      watchLocation: {
+        guildId: "g1",
+        channelId: "c1",
+        mode: "chat",
+        defaultScope: "server_public",
+        chatBehavior: "directed_help_chat"
+      },
+      chatEngagement: {
+        trigger_kind: "question_marker",
         is_directed_to_bot: false,
         sparse_ordinal: null,
         ordinary_message_count: null

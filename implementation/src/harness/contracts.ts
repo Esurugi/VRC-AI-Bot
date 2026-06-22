@@ -135,6 +135,7 @@ export type HarnessRequest = {
     };
     discord_runtime_facts_path: string | null;
     fetchable_public_urls: string[];
+    public_fetch_candidates?: string[];
     blocked_urls: string[];
     chat_behavior: "ambient_room_chat" | "directed_help_chat" | null;
     chat_engagement: {

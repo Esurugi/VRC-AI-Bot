@@ -19,8 +19,7 @@ export function shouldShowProcessingUi(input: ProcessingVisibilityInput): boolea
   const triggerKind = input.chatEngagement?.trigger_kind ?? null;
   return (
     triggerKind === "direct_mention" ||
-    triggerKind === "reply_to_bot" ||
-    triggerKind === "question_marker"
+    triggerKind === "reply_to_bot"
   );
 }
 

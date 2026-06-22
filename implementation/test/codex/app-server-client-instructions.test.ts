@@ -28,7 +28,7 @@ test("harness instructions explain ambient room chat handling", () => {
   );
   assert.match(
     HARNESS_DEVELOPER_INSTRUCTIONS,
-    /return ignore when it looks aimed at another participant/i
+    /do not treat the question mark alone as bot-directed/i
   );
   assert.match(
     HARNESS_DEVELOPER_INSTRUCTIONS,
@@ -48,7 +48,7 @@ test("harness instructions explain ambient room chat handling", () => {
   );
   assert.match(
     HARNESS_DEVELOPER_INSTRUCTIONS,
-    /do not include that URL in sources_used or knowledge_writes unless you established same-turn public reconfirmation/
+    /do not include that URL in sources_used or knowledge_writes unless public-source-fetch established same-turn public source evidence/
   );
   assert.match(
     HARNESS_DEVELOPER_INSTRUCTIONS,
@@ -75,7 +75,15 @@ test("harness instructions explain ambient room chat handling", () => {
   );
   assert.match(
     HARNESS_DEVELOPER_INSTRUCTIONS,
+    /Do not treat non-empty text alone as an admission reason/
+  );
+  assert.match(
+    HARNESS_DEVELOPER_INSTRUCTIONS,
     /do not stop at fetchable_public_urls when they yield only a shell page, login wall, embed wrapper, or too little text/
+  );
+  assert.match(
+    HARNESS_DEVELOPER_INSTRUCTIONS,
+    /fetchable_public_urls are already-approved direct public URLs[\s\S]*public_fetch_candidates are narrow public fetch leads[\s\S]*not observed source evidence/i
   );
   assert.match(
     HARNESS_DEVELOPER_INSTRUCTIONS,
@@ -160,6 +168,113 @@ test("harness instructions preserve override pre-edit gates", () => {
   assert.match(HARNESS_DEVELOPER_INSTRUCTIONS, /verification commands/i);
 });
 
+test("namespace sandbox fallback only changes admin-authorized override workspace-write after known bwrap namespace failure", () => {
+  assert.equal(
+    __testOnly.isNamespaceSandboxUnsupportedOutput(
+      "bwrap: No permissions to create a new namespace, likely because the kernel does not allow user namespaces"
+    ),
+    true
+  );
+  assert.equal(
+    __testOnly.isNamespaceSandboxUnsupportedOutput(
+      "codex-linux-sandbox executable not found"
+    ),
+    false
+  );
+  assert.equal(
+    __testOnly.resolveThreadSandbox({
+      requestedSandbox: "workspace-write",
+      namespaceSandboxUnsupported: true,
+      allowNamespaceSandboxFallback: true
+    }),
+    "danger-full-access"
+  );
+  assert.throws(
+    () =>
+      __testOnly.resolveThreadSandbox({
+        requestedSandbox: "workspace-write",
+        namespaceSandboxUnsupported: true,
+        allowNamespaceSandboxFallback: false
+      }),
+    /active admin override authorization/
+  );
+  assert.equal(
+    __testOnly.resolveThreadSandbox({
+      requestedSandbox: "workspace-write",
+      namespaceSandboxUnsupported: false
+    }),
+    "workspace-write"
+  );
+  assert.equal(
+    __testOnly.resolveThreadSandbox({
+      requestedSandbox: "read-only",
+      namespaceSandboxUnsupported: true,
+      allowNamespaceSandboxFallback: true
+    }),
+    "read-only"
+  );
+});
+
+test("namespace sandbox probe reuses the configured codex app-server command", () => {
+  assert.deepEqual(
+    __testOnly.buildNamespaceSandboxProbeInvocation("codex app-server"),
+    {
+      command: "codex",
+      args: ["sandbox", "linux", "--full-auto", "true"]
+    }
+  );
+  assert.deepEqual(
+    __testOnly.buildNamespaceSandboxProbeInvocation(
+      "npx codex app-server --listen stdio://"
+    ),
+    {
+      command: "npx",
+      args: ["codex", "sandbox", "linux", "--full-auto", "true"]
+    }
+  );
+  assert.equal(
+    __testOnly.buildNamespaceSandboxProbeInvocation("codex exec"),
+    null
+  );
+});
+
+test("harness instructions allow narrow FxTwitter evidence for X/Twitter status URLs", () => {
+  assert.match(
+    HARNESS_DEVELOPER_INSTRUCTIONS,
+    /X\/Twitter status URL/i
+  );
+  assert.match(
+    HARNESS_DEVELOPER_INSTRUCTIONS,
+    /x\.com\/\{handle\}\/status\/\{id\}/i
+  );
+  assert.match(
+    HARNESS_DEVELOPER_INSTRUCTIONS,
+    /twitter\.com\/.*\/status\/\{id\}/i
+  );
+  assert.match(
+    HARNESS_DEVELOPER_INSTRUCTIONS,
+    /https:\/\/api\.fxtwitter\.com\/2\/status\/\{id\}/i
+  );
+  assert.match(
+    HARNESS_DEVELOPER_INSTRUCTIONS,
+    /original X\/Twitter page yields only a shell page[\s\S]*run public-source-fetch on that API URL before saying the post body cannot be read/i
+  );
+  assert.match(
+    HARNESS_DEVELOPER_INSTRUCTIONS,
+    /public-source-fetch succeeds[\s\S]*non-empty title or text[\s\S]*sources_used[\s\S]*knowledge_writes/i
+  );
+  assert.match(
+    HARNESS_DEVELOPER_INSTRUCTIONS,
+    /successful fetch with no title\/text is fetched-but-unreadable/i
+  );
+  assert.match(
+    HARNESS_DEVELOPER_INSTRUCTIONS,
+    /FxTwitter JSON[\s\S]*title\/text contain the public status author and text/i
+  );
+  assert.match(HARNESS_DEVELOPER_INSTRUCTIONS, /Jina Reader/i);
+  assert.match(HARNESS_DEVELOPER_INSTRUCTIONS, /fallback/i);
+});
+
 test("clear explanation sessions inline the explaining-clearly skill", () => {
   const repoRoot = mkdtempSync(join(tmpdir(), "vrc-ai-bot-skill-inline-"));
   const skillRoot = join(repoRoot, ".agents", "skills", "explaining-clearly");
@@ -224,7 +339,10 @@ test("observed public URLs require public-source-fetch command output", () => {
           public: true,
           status: 200,
           finalUrl: "https://example.com/source",
-          canonicalUrl: "https://example.com/source"
+          canonicalUrl: "https://example.com/source",
+          contentType: "application/json",
+          title: "Fetched source",
+          text: "Fetched public source text."
         })
       }
     ],
@@ -254,6 +372,34 @@ test("public-source-fetch observations stay disabled without external fetch perm
       }
     ],
     false,
+    repoCwd
+  );
+
+  assert.deepEqual(observed, []);
+});
+
+test("public-source-fetch observations require title or text evidence", () => {
+  const repoCwd = process.cwd();
+  const observed = __testOnly.extractObservedPublicUrlsFromTurnItems(
+    [
+      {
+        type: "commandExecution",
+        exitCode: 0,
+        command:
+          "node --import tsx .agents/skills/public-source-fetch/scripts/fetch-public-source.ts --url https://example.com/source",
+        cwd: repoCwd,
+        aggregatedOutput: JSON.stringify({
+          public: true,
+          status: 200,
+          finalUrl: "https://example.com/source",
+          canonicalUrl: "https://example.com/source",
+          contentType: "application/octet-stream",
+          title: null,
+          text: null
+        })
+      }
+    ],
+    true,
     repoCwd
   );
 

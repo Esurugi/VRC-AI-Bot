@@ -10,11 +10,11 @@ import {
   FORUM_LONGFORM_CODEX_MODEL_PROFILE
 } from "../../src/codex/session-policy.js";
 
-test("chat and ambient profiles use gpt-5.5-mini", () => {
+test("chat and ambient profiles use gpt-5.5 with low reasoning", () => {
   assert.deepEqual(
     resolveCodexExecutionProfile(CHAT_CONVERSATION_LOW_CODEX_MODEL_PROFILE),
     {
-      model: "gpt-5.5-mini",
+      model: "gpt-5.5",
       reasoningEffort: "low"
     }
   );
@@ -22,7 +22,7 @@ test("chat and ambient profiles use gpt-5.5-mini", () => {
   assert.deepEqual(
     resolveCodexExecutionProfile(AMBIENT_ROOM_CHAT_CODEX_MODEL_PROFILE),
     {
-      model: "gpt-5.5-mini",
+      model: "gpt-5.5",
       reasoningEffort: "low"
     }
   );

@@ -95,6 +95,7 @@ export function buildHarnessRequest(input: {
     retryContext = null
   } = input;
   const fetchablePublicUrls: string[] = [];
+  const publicFetchCandidates: string[] = [];
   const blockedUrls: string[] = [];
   const isKnowledgePlace =
     isKnowledgeIngestPlace(watchLocation) ||
@@ -112,6 +113,7 @@ export function buildHarnessRequest(input: {
   for (const url of envelope.urls) {
     if (isAllowedPublicHttpUrl(url)) {
       fetchablePublicUrls.push(url);
+      publicFetchCandidates.push(...buildSamePostPublicFetchCandidates(url));
       continue;
     }
     blockedUrls.push(url);
@@ -179,8 +181,9 @@ export function buildHarnessRequest(input: {
         bot_directed_trigger_kind: deliveryTriggerKind
       },
       discord_runtime_facts_path: discordRuntimeFactsPath,
-      fetchable_public_urls: fetchablePublicUrls,
-      blocked_urls: blockedUrls,
+      fetchable_public_urls: dedupeStrings(fetchablePublicUrls),
+      public_fetch_candidates: dedupeStrings(publicFetchCandidates),
+      blocked_urls: dedupeStrings(blockedUrls),
       chat_engagement: chatEngagement,
       recent_room_events: recentRoomEvents,
       chat_behavior: resolvePlaceChatBehavior(watchLocation)
@@ -205,4 +208,35 @@ export function buildHarnessRequest(input: {
             : null
     }
   };
+}
+
+function buildSamePostPublicFetchCandidates(url: string): string[] {
+  const xStatusId = extractXTwitterStatusId(url);
+  if (!xStatusId) {
+    return [];
+  }
+
+  const fxTwitterApiUrl = `https://api.fxtwitter.com/2/status/${xStatusId}`;
+  return isAllowedPublicHttpUrl(fxTwitterApiUrl) ? [fxTwitterApiUrl] : [];
+}
+
+function extractXTwitterStatusId(rawUrl: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return null;
+  }
+
+  const hostname = parsed.hostname.toLowerCase().replace(/^www\./, "");
+  if (hostname !== "x.com" && hostname !== "twitter.com") {
+    return null;
+  }
+
+  const match = parsed.pathname.match(/^\/[^/]+\/status(?:es)?\/(\d+)(?:\/|$)/i);
+  return match?.[1] ?? null;
+}
+
+function dedupeStrings(values: string[]): string[] {
+  return [...new Set(values)];
 }

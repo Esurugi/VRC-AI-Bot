@@ -238,6 +238,9 @@ function createService(
         })
       } as never),
     {
+      evaluateMessage: async () => ({ decision: "pass" })
+    } as never,
+    {
       decide: async () => "allow_clear_explanation"
     } as never,
     overrides.failureClassifier ?? ({} as never),

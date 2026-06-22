@@ -2,7 +2,8 @@ import type { Message } from "discord.js";
 
 import { hasPlaceFeature } from "../../domain/place-features.js";
 import type { WatchLocationConfig } from "../../domain/types.js";
-import type { ChatEngagementEvaluation } from "../chat/chat-engagement-policy.js";
+import type { ChatEngagementEvaluation } from "../chat/chat-engagement-types.js";
+import { resolveBotDirectedEngagement } from "../chat/bot-directed-engagement.js";
 
 export type FeatureThreadHandling =
   | {
@@ -44,15 +45,14 @@ export class FeatureThreadService {
       };
     }
 
-    const botUserId = message.client.user?.id;
-    if (botUserId && message.mentions.users.has(botUserId)) {
+    const directed = await resolveBotDirectedEngagement({
+      message,
+      botUserId: message.client.user?.id
+    });
+    if (directed !== null) {
       return {
         decision: "handle",
-        engagement: {
-          decision: "always",
-          triggerKind: "direct_mention",
-          isDirectedToBot: true
-        }
+        engagement: directed
       };
     }
 

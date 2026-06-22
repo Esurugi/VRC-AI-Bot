@@ -22,6 +22,7 @@ import {
   hasPlaceFeature,
   isKnowledgeIngestPlace
 } from "../domain/place-features.js";
+import { isExplicitBotDirectedEngagement } from "../domain/response-boundary.js";
 import { KnowledgePersistenceService } from "../knowledge/knowledge-persistence-service.js";
 import {
   DEFAULT_OVERRIDE_FLAGS,
@@ -967,7 +968,7 @@ function shouldRetryKnowledgeThreadFollowUp(
 ): boolean {
   return (
     isKnowledgeFollowUpThreadKind(threadContext.kind) &&
-    input.envelope.content.trim().length > 0 &&
+    isExplicitBotDirectedEngagement(input.chatEngagement ?? null) &&
     !wouldProduceVisibleReply(response)
   );
 }

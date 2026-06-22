@@ -122,6 +122,167 @@ test("R5 supporting: knowledge_writes cannot persist unobserved public URLs", ()
   });
 });
 
+test("R5 X/Twitter: observed FxTwitter API URL can ground sources_used and knowledge_writes", () => {
+  withSafetyGuard(({ guard }) => {
+    const fxtwitterApiUrl =
+      "https://api.fxtwitter.com/2/status/2033636701848174967";
+    const request = createRequest({
+      mode: "url_watch",
+      allowExternalFetch: true,
+      fetchablePublicUrls: ["https://x.com/openaidevs/status/2033636701848174967"]
+    });
+    const response = createResponse({
+      sourcesUsed: [fxtwitterApiUrl],
+      knowledgeWrites: [
+        {
+          source_url: fxtwitterApiUrl,
+          canonical_url: fxtwitterApiUrl,
+          title: "FxTwitter evidence",
+          summary: "The same X/Twitter status was observed through a public API.",
+          tags: ["x-twitter"],
+          content_hash: null,
+          normalized_text: null,
+          source_kind: "webpage"
+        }
+      ]
+    });
+
+    const evaluation = guard.evaluate({
+      request,
+      response,
+      linkedKnowledgeSources: [],
+      observedPublicUrls: [fxtwitterApiUrl]
+    });
+
+    assert.equal(evaluation.decision, "allow");
+    assert.deepEqual(evaluation.disallowedSources, []);
+    assert.ok(evaluation.allowedSources.includes(fxtwitterApiUrl));
+  });
+});
+
+test("R5 X/Twitter: unobserved FxTwitter API URL cannot ground sources_used or knowledge_writes", () => {
+  withSafetyGuard(({ guard }) => {
+    const fxtwitterApiUrl =
+      "https://api.fxtwitter.com/2/status/2033636701848174967";
+    const request = createRequest({
+      mode: "url_watch",
+      allowExternalFetch: true,
+      fetchablePublicUrls: [
+        "https://twitter.com/openaidevs/status/2033636701848174967"
+      ],
+      publicFetchCandidates: [fxtwitterApiUrl]
+    });
+    const response = createResponse({
+      sourcesUsed: [fxtwitterApiUrl],
+      knowledgeWrites: [
+        {
+          source_url: fxtwitterApiUrl,
+          canonical_url: fxtwitterApiUrl,
+          title: "Unobserved FxTwitter evidence",
+          summary: "This write must wait for same-turn public reconfirmation.",
+          tags: ["x-twitter"],
+          content_hash: null,
+          normalized_text: null,
+          source_kind: "webpage"
+        }
+      ]
+    });
+
+    const evaluation = guard.evaluate({
+      request,
+      response,
+      linkedKnowledgeSources: [],
+      observedPublicUrls: []
+    });
+
+    assert.equal(evaluation.decision, "retry");
+    assert.match(evaluation.reason ?? "", /source url is not visible in current scope/);
+    assert.deepEqual(evaluation.disallowedSources, [fxtwitterApiUrl]);
+  });
+});
+
+test("R5 X/Twitter: public fetch candidate alone is not observed evidence", () => {
+  withSafetyGuard(({ guard }) => {
+    const fxtwitterApiUrl =
+      "https://api.fxtwitter.com/2/status/2033636701848174967";
+    const request = createRequest({
+      mode: "url_watch",
+      allowExternalFetch: true,
+      fetchablePublicUrls: [
+        "https://x.com/openaidevs/status/2033636701848174967"
+      ],
+      publicFetchCandidates: [fxtwitterApiUrl]
+    });
+    const response = createResponse({
+      sourcesUsed: [fxtwitterApiUrl]
+    });
+
+    const evaluation = guard.evaluate({
+      request,
+      response,
+      linkedKnowledgeSources: [],
+      observedPublicUrls: []
+    });
+
+    assert.equal(evaluation.decision, "retry");
+    assert.match(evaluation.reason ?? "", /source url is not visible in current scope/);
+    assert.deepEqual(evaluation.disallowedSources, [fxtwitterApiUrl]);
+    assert.equal(evaluation.allowedSources.includes(fxtwitterApiUrl), false);
+  });
+});
+
+test("R5 X/Twitter: blocked FxTwitter API URL stays disallowed even when observed", () => {
+  withSafetyGuard(({ guard }) => {
+    const fxtwitterApiUrl =
+      "https://api.fxtwitter.com/2/status/2033636701848174967";
+    const request = createRequest({
+      mode: "url_watch",
+      allowExternalFetch: true,
+      fetchablePublicUrls: ["https://x.com/openaidevs/status/2033636701848174967"],
+      blockedPublicUrls: [fxtwitterApiUrl]
+    });
+    const response = createResponse({
+      sourcesUsed: [fxtwitterApiUrl]
+    });
+
+    const evaluation = guard.evaluate({
+      request,
+      response,
+      linkedKnowledgeSources: [],
+      observedPublicUrls: [fxtwitterApiUrl]
+    });
+
+    assert.equal(evaluation.decision, "retry");
+    assert.match(evaluation.reason ?? "", /blocked or non-public source url/);
+    assert.deepEqual(evaluation.disallowedSources, [fxtwitterApiUrl]);
+  });
+});
+
+test("R5 X/Twitter: private transformed URL stays disallowed even when observed", () => {
+  withSafetyGuard(({ guard }) => {
+    const privateUrl = "http://127.0.0.1/status/2033636701848174967";
+    const request = createRequest({
+      mode: "url_watch",
+      allowExternalFetch: true,
+      fetchablePublicUrls: ["https://x.com/openaidevs/status/2033636701848174967"]
+    });
+    const response = createResponse({
+      sourcesUsed: [privateUrl]
+    });
+
+    const evaluation = guard.evaluate({
+      request,
+      response,
+      linkedKnowledgeSources: [],
+      observedPublicUrls: [privateUrl]
+    });
+
+    assert.equal(evaluation.decision, "retry");
+    assert.match(evaluation.reason ?? "", /blocked or non-public source url/);
+    assert.deepEqual(evaluation.disallowedSources, [privateUrl]);
+  });
+});
+
 function withSafetyGuard(
   callback: (input: { guard: OutputSafetyGuard; store: SqliteStore }) => void
 ): void {
@@ -141,6 +302,8 @@ function createRequest(input: {
   mode: HarnessRequest["place"]["mode"];
   allowExternalFetch: boolean;
   fetchablePublicUrls: string[];
+  publicFetchCandidates?: string[];
+  blockedPublicUrls?: string[];
 }): HarnessRequest {
   return {
     request_id: "request-1",
@@ -206,7 +369,8 @@ function createRequest(input: {
       },
       discord_runtime_facts_path: null,
       fetchable_public_urls: input.fetchablePublicUrls,
-      blocked_urls: [],
+      public_fetch_candidates: input.publicFetchCandidates ?? [],
+      blocked_urls: input.blockedPublicUrls ?? [],
       chat_behavior: null,
       chat_engagement: null,
       recent_room_events: []

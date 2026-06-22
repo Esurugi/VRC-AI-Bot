@@ -1,4 +1,8 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import {
+  spawn,
+  spawnSync,
+  type ChildProcessWithoutNullStreams
+} from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { relative, resolve } from "node:path";
 
@@ -142,10 +146,30 @@ type TurnStreamState = StreamingTextTurnCallbacks & {
 };
 
 const BEST_EFFORT_CONTROL_REQUEST_TIMEOUT_MS = 5_000;
+const NAMESPACE_SANDBOX_PROBE_TIMEOUT_MS = 5_000;
 const ROOT_AGENTS_SYSTEM_PROMPT_HEADING = "## System Prompt Injection";
+const BWRAP_NAMESPACE_FAILURE_PATTERN =
+  /bwrap:\s*No permissions to create a new namespace/i;
 
 type HarnessDeveloperInstructionOptions = {
   includeClearExplanationSkill?: boolean;
+};
+
+type ThreadSandboxOptions = {
+  allowNamespaceSandboxFallback?: boolean;
+};
+
+type CodexThreadSandboxMode = CodexSandboxMode | "danger-full-access";
+
+type NamespaceSandboxProbeResult = {
+  status:
+    | "skipped_non_linux"
+    | "skipped_unrecognized_command"
+    | "supported_or_unknown"
+    | "unsupported";
+  namespaceSandboxUnsupported: boolean;
+  command: string | null;
+  args: string[];
 };
 
 export const HARNESS_DEVELOPER_INSTRUCTIONS = buildHarnessDeveloperInstructions();
@@ -181,7 +205,7 @@ export function buildHarnessDeveloperInstructions(
     "place.mode may be present as a compatibility or display label. Do not use it as the authority for routing, capability, or workload decisions.",
     "If available_context.thread_context.kind is knowledge_thread, prefer answering in that existing thread and use known_source_urls when useful.",
     "If available_context.thread_context.kind is missing_or_stale_knowledge_thread, System knows this is under a knowledge_ingest place but has no valid thread binding facts. Do not invent known_source_urls, source_message_id, or prior source details.",
-    "For missing_or_stale_knowledge_thread, return a same-thread visible Japanese explanation or recovery reply. Do not return ignore or no_reply for a non-empty human follow-up unless system facts explicitly require silence.",
+    "For missing_or_stale_knowledge_thread, return a same-thread visible Japanese explanation or recovery reply when the turn was admitted as a directed follow-up. Do not treat non-empty text alone as an admission reason.",
     "available_context.place_context.is_knowledge_place is a system fact telling you whether this turn belongs to a knowledge-owned place.",
     "If available_context.place_context.is_knowledge_place is true, treat knowledge_ingest as the place-owned sharing path and keep URLs as evidence, not ownership.",
     ...(rootAgentsSystemPromptRules.length > 0
@@ -199,17 +223,17 @@ export function buildHarnessDeveloperInstructions(
     "If available_context.chat_behavior is ambient_room_chat, first decide what the current message is reacting to in recent_room_events before deciding whether to reply.",
     "If available_context.chat_behavior is ambient_room_chat, prefer a short grounded in-room reply over ignore whenever you can identify a plausible target turn or a lightweight acknowledgment would help the room flow.",
     "If available_context.chat_behavior is ambient_room_chat and the room is mainly talking to someone else, return ignore unless replying would clearly help the room right now.",
-    "If available_context.chat_behavior is ambient_room_chat and available_context.chat_engagement.trigger_kind is ambient_room, do not assume the current message is directed at the bot even when it contains a question mark.",
-    "If available_context.chat_behavior is ambient_room_chat and the current message is a bare question to the room, check recent_room_events first and return ignore when it looks aimed at another participant rather than the bot.",
+    "If available_context.chat_behavior is ambient_room_chat and available_context.chat_engagement.trigger_kind is ambient_room, do not assume the current message is directed at the bot.",
+    "If the current message is a bare question to the room without a direct mention or reply_to_bot, do not treat the question mark alone as bot-directed.",
     "If available_context.chat_behavior is ambient_room_chat, use recent_room_events as the primary conversational context.",
     "If available_context.chat_engagement.trigger_kind is sparse_periodic, do not assume message.content is directed at the bot. In that case, treat recent_room_events as the primary conversational context and treat the current message as a weak same-room signal.",
     "If available_context.chat_engagement.trigger_kind is sparse_periodic and the current message is a short acknowledgment, reaction, or exclamation, do not revive an older bot agenda just because it exists in session memory. Prefer a short reply that fits the latest human exchange. A light grounded suggestion is fine only if it clearly follows the recent exchange.",
-    "If available_context.chat_engagement.trigger_kind is direct_mention, reply_to_bot, or question_marker, treat message.content as the primary thing to answer as usual.",
+    "If available_context.chat_engagement.trigger_kind is direct_mention or reply_to_bot, treat message.content as the primary thing to answer as usual.",
     "If available_context.chat_behavior is ambient_room_chat and you reply, keep it anchored to the specific recent room turn you are responding to instead of switching into generic assistant exposition.",
     "When following recent room flow, use author, reply_to_message_id, mentions_bot, and is_bot from available_context.recent_room_events.",
     "Unless the user explicitly requests another language, write public_text in natural Japanese.",
     "For ordinary conversation places, use a slightly casual Japanese tone. Keep it friendly and relaxed, but not rude, noisy, or slang-heavy.",
-    "fetchable_public_urls are already-approved direct URLs from the user message. blocked_urls are visible context, not approved fetch targets.",
+    "fetchable_public_urls are already-approved direct public URLs from the current message. public_fetch_candidates are narrow public fetch leads derived by System, not observed source evidence. blocked_urls are visible context, not approved fetch targets.",
     "If capabilities.allow_external_fetch is true, you may inspect public sources that stay within the same public-URL safety boundary.",
     "If task.phase is intent and available_context.place_context.features includes forum_research, request requested_external_fetch=public_research unless the user explicitly forbids external lookup.",
     "If task.phase is intent, available_context.place_context.features includes knowledge_ingest, available_context.thread_context.kind is root_channel, and the shared item likely cannot be understood from fetchable_public_urls alone, request requested_external_fetch=public_research instead of stopping at message_urls.",
@@ -219,6 +243,7 @@ export function buildHarnessDeveloperInstructions(
     "If available_context.place_context.features includes forum_research and forum_research_context.previous_research_state is present, use it as prior evidence from the same thread while still answering the latest follow-up.",
     "If available_context.place_context.features includes knowledge_ingest, available_context.thread_context.kind is root_channel, and capabilities.allow_external_fetch is true, do not stop at fetchable_public_urls when they yield only a shell page, login wall, embed wrapper, or too little text to identify the shared content. Use the approved URL as a lead, then investigate closely related public sources needed to identify and summarize that same shared item.",
     "When you broaden from fetchable_public_urls in a knowledge_ingest root context, keep the research tightly anchored to the specific shared post, article, video, release, or announcement. Do not drift into general background research unless the user explicitly asks for it.",
+    "For an X/Twitter status URL such as x.com/{handle}/status/{id} or twitter.com/{handle}/status/{id}, treat https://api.fxtwitter.com/2/status/{id} as the first narrow public fetch candidate for the same shared post whenever the original X/Twitter page yields only a shell page, login wall, embed wrapper, or no status text. Construct it only from the numeric status id, then run public-source-fetch on that API URL before saying the post body cannot be read. The API URL becomes eligible for sources_used and knowledge_writes only when public-source-fetch succeeds and its structured output includes non-empty title or text. A successful fetch with no title/text is fetched-but-unreadable and must not support detailed knowledge. For FxTwitter JSON, title/text contain the public status author and text when extraction succeeds. If the FxTwitter API candidate is unavailable or insufficient, Jina Reader may be used as a fallback when it stays inside the same public-URL safety boundary.",
     "If available_context.place_context.features includes forum_research and you rely on searched public sources, add inline numeric citations such as [1], [2] in public_text at the supported statements.",
     "If available_context.place_context.features includes forum_research, keep sources_used as the cited public URLs in first-citation order so System can emit a separate reference message.",
     "task.phase tells you whether this turn is intent-only, answer generation, or retry generation.",
@@ -242,18 +267,18 @@ export function buildHarnessDeveloperInstructions(
     "If task.retry_context.kind is knowledge_followup_non_silent, this is a forced same-thread retry because your prior answer produced no visible reply. Produce a visible Japanese reply in the same thread without going silent.",
     "If you need repository-local Discord runtime facts beyond the request payload, use the repo skill discord-harness and its read-only scripts. Do not browse Discord docs or grep the codebase for current-turn runtime facts.",
     "If you need repository-local knowledge DB reads, use the repo skill knowledge-runtime-ops and its read-only scripts. Do not guess DB shape from memory and do not ask system to invent retrieval queries for you.",
-    "If you need to establish same-turn public reconfirmation for a public URL that is not already in fetchable_public_urls, use the repo skill public-source-fetch and its read-only script. Only that skill establishes reconfirmed public URLs for System.",
+    "If you need to establish same-turn public reconfirmation for a public URL that is not already in fetchable_public_urls, use the repo skill public-source-fetch and its read-only script. Only structured public-source-fetch output with non-empty title or text establishes observed public source evidence for System.",
     "System no longer precomputes retrieval queries or global knowledge search results for you. Decide what to look up yourself when relevant.",
     "If outcome is knowledge_ingest, produce a shareable summary in public_text and include knowledge_writes when you want System to persist reusable knowledge.",
     "If available_context.place_context.is_knowledge_place is true, the place ownership is already handled by System; do not re-decide that ownership from message wording alone.",
     "knowledge_writes are advisory persistence handoff. Missing or partial knowledge_writes should not block a successful answer.",
-    "If outcome is knowledge_ingest and you want to cite or persist a public URL that is not already in fetchable_public_urls, do not include that URL in sources_used or knowledge_writes unless you established same-turn public reconfirmation for it via public-source-fetch.",
+    "If outcome is knowledge_ingest and you want to cite or persist a public URL that is not already in fetchable_public_urls, do not include that URL in sources_used or knowledge_writes unless public-source-fetch established same-turn public source evidence for it with non-empty title or text.",
     "If outcome is knowledge_ingest and the only directly approved URL is the user-posted message URL, grounding on that URL alone is acceptable when it is sufficient. If that URL is thin or non-informative, use it as a lead and do narrowly related public research instead of forcing a weak summary.",
     "If a shared source is primarily non-Japanese, the shared output should be written in Japanese and detailed enough that readers can understand the source without reading the original language first.",
     "In ordinary conversation root places, URLs are conversation material, not automatic shared-knowledge triggers.",
     "Use knowledge_ingest when available_context.place_context.features includes knowledge_ingest, available_context.thread_context.kind is root_channel, and the turn is URL sharing or an explicit user request to save, share, or add reusable knowledge. Outside knowledge-thread follow-ups, explicit reusable-knowledge requests may use knowledge_ingest even without a pasted URL.",
     "In knowledge-thread follow-ups after the initial share, always use chat_reply in the same thread. Do not use knowledge_ingest there, even if the user adds URLs or asks to save/update the thread knowledge.",
-    "Requests such as translation, rephrasing, simplification, or follow-up questions inside a knowledge thread are normal same-thread conversation. Do not return ignore or no_reply for a non-empty human follow-up in a knowledge thread unless system facts explicitly require silence.",
+    "Requests such as translation, rephrasing, simplification, or follow-up questions inside a knowledge thread are normal same-thread conversation when the turn was admitted as directed. Do not treat non-empty text alone as an admission reason.",
     "Use admin_diagnostics only when command facts, place facts, authority facts, and the selected outcome indicate an authorized operator diagnostics or override flow. Do not create fixed wording triggers for admin diagnostics.",
     "Use chat_reply for normal admin_override conversation, including policy, capability, and current-permission questions.",
     "ignore is model-owned: decide it from the message meaning and context, not from host heuristics that try to second-guess the response content.",
@@ -362,6 +387,7 @@ export class CodexAppServerClient {
   private stdoutBuffer = "";
   private started = false;
   private sessionInvalidationGeneration = 0;
+  private namespaceSandboxUnsupported = false;
 
   constructor(
     private readonly command: string,
@@ -381,9 +407,25 @@ export class CodexAppServerClient {
       return;
     }
 
+    const childEnv = buildCodexChildEnv(process.env, this.codexHomePath);
+    const sandboxProbe = probeNamespaceSandboxSupport({
+      appServerCommand: this.command,
+      cwd: this.cwd,
+      env: childEnv
+    });
+    this.namespaceSandboxUnsupported =
+      sandboxProbe.namespaceSandboxUnsupported;
+    appendRuntimeTrace("codex-app-server", "namespace_sandbox_probe", {
+      status: sandboxProbe.status,
+      namespace_sandbox_unsupported:
+        sandboxProbe.namespaceSandboxUnsupported,
+      command: sandboxProbe.command,
+      args: sandboxProbe.args
+    });
+
     this.process = spawn(this.command, {
       cwd: this.cwd,
-      env: buildCodexChildEnv(process.env, this.codexHomePath),
+      env: childEnv,
       shell: true,
       stdio: ["pipe", "pipe", "pipe"]
     });
@@ -444,13 +486,15 @@ export class CodexAppServerClient {
     profile: CodexExecutionProfile = resolveCodexExecutionProfile(
       DEFAULT_CODEX_MODEL_PROFILE
     ),
-    options: HarnessDeveloperInstructionOptions = {}
+    options: HarnessDeveloperInstructionOptions = {},
+    sandboxOptions: ThreadSandboxOptions = {}
   ): Promise<string> {
+    const threadSandbox = this.resolveThreadSandbox(sandbox, sandboxOptions);
     const result = (await this.request(
       "thread/start",
       buildThreadStartParams({
         cwd: this.cwd,
-        sandbox,
+        sandbox: threadSandbox,
         model: profile.model,
         developerInstructions: buildHarnessDeveloperInstructions(this.cwd, options),
         config: this.threadConfigOverride
@@ -476,11 +520,13 @@ export class CodexAppServerClient {
   async resumeThread(
     threadId: string,
     sandbox: CodexSandboxMode,
-    options: HarnessDeveloperInstructionOptions = {}
+    options: HarnessDeveloperInstructionOptions = {},
+    sandboxOptions: ThreadSandboxOptions = {}
   ): Promise<void> {
+    const threadSandbox = this.resolveThreadSandbox(sandbox, sandboxOptions);
     await this.request("thread/resume", {
       threadId,
-      sandbox,
+      sandbox: threadSandbox,
       config: this.threadConfigOverride,
       developerInstructions: buildHarnessDeveloperInstructions(this.cwd, options),
       persistExtendedHistory: false
@@ -1670,6 +1716,34 @@ export class CodexAppServerClient {
       });
     }
   }
+
+  private resolveThreadSandbox(
+    sandbox: CodexSandboxMode,
+    options: ThreadSandboxOptions
+  ): CodexThreadSandboxMode {
+    const resolved = resolveThreadSandbox({
+      requestedSandbox: sandbox,
+      namespaceSandboxUnsupported: this.namespaceSandboxUnsupported,
+      allowNamespaceSandboxFallback: Boolean(
+        options.allowNamespaceSandboxFallback
+      )
+    });
+    if (resolved !== sandbox) {
+      appendRuntimeTrace("codex-app-server", "namespace_sandbox_fallback", {
+        requested_sandbox: sandbox,
+        resolved_sandbox: resolved
+      });
+      this.logger.warn(
+        {
+          requestedSandbox: sandbox,
+          resolvedSandbox: resolved
+        },
+        "codex namespace sandbox is unsupported; using override workspace-write fallback"
+      );
+    }
+
+    return resolved;
+  }
 }
 
 function dedupeStrings(values: string[]): string[] {
@@ -1700,9 +1774,105 @@ function delay(ms: number): Promise<void> {
   });
 }
 
+function resolveThreadSandbox(input: {
+  requestedSandbox: CodexSandboxMode;
+  namespaceSandboxUnsupported: boolean;
+  allowNamespaceSandboxFallback?: boolean;
+}): CodexThreadSandboxMode {
+  if (
+    input.requestedSandbox === "workspace-write" &&
+    input.namespaceSandboxUnsupported
+  ) {
+    if (!input.allowNamespaceSandboxFallback) {
+      throw new Error(
+        "codex namespace sandbox is unsupported; workspace-write fallback requires an active admin override authorization"
+      );
+    }
+    return "danger-full-access";
+  }
+
+  return input.requestedSandbox;
+}
+
+function probeNamespaceSandboxSupport(input: {
+  appServerCommand: string;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+}): NamespaceSandboxProbeResult {
+  const invocation = buildNamespaceSandboxProbeInvocation(
+    input.appServerCommand
+  );
+  if (process.platform !== "linux") {
+    return {
+      status: "skipped_non_linux",
+      namespaceSandboxUnsupported: false,
+      command: invocation?.command ?? null,
+      args: invocation?.args ?? []
+    };
+  }
+
+  if (!invocation) {
+    return {
+      status: "skipped_unrecognized_command",
+      namespaceSandboxUnsupported: false,
+      command: null,
+      args: []
+    };
+  }
+
+  const result = spawnSync(invocation.command, invocation.args, {
+    cwd: input.cwd,
+    env: input.env,
+    encoding: "utf8",
+    timeout: NAMESPACE_SANDBOX_PROBE_TIMEOUT_MS,
+    windowsHide: true
+  });
+  const output = [
+    result.stdout,
+    result.stderr,
+    result.error instanceof Error ? result.error.message : null
+  ]
+    .filter((value): value is string => typeof value === "string")
+    .join("\n");
+  const namespaceSandboxUnsupported =
+    isNamespaceSandboxUnsupportedOutput(output);
+
+  return {
+    status: namespaceSandboxUnsupported ? "unsupported" : "supported_or_unknown",
+    namespaceSandboxUnsupported,
+    command: invocation.command,
+    args: invocation.args
+  };
+}
+
+function buildNamespaceSandboxProbeInvocation(
+  appServerCommand: string
+): { command: string; args: string[] } | null {
+  const tokens = tokenizeCommand(appServerCommand);
+  const appServerIndex = tokens.indexOf("app-server");
+  if (appServerIndex <= 0) {
+    return null;
+  }
+
+  return {
+    command: tokens[0] ?? "",
+    args: [
+      ...tokens.slice(1, appServerIndex),
+      "sandbox",
+      "linux",
+      "--full-auto",
+      "true"
+    ]
+  };
+}
+
+function isNamespaceSandboxUnsupportedOutput(output: string): boolean {
+  return BWRAP_NAMESPACE_FAILURE_PATTERN.test(output);
+}
+
 function buildThreadStartParams(input: {
   cwd: string;
-  sandbox: CodexSandboxMode;
+  sandbox: CodexThreadSandboxMode;
   model: string;
   developerInstructions: string;
   config: ReturnType<typeof readMcpDisabledConfigOverride>;
@@ -2183,7 +2353,8 @@ function parseStructuredPublicSourceFetchOutput(output: string): {
     !("finalUrl" in parsed) ||
     typeof parsed.finalUrl !== "string" ||
     !("canonicalUrl" in parsed) ||
-    typeof parsed.canonicalUrl !== "string"
+    typeof parsed.canonicalUrl !== "string" ||
+    !hasPublicSourceEvidenceText(parsed)
   ) {
     return null;
   }
@@ -2198,6 +2369,20 @@ function parseStructuredPublicSourceFetchOutput(output: string): {
     finalUrl,
     canonicalUrl
   };
+}
+
+function hasPublicSourceEvidenceText(parsed: object): boolean {
+  const record = parsed as Record<string, unknown>;
+  for (const key of ["title", "text"] as const) {
+    if (
+      typeof record[key] === "string" &&
+      record[key].trim().length > 0
+    ) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function canonicalizeObservedPublicUrl(value: string): string | null {
@@ -2491,9 +2676,13 @@ function trackPromise<T>(promise: Promise<T>): {
 
 export const __testOnly = {
   BEST_EFFORT_CONTROL_REQUEST_TIMEOUT_MS,
+  NAMESPACE_SANDBOX_PROBE_TIMEOUT_MS,
   buildThreadStartParams,
   buildTurnStartParams,
   buildTurnSteerParams,
+  resolveThreadSandbox,
+  buildNamespaceSandboxProbeInvocation,
+  isNamespaceSandboxUnsupportedOutput,
   findLatestTurnSnapshot,
   extractObservedPublicUrlsFromTurnItems,
   extractObservedPublicUrlsFromNotificationParams,

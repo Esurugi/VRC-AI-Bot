@@ -152,6 +152,8 @@ export function createBotApplicationDependencies(
     });
   const chatEngagementPolicy =
     dependencies.chatEngagementPolicy ?? new ChatEngagementPolicy();
+  const featureThreadService =
+    dependencies.featureThreadService ?? new FeatureThreadService();
   const clearExplanationRoutingGate =
     dependencies.clearExplanationRoutingGate ??
     new ClearExplanationRoutingGate(store, codexClient, logger);
@@ -164,6 +166,7 @@ export function createBotApplicationDependencies(
       forumFirstTurnPreprocessor,
       recentChatHistoryService,
       chatEngagementPolicy,
+      featureThreadService,
       clearExplanationRoutingGate,
       failureClassifier,
       retryScheduler,
@@ -182,8 +185,6 @@ export function createBotApplicationDependencies(
   const chatRuntimeControlService =
     dependencies.chatRuntimeControlService ??
     new ChatRuntimeControlService(config.chatRuntimeControls ?? null);
-  const featureThreadService =
-    dependencies.featureThreadService ?? new FeatureThreadService();
   const plainTextAttachmentService =
     dependencies.plainTextAttachmentService ?? new PlainTextAttachmentService(logger);
   const messageIntakeService =

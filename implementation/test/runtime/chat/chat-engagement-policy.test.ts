@@ -103,7 +103,7 @@ test("chat mode treats replies to the bot as directed", async () => {
   });
 });
 
-test("directed help chat treats question markers as directed prompts", async () => {
+test("directed help chat keeps non-directed question markers sparse", async () => {
   const policy = new ChatEngagementPolicy();
   const decision = await policy.evaluate({
     watchLocation: {
@@ -128,13 +128,13 @@ test("directed help chat treats question markers as directed prompts", async () 
   });
 
   assert.deepEqual(decision, {
-    decision: "always",
-    triggerKind: "question_marker",
-    isDirectedToBot: true
+    decision: "sparse",
+    triggerKind: null,
+    isDirectedToBot: false
   });
 });
 
-test("ambient room chat routes question markers through ambient judgment", async () => {
+test("ambient room chat keeps non-directed question markers sparse", async () => {
   const policy = new ChatEngagementPolicy();
   const decision = await policy.evaluate({
     watchLocation: {
@@ -159,8 +159,8 @@ test("ambient room chat routes question markers through ambient judgment", async
   });
 
   assert.deepEqual(decision, {
-    decision: "always",
-    triggerKind: "ambient_room",
+    decision: "sparse",
+    triggerKind: null,
     isDirectedToBot: false
   });
 });
@@ -191,6 +191,196 @@ test("ambient room chat keeps ordinary chatter sparse", async () => {
 
   assert.deepEqual(decision, {
     decision: "sparse",
+    triggerKind: null,
+    isDirectedToBot: false
+  });
+});
+
+test("ambient room chat thread ignores ordinary chatter", async () => {
+  const policy = new ChatEngagementPolicy();
+  const decision = await policy.evaluate({
+    watchLocation: {
+      guildId: "guild",
+      channelId: "channel",
+      mode: "chat",
+      defaultScope: "conversation_only",
+      chatBehavior: "ambient_room_chat"
+    },
+    envelope: {
+      guildId: "guild",
+      channelId: "thread",
+      messageId: "message",
+      authorId: "user",
+      placeType: "public_thread",
+      rawPlaceType: "PublicThread",
+      content: "今日は人多いね",
+      urls: [],
+      receivedAt: new Date().toISOString()
+    },
+    message: createMessageDouble({})
+  });
+
+  assert.deepEqual(decision, {
+    decision: "ignore",
+    triggerKind: null,
+    isDirectedToBot: false
+  });
+});
+
+test("ambient room chat thread ignores non-directed question markers", async () => {
+  const policy = new ChatEngagementPolicy();
+  const decision = await policy.evaluate({
+    watchLocation: {
+      guildId: "guild",
+      channelId: "channel",
+      mode: "chat",
+      defaultScope: "conversation_only",
+      chatBehavior: "ambient_room_chat"
+    },
+    envelope: {
+      guildId: "guild",
+      channelId: "thread",
+      messageId: "message",
+      authorId: "user",
+      placeType: "public_thread",
+      rawPlaceType: "PublicThread",
+      content: "これどうする？",
+      urls: [],
+      receivedAt: new Date().toISOString()
+    },
+    message: createMessageDouble({})
+  });
+
+  assert.deepEqual(decision, {
+    decision: "ignore",
+    triggerKind: null,
+    isDirectedToBot: false
+  });
+});
+
+test("ambient room chat thread keeps direct mentions actionable", async () => {
+  const policy = new ChatEngagementPolicy();
+  const decision = await policy.evaluate({
+    watchLocation: {
+      guildId: "guild",
+      channelId: "channel",
+      mode: "chat",
+      defaultScope: "conversation_only",
+      chatBehavior: "ambient_room_chat"
+    },
+    envelope: {
+      guildId: "guild",
+      channelId: "thread",
+      messageId: "message",
+      authorId: "user",
+      placeType: "public_thread",
+      rawPlaceType: "PublicThread",
+      content: "<@bot> ここだけ返して",
+      urls: [],
+      receivedAt: new Date().toISOString()
+    },
+    message: createMessageDouble({
+      mentionsBot: true
+    })
+  });
+
+  assert.deepEqual(decision, {
+    decision: "always",
+    triggerKind: "direct_mention",
+    isDirectedToBot: true
+  });
+});
+
+test("ambient room chat thread keeps replies to the bot actionable", async () => {
+  const policy = new ChatEngagementPolicy();
+  const decision = await policy.evaluate({
+    watchLocation: {
+      guildId: "guild",
+      channelId: "channel",
+      mode: "chat",
+      defaultScope: "conversation_only",
+      chatBehavior: "ambient_room_chat"
+    },
+    envelope: {
+      guildId: "guild",
+      channelId: "thread",
+      messageId: "message",
+      authorId: "user",
+      placeType: "public_thread",
+      rawPlaceType: "PublicThread",
+      content: "その続きは？",
+      urls: [],
+      receivedAt: new Date().toISOString()
+    },
+    message: createMessageDouble({
+      replyToBot: true
+    })
+  });
+
+  assert.deepEqual(decision, {
+    decision: "always",
+    triggerKind: "reply_to_bot",
+    isDirectedToBot: true
+  });
+});
+
+test("directed help chat thread ignores non-directed ordinary chatter", async () => {
+  const policy = new ChatEngagementPolicy();
+  const decision = await policy.evaluate({
+    watchLocation: {
+      guildId: "guild",
+      channelId: "channel",
+      mode: "chat",
+      defaultScope: "conversation_only",
+      chatBehavior: "directed_help_chat"
+    },
+    envelope: {
+      guildId: "guild",
+      channelId: "thread",
+      messageId: "message",
+      authorId: "user",
+      placeType: "public_thread",
+      rawPlaceType: "PublicThread",
+      content: "今日は人多いね",
+      urls: [],
+      receivedAt: new Date().toISOString()
+    },
+    message: createMessageDouble({})
+  });
+
+  assert.deepEqual(decision, {
+    decision: "ignore",
+    triggerKind: null,
+    isDirectedToBot: false
+  });
+});
+
+test("directed help chat thread ignores non-directed question markers", async () => {
+  const policy = new ChatEngagementPolicy();
+  const decision = await policy.evaluate({
+    watchLocation: {
+      guildId: "guild",
+      channelId: "channel",
+      mode: "chat",
+      defaultScope: "conversation_only",
+      chatBehavior: "directed_help_chat"
+    },
+    envelope: {
+      guildId: "guild",
+      channelId: "thread",
+      messageId: "message",
+      authorId: "user",
+      placeType: "public_thread",
+      rawPlaceType: "PublicThread",
+      content: "これどうする？",
+      urls: [],
+      receivedAt: new Date().toISOString()
+    },
+    message: createMessageDouble({})
+  });
+
+  assert.deepEqual(decision, {
+    decision: "ignore",
     triggerKind: null,
     isDirectedToBot: false
   });
@@ -291,7 +481,7 @@ test("url watch root allows explicit bot-directed prompts without urls", async (
   });
 });
 
-test("url watch thread follow-up stays actionable without urls", async () => {
+test("knowledge ingest thread ignores non-directed follow-up without urls", async () => {
   const policy = new ChatEngagementPolicy();
   const decision = await policy.evaluate({
     watchLocation: {
@@ -316,9 +506,75 @@ test("url watch thread follow-up stays actionable without urls", async () => {
   });
 
   assert.deepEqual(decision, {
-    decision: "always",
+    decision: "ignore",
     triggerKind: null,
     isDirectedToBot: false
+  });
+});
+
+test("knowledge ingest thread handles direct mention follow-up", async () => {
+  const policy = new ChatEngagementPolicy();
+  const decision = await policy.evaluate({
+    watchLocation: {
+      guildId: "guild",
+      channelId: "channel",
+      mode: "url_watch",
+      defaultScope: "server_public",
+      chatBehavior: null
+    },
+    envelope: {
+      guildId: "guild",
+      channelId: "thread",
+      messageId: "message",
+      authorId: "user",
+      placeType: "public_thread",
+      rawPlaceType: "PublicThread",
+      content: "<@bot> この部分を補足して",
+      urls: [],
+      receivedAt: new Date().toISOString()
+    },
+    message: createMessageDouble({
+      mentionsBot: true
+    })
+  });
+
+  assert.deepEqual(decision, {
+    decision: "always",
+    triggerKind: "direct_mention",
+    isDirectedToBot: true
+  });
+});
+
+test("knowledge ingest thread handles bot reply follow-up", async () => {
+  const policy = new ChatEngagementPolicy();
+  const decision = await policy.evaluate({
+    watchLocation: {
+      guildId: "guild",
+      channelId: "channel",
+      mode: "url_watch",
+      defaultScope: "server_public",
+      chatBehavior: null
+    },
+    envelope: {
+      guildId: "guild",
+      channelId: "thread",
+      messageId: "message",
+      authorId: "user",
+      placeType: "public_thread",
+      rawPlaceType: "PublicThread",
+      content: "この部分を補足して",
+      urls: [],
+      receivedAt: new Date().toISOString()
+    },
+    message: createMessageDouble({
+      replyToBot: true
+    })
+  });
+
+  assert.deepEqual(decision, {
+    decision: "always",
+    triggerKind: "reply_to_bot",
+    isDirectedToBot: true
   });
 });
 
@@ -404,17 +660,17 @@ test("sparse engagement fact carries periodic count metadata", () => {
   });
 });
 
-test("ambient room engagement fact preserves non-directed status", () => {
+test("question marker engagement facts are not directed to the bot", () => {
   const fact = toChatEngagementFact({
     evaluation: {
       decision: "always",
-      triggerKind: "ambient_room",
+      triggerKind: "question_marker",
       isDirectedToBot: false
     }
   });
 
   assert.deepEqual(fact, {
-    trigger_kind: "ambient_room",
+    trigger_kind: "question_marker",
     is_directed_to_bot: false,
     sparse_ordinal: null,
     ordinary_message_count: null

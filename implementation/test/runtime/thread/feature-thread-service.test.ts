@@ -26,7 +26,7 @@ test("forum research handles the starter message without a mention", async () =>
   });
 });
 
-test("forum research ignores unmentioned follow-up messages", async () => {
+test("forum research ignores non-directed follow-up messages", async () => {
   const service = new FeatureThreadService();
 
   const result = await service.evaluateMessage(
@@ -43,7 +43,7 @@ test("forum research ignores unmentioned follow-up messages", async () => {
   });
 });
 
-test("forum research handles mentioned follow-up messages as bot-directed", async () => {
+test("forum research handles direct mention follow-up messages as bot-directed", async () => {
   const service = new FeatureThreadService();
 
   const result = await service.evaluateMessage(
@@ -61,6 +61,29 @@ test("forum research handles mentioned follow-up messages as bot-directed", asyn
     engagement: {
       decision: "always",
       triggerKind: "direct_mention",
+      isDirectedToBot: true
+    }
+  });
+});
+
+test("forum research handles bot reply follow-up messages as bot-directed", async () => {
+  const service = new FeatureThreadService();
+
+  const result = await service.evaluateMessage(
+    createForumMessage({
+      id: "follow-up",
+      threadId: "thread",
+      starterMessageId: "starter",
+      replyToBot: true
+    }),
+    createForumWatchLocation()
+  );
+
+  assert.deepEqual(result, {
+    decision: "handle",
+    engagement: {
+      decision: "always",
+      triggerKind: "reply_to_bot",
       isDirectedToBot: true
     }
   });
@@ -111,7 +134,7 @@ test("clear explanation handles the starter message without a mention", async ()
   });
 });
 
-test("clear explanation ignores unmentioned follow-up messages", async () => {
+test("clear explanation ignores non-directed follow-up messages", async () => {
   const service = new FeatureThreadService();
 
   const result = await service.evaluateMessage(
@@ -128,7 +151,7 @@ test("clear explanation ignores unmentioned follow-up messages", async () => {
   });
 });
 
-test("clear explanation handles mentioned follow-up messages as bot-directed", async () => {
+test("clear explanation handles direct mention follow-up messages as bot-directed", async () => {
   const service = new FeatureThreadService();
 
   const result = await service.evaluateMessage(
@@ -146,6 +169,29 @@ test("clear explanation handles mentioned follow-up messages as bot-directed", a
     engagement: {
       decision: "always",
       triggerKind: "direct_mention",
+      isDirectedToBot: true
+    }
+  });
+});
+
+test("clear explanation handles bot reply follow-up messages as bot-directed", async () => {
+  const service = new FeatureThreadService();
+
+  const result = await service.evaluateMessage(
+    createForumMessage({
+      id: "follow-up",
+      threadId: "thread",
+      starterMessageId: "starter",
+      replyToBot: true
+    }),
+    createClearExplanationWatchLocation()
+  );
+
+  assert.deepEqual(result, {
+    decision: "handle",
+    engagement: {
+      decision: "always",
+      triggerKind: "reply_to_bot",
       isDirectedToBot: true
     }
   });
@@ -177,6 +223,7 @@ function createForumMessage(input: {
   threadId: string;
   starterMessageId: string;
   mentionsBot?: boolean;
+  replyToBot?: boolean;
 }) {
   const botUserId = "bot";
 
@@ -190,8 +237,25 @@ function createForumMessage(input: {
     mentions: {
       users: {
         has: (userId: string) => input.mentionsBot === true && userId === botUserId
-      }
+      },
+      repliedUser:
+        input.replyToBot === true
+          ? {
+              id: botUserId
+            }
+          : null
     },
+    reference:
+      input.replyToBot === true
+        ? {
+            messageId: "reply-target"
+          }
+        : null,
+    fetchReference: async () => ({
+      author: {
+        id: botUserId
+      }
+    }),
     channel: {
       id: input.threadId,
       isThread: () => true,

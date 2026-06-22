@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  AMBIENT_ROOM_CHAT_CODEX_MODEL_PROFILE,
   CHAT_CONVERSATION_LOW_CODEX_MODEL_PROFILE,
   CLEAR_EXPLANATION_CODEX_MODEL_PROFILE,
   DEFAULT_CODEX_MODEL_PROFILE,
@@ -173,7 +174,73 @@ test("knowledge ingest feature resolves to knowledge policy even when legacy mod
   assert.equal(session.bindingId, "knowledge-root:message:message");
 });
 
-test("thread follow-up conversation uses the mini chat profile outside forum longform", () => {
+test("ambient room chat root keeps an ephemeral ambient session", () => {
+  const resolver = new SessionPolicyResolver();
+  const session = resolver.resolveForMessage({
+    envelope: {
+      guildId: "guild",
+      channelId: "ambient-root",
+      messageId: "message",
+      authorId: "user",
+      placeType: "chat_channel",
+      rawPlaceType: "GuildText",
+      content: "それ誰に聞いてるの？",
+      urls: [],
+      receivedAt: new Date().toISOString()
+    },
+    watchLocation: {
+      guildId: "guild",
+      channelId: "ambient-root",
+      mode: "chat",
+      defaultScope: "conversation_only",
+      chatBehavior: "ambient_room_chat"
+    },
+    actorRole: "user",
+    scope: "conversation_only",
+    workspaceWriteActive: false
+  });
+
+  assert.equal(session.workloadKind, "ambient_chat");
+  assert.equal(session.bindingKind, "message_origin");
+  assert.equal(session.bindingId, "ambient-root:ambient:message");
+  assert.equal(session.lifecyclePolicy, "ephemeral_turn");
+  assert.equal(session.modelProfile, AMBIENT_ROOM_CHAT_CODEX_MODEL_PROFILE);
+});
+
+test("ambient room chat thread uses a reusable conversation session", () => {
+  const resolver = new SessionPolicyResolver();
+  const session = resolver.resolveForMessage({
+    envelope: {
+      guildId: "guild",
+      channelId: "ambient-thread",
+      messageId: "message",
+      authorId: "user",
+      placeType: "public_thread",
+      rawPlaceType: "PublicThread",
+      content: "<@bot> ここだけ返して",
+      urls: [],
+      receivedAt: new Date().toISOString()
+    },
+    watchLocation: {
+      guildId: "guild",
+      channelId: "ambient-root",
+      mode: "chat",
+      defaultScope: "conversation_only",
+      chatBehavior: "ambient_room_chat"
+    },
+    actorRole: "user",
+    scope: "conversation_only",
+    workspaceWriteActive: false
+  });
+
+  assert.equal(session.workloadKind, "conversation");
+  assert.equal(session.bindingKind, "thread");
+  assert.equal(session.bindingId, "ambient-thread");
+  assert.equal(session.lifecyclePolicy, "reusable");
+  assert.equal(session.modelProfile, CHAT_CONVERSATION_LOW_CODEX_MODEL_PROFILE);
+});
+
+test("thread follow-up conversation uses the low chat profile outside forum longform", () => {
   const resolver = new SessionPolicyResolver();
   const session = resolver.resolveForMessage({
     envelope: {
@@ -237,6 +304,40 @@ test("workspace-write active messages resolve to admin override thread session",
   assert.equal(session.bindingId, "override-thread");
   assert.equal(session.actorId, "admin");
   assert.equal(session.sandboxMode, "workspace-write");
+});
+
+test("workspace-write active flag does not grant admin override session to normal users", () => {
+  const resolver = new SessionPolicyResolver();
+  const session = resolver.resolveForMessage({
+    envelope: {
+      guildId: "guild",
+      channelId: "override-thread",
+      messageId: "message",
+      authorId: "user",
+      placeType: "public_thread",
+      rawPlaceType: "PublicThread",
+      content: "repo を直して",
+      urls: [],
+      receivedAt: new Date().toISOString()
+    },
+    watchLocation: {
+      guildId: "guild",
+      channelId: "ops-root",
+      mode: "chat",
+      features: ["admin_override", "conversation"],
+      defaultScope: "conversation_only",
+      chatBehavior: "directed_help_chat"
+    },
+    actorRole: "user",
+    scope: "conversation_only",
+    workspaceWriteActive: true
+  });
+
+  assert.equal(session.workloadKind, "conversation");
+  assert.equal(session.bindingKind, "thread");
+  assert.equal(session.bindingId, "override-thread");
+  assert.equal(session.actorId, null);
+  assert.equal(session.sandboxMode, "read-only");
 });
 
 test("resolved scoped place id keeps knowledge roots on message origin", () => {

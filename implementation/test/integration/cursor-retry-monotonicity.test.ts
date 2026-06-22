@@ -206,6 +206,9 @@ function createMessageProcessingService(
     {} as never,
     {} as never,
     {
+      evaluateMessage: async () => ({ decision: "pass" })
+    } as never,
+    {
       decide: async () => "allow_clear_explanation"
     } as never,
     {} as never,

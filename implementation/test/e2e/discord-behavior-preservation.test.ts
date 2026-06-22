@@ -20,6 +20,7 @@ import { HarnessRunner } from "../../src/harness/harness-runner.js";
 import { ForumResearchPromptRefiner } from "../../src/runtime/forum/forum-research-prompt-refiner.js";
 import { ForumResearchSupervisor } from "../../src/runtime/forum/forum-research-supervisor.js";
 import { ForumFirstTurnPreprocessor } from "../../src/runtime/forum/forum-first-turn-preprocessor.js";
+import { FeatureThreadService } from "../../src/runtime/thread/feature-thread-service.js";
 import { ChatEngagementPolicy } from "../../src/runtime/chat/chat-engagement-policy.js";
 import { RecentChatHistoryService } from "../../src/runtime/chat/recent-chat-history-service.js";
 import {
@@ -191,7 +192,8 @@ test("AE-E2E-02 chat root URL remains same-place conversation and does not creat
     channel: root,
     content: "このURLどう思う？ https://example.com/chat",
     urls: ["https://example.com/chat"],
-    watchLocation: chatLocation()
+    watchLocation: chatLocation(),
+    mentionsBot: true
   });
 
   assert.equal(workflow.eventsOf("createThread").length, 0);
@@ -249,7 +251,8 @@ test("AE-E2E-02 hostile knowledge_ingest on chat root does not create a thread o
     channel: root,
     content: "このURLどう思う？ https://example.com/chat",
     urls: ["https://example.com/chat"],
-    watchLocation: chatLocation()
+    watchLocation: chatLocation(),
+    mentionsBot: true
   });
 
   assert.equal(workflow.eventsOf("createThread").length, 0);
@@ -292,15 +295,22 @@ test("AE-E2E-03 knowledge thread follow-up retries no-reply and becomes visible 
   await workflow.processMessage({
     id: "message-follow-up",
     channel: thread,
-    content: "この点も補足して",
+    content: "<@bot-user> この点も補足して",
     urls: [],
     watchLocation: urlWatchLocation(),
-    placeType: "public_thread"
+    placeType: "public_thread",
+    mentionsBot: true
   });
 
   assert.deepEqual(
     workflow.codex.requests.map((request) => request.task.retry_context?.kind ?? request.task.phase),
     ["intent", "answer", "knowledge_followup_non_silent"]
+  );
+  assert.deepEqual(
+    workflow.codex.requests.map(
+      (request) => request.available_context.chat_engagement?.trigger_kind ?? null
+    ),
+    ["direct_mention", "direct_mention", "direct_mention"]
   );
   assert.deepEqual(
     workflow.eventsOf("reply").map((event) => ({
@@ -316,7 +326,7 @@ test("AE-E2E-03 knowledge thread follow-up retries no-reply and becomes visible 
   );
 });
 
-test("knowledge_ingest thread without source binding is exposed as missing_or_stale and does not stay silent", async (t) => {
+test("directed knowledge_ingest thread without source binding is exposed as missing_or_stale and does not stay silent", async (t) => {
   const workflow = createWorkflow(t);
   const root = workflow.world.createTextChannel({
     id: "url-watch-root"
@@ -348,12 +358,19 @@ test("knowledge_ingest thread without source binding is exposed as missing_or_st
     content: "このスレッドの元ネタをもう一度説明して",
     urls: [],
     watchLocation: urlWatchLocation(),
-    placeType: "public_thread"
+    placeType: "public_thread",
+    replyToBot: true
   });
 
   assert.deepEqual(
     workflow.codex.requests.map((request) => request.task.retry_context?.kind ?? request.task.phase),
     ["intent", "answer", "knowledge_followup_non_silent"]
+  );
+  assert.deepEqual(
+    workflow.codex.requests.map(
+      (request) => request.available_context.chat_engagement?.trigger_kind ?? null
+    ),
+    ["reply_to_bot", "reply_to_bot", "reply_to_bot"]
   );
   assert.deepEqual(
     workflow.codex.requests.map((request) => request.available_context.thread_context.kind),
@@ -384,6 +401,54 @@ test("knowledge_ingest thread without source binding is exposed as missing_or_st
   );
 });
 
+test("knowledge thread non-directed follow-up does not retry no-reply", async (t) => {
+  const workflow = createWorkflow(t);
+  const root = workflow.world.createTextChannel({
+    id: "url-watch-root"
+  });
+  const thread = workflow.world.createThread({
+    id: "knowledge-thread-non-directed",
+    parent: root
+  });
+  seedKnowledgeThread(workflow.store, thread.id);
+
+  workflow.codex.enqueueIntent(intent({ outcome: "chat_reply" }));
+  workflow.codex.enqueueAnswer({
+    response: response({
+      outcome: "ignore",
+      public_text: null,
+      reply_mode: "no_reply"
+    })
+  });
+
+  const result = await workflow.harnessRunner.routeMessage({
+    envelope: {
+      guildId: "guild-1",
+      channelId: thread.id,
+      messageId: "message-non-directed-follow-up",
+      authorId: "user-1",
+      placeType: "public_thread",
+      rawPlaceType: "PublicThread",
+      content: "この話も関係しそうです",
+      urls: [],
+      receivedAt: "2026-05-21T00:00:00.000Z"
+    },
+    watchLocation: urlWatchLocation(),
+    actorRole: "user",
+    scope: "server_public",
+    chatEngagement: null,
+    recentRoomEvents: []
+  });
+
+  assert.deepEqual(
+    workflow.codex.requests.map((request) => request.task.retry_context?.kind ?? request.task.phase),
+    ["intent", "answer"]
+  );
+  assert.equal(result.response.outcome, "ignore");
+  assert.equal(result.response.reply_mode, "no_reply");
+  assert.equal(result.response.public_text, null);
+});
+
 test("forum thread without knowledge binding remains a plain_thread", async (t) => {
   const workflow = createWorkflow(t);
   const forumRoot = workflow.world.createTextChannel({
@@ -411,7 +476,8 @@ test("forum thread without knowledge binding remains a plain_thread", async (t) 
     content: "追加でこの観点も見て",
     urls: [],
     watchLocation: forumLocation(),
-    placeType: "forum_post_thread"
+    placeType: "forum_post_thread",
+    mentionsBot: true
   });
 
   assert.equal(
@@ -451,7 +517,8 @@ test("AE-E2E-04 output safety blocks unsafe source text before any Discord publi
     channel: root,
     content: "この話を教えて",
     urls: [],
-    watchLocation: chatLocation()
+    watchLocation: chatLocation(),
+    mentionsBot: true
   });
 
   assert.deepEqual(
@@ -590,7 +657,8 @@ test("AE-E2E-05 admin diagnostics are explicit and admin-place scoped in observa
     content: "今の権限はどう見える？",
     urls: [],
     watchLocation: adminLocation(),
-    actorRole: "admin"
+    actorRole: "admin",
+    mentionsBot: true
   });
 
   workflow.codex.enqueueIntent(intent({ outcome: "chat_reply" }));
@@ -609,7 +677,8 @@ test("AE-E2E-05 admin diagnostics are explicit and admin-place scoped in observa
     content: "普通に返して",
     urls: [],
     watchLocation: adminLocation(),
-    actorRole: "admin"
+    actorRole: "admin",
+    mentionsBot: true
   });
 
   workflow.codex.enqueueIntent(intent({ outcome: "admin_diagnostics" }));
@@ -628,7 +697,8 @@ test("AE-E2E-05 admin diagnostics are explicit and admin-place scoped in observa
     content: "diagnostics JSON を出して",
     urls: [],
     watchLocation: adminLocation(),
-    actorRole: "admin"
+    actorRole: "admin",
+    mentionsBot: true
   });
 
   workflow.codex.enqueueIntent(intent({ outcome: "chat_reply" }));
@@ -644,7 +714,8 @@ test("AE-E2E-05 admin diagnostics are explicit and admin-place scoped in observa
     content: "diagnostics JSON を出して",
     urls: [],
     watchLocation: chatLocation(),
-    actorRole: "admin"
+    actorRole: "admin",
+    mentionsBot: true
   });
 
   workflow.codex.enqueueIntent(intent({ outcome: "admin_diagnostics" }));
@@ -663,7 +734,8 @@ test("AE-E2E-05 admin diagnostics are explicit and admin-place scoped in observa
     content: "diagnostics JSON を出して",
     urls: [],
     watchLocation: chatLocation(),
-    actorRole: "admin"
+    actorRole: "admin",
+    mentionsBot: true
   });
 
   const replies = workflow.eventsOf("reply").map((event) => event.content);
@@ -777,7 +849,7 @@ test("forum_research feature with chat mode still uses forum research flow", asy
   });
 
   await workflow.processMessage({
-    id: "message-forum-feature-chat",
+    id: "starter-message",
     channel: thread,
     content: "AI エージェントの公開情報を調べて",
     urls: ["https://example.com/forum-feature"],
@@ -828,7 +900,8 @@ test("clear_explanation thread messages use a thread-lifetime high reasoning exp
   });
   const thread = workflow.world.createThread({
     id: "clear-explanation-thread",
-    parent: root
+    parent: root,
+    starterContent: "RAG と fine tuning の違いを図解つきで教えて"
   });
 
   workflow.codex.enqueueIntent(intent({ outcome: "chat_reply" }));
@@ -841,7 +914,7 @@ test("clear_explanation thread messages use a thread-lifetime high reasoning exp
   });
 
   await workflow.processMessage({
-    id: "message-clear-explanation-thread",
+    id: "starter-message",
     channel: thread,
     content: "RAG と fine tuning の違いを図解つきで教えて",
     urls: [],
@@ -896,7 +969,8 @@ test("clear_explanation first-turn gate redirects broad analysis to forum resear
   });
   const thread = workflow.world.createThread({
     id: "clear-explanation-redirect-thread",
-    parent: root
+    parent: root,
+    starterContent: "AI活用に縛られず、つくりたいものが見つからない場合にとれるアプローチを検討して"
   });
 
   workflow.codex.enqueueClearExplanationGateDecision({
@@ -905,7 +979,7 @@ test("clear_explanation first-turn gate redirects broad analysis to forum resear
   });
 
   await workflow.processMessage({
-    id: "message-clear-explanation-forum-research",
+    id: "starter-message",
     channel: thread,
     content: "AI活用に縛られず、つくりたいものが見つからない場合にとれるアプローチを検討して",
     urls: [],
@@ -967,7 +1041,8 @@ test("clear_explanation first-turn gate declines casual questions without routin
   });
   const thread = workflow.world.createThread({
     id: "clear-explanation-decline-thread",
-    parent: root
+    parent: root,
+    starterContent: "おすすめの VRChat ワールドある？"
   });
 
   workflow.codex.enqueueClearExplanationGateDecision({
@@ -976,7 +1051,7 @@ test("clear_explanation first-turn gate declines casual questions without routin
   });
 
   await workflow.processMessage({
-    id: "message-clear-explanation-casual",
+    id: "starter-message",
     channel: thread,
     content: "おすすめの VRChat ワールドある？",
     urls: [],
@@ -1011,7 +1086,8 @@ test("clear_explanation gate runs only once per thread and fails open", async (t
   });
   const thread = workflow.world.createThread({
     id: "clear-explanation-gate-once-thread",
-    parent: root
+    parent: root,
+    starterContent: "Attention の仕組みを初心者向けに教えて"
   });
 
   workflow.codex.enqueueClearExplanationGateError();
@@ -1025,7 +1101,7 @@ test("clear_explanation gate runs only once per thread and fails open", async (t
   });
 
   await workflow.processMessage({
-    id: "message-clear-explanation-gate-failure",
+    id: "starter-message",
     channel: thread,
     content: "Attention の仕組みを初心者向けに教えて",
     urls: [],
@@ -1052,7 +1128,8 @@ test("clear_explanation gate runs only once per thread and fails open", async (t
     content: "もう少し噛み砕いて",
     urls: [],
     watchLocation: clearExplanationLocation(),
-    placeType: "public_thread"
+    placeType: "public_thread",
+    mentionsBot: true
   });
 
   assert.equal(
@@ -1077,7 +1154,8 @@ test("clear_explanation sends long plain text in Discord-safe chunks and attache
   });
   const thread = workflow.world.createThread({
     id: "clear-explanation-image-thread",
-    parent: root
+    parent: root,
+    starterContent: "仕組みを画像つきで順番に説明して"
   });
   const longText = buildLongExplanationText();
 
@@ -1105,7 +1183,7 @@ test("clear_explanation sends long plain text in Discord-safe chunks and attache
   });
 
   await workflow.processMessage({
-    id: "message-clear-explanation-images",
+    id: "starter-message",
     channel: thread,
     content: "仕組みを画像つきで順番に説明して",
     urls: [],
@@ -1135,7 +1213,8 @@ test("clear_explanation output safety retry publishes only retry-turn generated 
   });
   const thread = workflow.world.createThread({
     id: "clear-explanation-safety-thread",
-    parent: root
+    parent: root,
+    starterContent: "画像つきで噛み砕いて説明して"
   });
 
   workflow.codex.enqueueIntent(intent({ outcome: "chat_reply" }));
@@ -1171,7 +1250,7 @@ test("clear_explanation output safety retry publishes only retry-turn generated 
   });
 
   await workflow.processMessage({
-    id: "message-clear-explanation-safety-retry",
+    id: "starter-message",
     channel: thread,
     content: "画像つきで噛み砕いて説明して",
     urls: [],
@@ -1254,6 +1333,7 @@ function createWorkflow(t: test.TestContext) {
     new ForumFirstTurnPreprocessor(store, sessionPolicyResolver, logger),
     new RecentChatHistoryService(logger),
     new ChatEngagementPolicy(),
+    new FeatureThreadService(),
     clearExplanationRoutingGate,
     new FailureClassifier(),
     {
@@ -1274,7 +1354,8 @@ function createWorkflow(t: test.TestContext) {
       content: input.content,
       urls: input.urls,
       ...(input.authorId === undefined ? {} : { authorId: input.authorId }),
-      ...(input.mentionsBot === undefined ? {} : { mentionsBot: input.mentionsBot })
+      ...(input.mentionsBot === undefined ? {} : { mentionsBot: input.mentionsBot }),
+      ...(input.replyToBot === undefined ? {} : { replyToBot: input.replyToBot })
     });
     const envelope: MessageEnvelope = {
       guildId: "guild-1",
@@ -1306,6 +1387,7 @@ function createWorkflow(t: test.TestContext) {
     store,
     world,
     sink: world.sink,
+    harnessRunner,
     codex,
     service,
     createQueuedMessage,
@@ -1331,6 +1413,7 @@ type ProcessMessageInput = {
   actorRole?: QueuedMessage["actorRole"];
   authorId?: string;
   mentionsBot?: boolean;
+  replyToBot?: boolean;
 };
 
 function appConfig(watchLocations: WatchLocationConfig[]): AppConfig {
