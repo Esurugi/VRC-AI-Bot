@@ -715,7 +715,9 @@ export class ForumResearchPipeline {
         reply_thread_id: input.request.available_context.thread_context.reply_thread_id,
         known_source_urls: input.request.available_context.thread_context.known_source_urls
       },
-      fetchablePublicUrls: input.request.available_context.fetchable_public_urls
+      approvedPublicUrls: input.request.available_context.approved_public_urls.map(
+        (url) => url.canonical_url
+      )
     });
 
     const persistedArtifact = persistPromptArtifact({

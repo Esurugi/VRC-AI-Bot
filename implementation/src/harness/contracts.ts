@@ -134,17 +134,11 @@ export type HarnessRequest = {
         | null;
     };
     discord_runtime_facts_path: string | null;
-    fetchable_public_urls: string[];
-    public_fetch_candidates?: string[];
-    public_source_facts?: Array<{
-      requested_url: string;
-      final_url: string;
-      canonical_url: string;
-      status: number;
-      content_type: string | null;
-      title: string | null;
-      text: string | null;
-    }>;
+    approved_public_urls: PublicUrlAdmission[];
+    public_source_resources: PublicSourceResource[];
+    readable_public_url_candidates: PublicFetchCandidate[];
+    public_source_facts: PublicSourceFact[];
+    public_source_failures: PublicSourceFailure[];
     blocked_urls: string[];
     chat_behavior: "ambient_room_chat" | "directed_help_chat" | null;
     chat_engagement: {
@@ -186,6 +180,54 @@ export type HarnessRequest = {
   };
 };
 
+export type PublicUrlAdmission = {
+  original_url: string;
+  canonical_url: string;
+};
+
+export type PublicSourceResource = {
+  resource_id: string;
+  provider: "generic_web" | "x_status";
+  original_url: string;
+  canonical_item_url: string;
+};
+
+export type PublicFetchCandidate = {
+  candidate_id: string;
+  resource_id: string;
+  provider: "generic_web" | "x_twitter_fxtwitter" | "x_twitter_jina";
+  original_url: string;
+  canonical_item_url: string;
+  retrieval_url: string;
+};
+
+export type PublicSourceFact = {
+  fact_id: string;
+  resource_id: string;
+  candidate_id: string;
+  provider: PublicFetchCandidate["provider"];
+  original_url: string;
+  canonical_item_url: string;
+  retrieval_url: string;
+  observed_url: string;
+  status: number;
+  content_type: string | null;
+  title: string | null;
+  text: string;
+};
+
+export type PublicSourceFailure = {
+  failure_id: string;
+  resource_id: string;
+  candidate_id: string;
+  provider: PublicFetchCandidate["provider"];
+  original_url: string;
+  canonical_item_url: string;
+  retrieval_url: string;
+  status: number | null;
+  reason: string;
+};
+
 const knowledgeWriteSchema = z.object({
   source_url: z.string().url().nullable(),
   canonical_url: z.string().url().nullable(),
@@ -194,7 +236,8 @@ const knowledgeWriteSchema = z.object({
   tags: z.array(z.string().min(1)),
   content_hash: z.string().min(1).nullable(),
   normalized_text: z.string().min(1).nullable(),
-  source_kind: z.string().min(1).nullable()
+  source_kind: z.string().min(1).nullable(),
+  evidence_fact_ids: z.array(z.string().min(1))
 });
 
 export const harnessResponseSchema = z.object({
@@ -242,7 +285,8 @@ const knowledgeWriteJsonSchema = {
     "tags",
     "content_hash",
     "normalized_text",
-    "source_kind"
+    "source_kind",
+    "evidence_fact_ids"
   ],
   properties: {
     source_url: { type: ["string", "null"] },
@@ -257,7 +301,13 @@ const knowledgeWriteJsonSchema = {
     },
     content_hash: { type: ["string", "null"] },
     normalized_text: { type: ["string", "null"] },
-    source_kind: { type: ["string", "null"] }
+    source_kind: { type: ["string", "null"] },
+    evidence_fact_ids: {
+      type: "array",
+      items: {
+        type: "string"
+      }
+    }
   }
 } as const;
 

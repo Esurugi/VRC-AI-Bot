@@ -12,6 +12,7 @@ export type PublicSourceFetchResult = {
   contentType: string | null;
   title: string | null;
   text: string | null;
+  fxTwitterCode?: number | null;
 };
 
 const MAX_BODY_READ_CHARS = 64_000;
@@ -50,7 +51,8 @@ export async function fetchPublicSource(
     status: effectiveStatus,
     contentType,
     title: extracted.title,
-    text: extracted.text
+    text: extracted.text,
+    fxTwitterCode: extractFxTwitterCode(bodyText, finalUrl)
   };
 }
 
@@ -138,19 +140,32 @@ function extractFxTwitterStatusText(parsed: unknown): {
   title: string | null;
   text: string | null;
 } {
-  if (!isRecord(parsed) || !isRecord(parsed.status)) {
+  if (!isRecord(parsed)) {
     return {
       title: null,
       text: null
     };
   }
 
-  const status = parsed.status;
+  const status = isRecord(parsed.status)
+    ? parsed.status
+    : isRecord(parsed.tweet)
+      ? parsed.tweet
+      : null;
+  if (!status) {
+    return {
+      title: null,
+      text: null
+    };
+  }
+
   const author = isRecord(status.author) ? status.author : null;
   const authorName = readString(author?.name);
-  const screenName = readString(author?.screen_name);
+  const screenName =
+    readString(author?.screen_name) ?? readString(author?.screenName);
   const statusText =
     readString(status.text) ??
+    readString(status.full_text) ??
     (isRecord(status.raw_text) ? readString(status.raw_text.text) : null);
 
   if (!statusText) {
@@ -222,6 +237,39 @@ function collectGenericJsonText(parsed: unknown): {
 function extractHtmlTitle(value: string): string | null {
   const match = value.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
   return match?.[1] ? normalizeWhitespace(stripHtml(match[1])) : null;
+}
+
+function extractFxTwitterCode(bodyText: string, finalUrl: string): number | null {
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(finalUrl);
+  } catch {
+    return null;
+  }
+
+  if (parsedUrl.hostname.toLowerCase() !== "api.fxtwitter.com") {
+    return null;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(bodyText);
+  } catch {
+    return null;
+  }
+
+  if (!isRecord(parsed)) {
+    return null;
+  }
+
+  const code = parsed.code;
+  if (typeof code === "number" && Number.isFinite(code)) {
+    return code;
+  }
+  if (typeof code === "string" && /^\d+$/.test(code)) {
+    return Number.parseInt(code, 10);
+  }
+  return null;
 }
 
 function extractJinaReaderTargetStatus(

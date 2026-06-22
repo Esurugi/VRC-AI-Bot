@@ -36,7 +36,7 @@ export class ForumResearchPromptRefiner {
       reply_thread_id: string | null;
       known_source_urls: string[];
     };
-    fetchablePublicUrls: string[];
+    approvedPublicUrls: string[];
   }): Promise<PromptRefinementArtifact> {
     const ephemeralThreadId = await this.codexClient.startEphemeralThread(
       "read-only",
@@ -55,7 +55,7 @@ export class ForumResearchPromptRefiner {
           starter_message: input.starterMessage,
           thread_context: input.threadContext,
           existing_public_facts: {
-            fetchable_public_urls: input.fetchablePublicUrls,
+            approved_public_urls: input.approvedPublicUrls,
             known_source_urls: input.threadContext.known_source_urls
           },
           design_skill_reference: loadPromptRefinerReference()

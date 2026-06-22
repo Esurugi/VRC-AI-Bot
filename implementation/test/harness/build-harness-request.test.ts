@@ -198,7 +198,7 @@ test("buildHarnessRequest derives chat behavior from configured conversation pro
   assert.equal(knowledgeRequest.available_context.chat_behavior, null);
 });
 
-test("buildHarnessRequest normalizes X status URLs into readable fetchable URLs", () => {
+test("buildHarnessRequest admits X status URLs into typed public evidence resources", () => {
   const request = buildHarnessRequest({
     actorRole: "user",
     scope: "server_public",
@@ -223,46 +223,111 @@ test("buildHarnessRequest normalizes X status URLs into readable fetchable URLs"
     taskKind: "route_message"
   });
 
-  assert.deepEqual(request.available_context.fetchable_public_urls, [
-    "https://api.fxtwitter.com/2/status/2068900130397569096",
-    "https://r.jina.ai/https://x.com/am921543266/status/2068900130397569096"
+  const availableContext = request.available_context as any;
+  assert.equal("fetchable_public_urls" in availableContext, false);
+  assert.equal("public_fetch_candidates" in availableContext, false);
+  assert.deepEqual(availableContext.approved_public_urls, [
+    {
+      original_url: "https://x.com/am921543266/status/2068900130397569096?s=46",
+      canonical_url: "https://x.com/am921543266/status/2068900130397569096?s=46"
+    }
   ]);
-  assert.deepEqual(request.available_context.public_fetch_candidates, []);
+  assert.deepEqual(availableContext.public_source_resources, [
+    {
+      resource_id: "x-status:2068900130397569096",
+      provider: "x_status",
+      original_url: "https://x.com/am921543266/status/2068900130397569096?s=46",
+      canonical_item_url: "https://x.com/am921543266/status/2068900130397569096"
+    }
+  ]);
+  assert.deepEqual(availableContext.readable_public_url_candidates, [
+    {
+      candidate_id: "x-status:2068900130397569096:fxtwitter",
+      resource_id: "x-status:2068900130397569096",
+      provider: "x_twitter_fxtwitter",
+      original_url: "https://x.com/am921543266/status/2068900130397569096?s=46",
+      canonical_item_url: "https://x.com/am921543266/status/2068900130397569096",
+      retrieval_url: "https://api.fxtwitter.com/2/status/2068900130397569096"
+    },
+    {
+      candidate_id: "x-status:2068900130397569096:jina",
+      resource_id: "x-status:2068900130397569096",
+      provider: "x_twitter_jina",
+      original_url: "https://x.com/am921543266/status/2068900130397569096?s=46",
+      canonical_item_url: "https://x.com/am921543266/status/2068900130397569096",
+      retrieval_url:
+        "https://r.jina.ai/https://x.com/am921543266/status/2068900130397569096"
+    }
+  ]);
+  assert.deepEqual(availableContext.public_source_facts, []);
+  assert.deepEqual(availableContext.public_source_failures, []);
 });
 
-test("buildHarnessRequest normalizes X status mirror URLs into readable fetchable URLs", () => {
-  const request = buildHarnessRequest({
-    actorRole: "user",
-    scope: "server_public",
-    watchLocation: {
-      guildId: "guild",
-      channelId: "knowledge-root",
-      mode: "url_watch",
-      defaultScope: "server_public",
-      features: ["knowledge_ingest", "conversation"]
-    },
-    envelope: {
-      guildId: "guild",
-      channelId: "knowledge-root",
-      messageId: "message-fx",
-      authorId: "user-1",
-      placeType: "guild_text",
-      rawPlaceType: "GuildText",
-      content: "https://fixupx.com/OpenAIDevs/status/2033636701848174967",
-      urls: ["https://fixupx.com/OpenAIDevs/status/2033636701848174967"],
-      receivedAt: "2026-06-22T00:00:00.000Z"
-    },
-    taskKind: "route_message"
-  });
+test("buildHarnessRequest normalizes X status mirror domains to x_status resources", () => {
+  for (const originalUrl of [
+    "https://fxtwitter.com/OpenAIDevs/status/2033636701848174967",
+    "https://fixupx.com/OpenAIDevs/status/2033636701848174967",
+    "https://vxtwitter.com/OpenAIDevs/status/2033636701848174967",
+    "https://twitter.com/OpenAIDevs/status/2033636701848174967"
+  ]) {
+    const request = buildHarnessRequest({
+      actorRole: "user",
+      scope: "server_public",
+      watchLocation: {
+        guildId: "guild",
+        channelId: "knowledge-root",
+        mode: "url_watch",
+        defaultScope: "server_public",
+        features: ["knowledge_ingest", "conversation"]
+      },
+      envelope: {
+        guildId: "guild",
+        channelId: "knowledge-root",
+        messageId: `message-${new URL(originalUrl).hostname}`,
+        authorId: "user-1",
+        placeType: "guild_text",
+        rawPlaceType: "GuildText",
+        content: originalUrl,
+        urls: [originalUrl],
+        receivedAt: "2026-06-22T00:00:00.000Z"
+      },
+      taskKind: "route_message"
+    });
 
-  assert.deepEqual(request.available_context.fetchable_public_urls, [
-    "https://api.fxtwitter.com/2/status/2033636701848174967",
-    "https://r.jina.ai/https://x.com/OpenAIDevs/status/2033636701848174967"
-  ]);
-  assert.deepEqual(request.available_context.public_fetch_candidates, []);
+    const availableContext = request.available_context as any;
+    assert.equal("fetchable_public_urls" in availableContext, false);
+    assert.equal("public_fetch_candidates" in availableContext, false);
+    assert.deepEqual(availableContext.public_source_resources, [
+      {
+        resource_id: "x-status:2033636701848174967",
+        provider: "x_status",
+        original_url: originalUrl,
+        canonical_item_url:
+          "https://x.com/OpenAIDevs/status/2033636701848174967"
+      }
+    ]);
+    assert.deepEqual(
+      availableContext.readable_public_url_candidates.map(
+        (candidate: { provider: string; retrieval_url: string }) => [
+          candidate.provider,
+          candidate.retrieval_url
+        ]
+      ),
+      [
+        [
+          "x_twitter_fxtwitter",
+          "https://api.fxtwitter.com/2/status/2033636701848174967"
+        ],
+        [
+          "x_twitter_jina",
+          "https://r.jina.ai/https://x.com/OpenAIDevs/status/2033636701848174967"
+        ]
+      ]
+    );
+  }
 });
 
-test("buildHarnessRequest normalizes i/web X status URLs into readable fetchable URLs", () => {
+test("buildHarnessRequest normalizes i/web X status URLs to query-free x.com canonical items", () => {
   const request = buildHarnessRequest({
     actorRole: "user",
     scope: "server_public",
@@ -287,9 +352,75 @@ test("buildHarnessRequest normalizes i/web X status URLs into readable fetchable
     taskKind: "route_message"
   });
 
-  assert.deepEqual(request.available_context.fetchable_public_urls, [
-    "https://api.fxtwitter.com/2/status/2033636701848174967",
-    "https://r.jina.ai/https://x.com/i/web/status/2033636701848174967"
+  const availableContext = request.available_context as any;
+  assert.equal("fetchable_public_urls" in availableContext, false);
+  assert.equal("public_fetch_candidates" in availableContext, false);
+  assert.deepEqual(availableContext.approved_public_urls, [
+    {
+      original_url: "https://x.com/i/web/status/2033636701848174967",
+      canonical_url: "https://x.com/i/web/status/2033636701848174967"
+    }
   ]);
-  assert.deepEqual(request.available_context.public_fetch_candidates, []);
+  assert.deepEqual(availableContext.readable_public_url_candidates, [
+    {
+      candidate_id: "x-status:2033636701848174967:fxtwitter",
+      resource_id: "x-status:2033636701848174967",
+      provider: "x_twitter_fxtwitter",
+      original_url: "https://x.com/i/web/status/2033636701848174967",
+      canonical_item_url: "https://x.com/i/web/status/2033636701848174967",
+      retrieval_url: "https://api.fxtwitter.com/2/status/2033636701848174967"
+    },
+    {
+      candidate_id: "x-status:2033636701848174967:jina",
+      resource_id: "x-status:2033636701848174967",
+      provider: "x_twitter_jina",
+      original_url: "https://x.com/i/web/status/2033636701848174967",
+      canonical_item_url: "https://x.com/i/web/status/2033636701848174967",
+      retrieval_url:
+        "https://r.jina.ai/https://x.com/i/web/status/2033636701848174967"
+    }
+  ]);
+});
+
+test("buildHarnessRequest does not create readable candidates from blocked or private URLs", () => {
+  const request = buildHarnessRequest({
+    actorRole: "user",
+    scope: "server_public",
+    watchLocation: {
+      guildId: "guild",
+      channelId: "knowledge-root",
+      mode: "url_watch",
+      defaultScope: "server_public",
+      features: ["knowledge_ingest", "conversation"]
+    },
+    envelope: {
+      guildId: "guild",
+      channelId: "knowledge-root",
+      messageId: "message-private",
+      authorId: "user-1",
+      placeType: "guild_text",
+      rawPlaceType: "GuildText",
+      content:
+        "http://127.0.0.1/status/2033636701848174967 file:///tmp/source https://example.local/source",
+      urls: [
+        "http://127.0.0.1/status/2033636701848174967",
+        "file:///tmp/source",
+        "https://example.local/source"
+      ],
+      receivedAt: "2026-06-22T00:00:00.000Z"
+    },
+    taskKind: "route_message"
+  });
+
+  const availableContext = request.available_context as any;
+  assert.deepEqual(availableContext.approved_public_urls, []);
+  assert.deepEqual(availableContext.public_source_resources, []);
+  assert.deepEqual(availableContext.readable_public_url_candidates, []);
+  assert.deepEqual(availableContext.public_source_facts, []);
+  assert.deepEqual(availableContext.public_source_failures, []);
+  assert.deepEqual(availableContext.blocked_urls, [
+    "http://127.0.0.1/status/2033636701848174967",
+    "file:///tmp/source",
+    "https://example.local/source"
+  ]);
 });

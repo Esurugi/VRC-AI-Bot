@@ -62,7 +62,7 @@ test("harness instructions explain ambient room chat handling", () => {
   assert.doesNotMatch(HARNESS_DEVELOPER_INSTRUCTIONS, /legacy\s+mode/);
   assert.match(
     HARNESS_DEVELOPER_INSTRUCTIONS,
-    /features includes knowledge_ingest.*thread_context\.kind is root_channel.*fetchable_public_urls alone/
+    /features includes knowledge_ingest.*thread_context\.kind is root_channel.*approved_public_urls alone/
   );
   assert.match(
     HARNESS_DEVELOPER_INSTRUCTIONS,
@@ -79,16 +79,18 @@ test("harness instructions explain ambient room chat handling", () => {
   );
   assert.match(
     HARNESS_DEVELOPER_INSTRUCTIONS,
-    /do not stop at fetchable_public_urls when they yield only a shell page, login wall, embed wrapper, or too little text/
+    /do not stop at approved_public_urls when available facts are absent or too thin to identify the shared content/
   );
   assert.match(
     HARNESS_DEVELOPER_INSTRUCTIONS,
-    /public_source_facts are public URL bodies already fetched by System[\s\S]*use their title\/text as source facts/i
+    /public_source_facts contain fetched public text[\s\S]*Use fact text\/title as source facts/i
   );
   assert.match(
     HARNESS_DEVELOPER_INSTRUCTIONS,
-    /fetchable_public_urls are already-approved direct public URLs[\s\S]*X\/Twitter status URLs are normalized[\s\S]*api\.fxtwitter\.com[\s\S]*r\.jina\.ai\/https:\/\/x\.com/i
+    /approved_public_urls are public HTTP\(S\) message URLs admitted by System[\s\S]*public_source_resources describe canonical shared resources[\s\S]*readable_public_url_candidates describe retrieval attempts/i
   );
+  assert.doesNotMatch(HARNESS_DEVELOPER_INSTRUCTIONS, /fetchable_public_urls/);
+  assert.doesNotMatch(HARNESS_DEVELOPER_INSTRUCTIONS, /public_fetch_candidates/);
   assert.match(
     HARNESS_DEVELOPER_INSTRUCTIONS,
     /keep the research tightly anchored to the specific shared post, article, video, release, or announcement/
@@ -242,7 +244,7 @@ test("namespace sandbox probe reuses the configured codex app-server command", (
   );
 });
 
-test("harness instructions treat X/Twitter status URLs as normalized readable fetchable URLs", () => {
+test("harness instructions treat X/Twitter status URLs as typed evidence resources", () => {
   assert.match(
     HARNESS_DEVELOPER_INSTRUCTIONS,
     /X\/Twitter status URL/i
@@ -269,12 +271,19 @@ test("harness instructions treat X/Twitter status URLs as normalized readable fe
   );
   assert.match(
     HARNESS_DEVELOPER_INSTRUCTIONS,
-    /use the readable URLs already present in available_context\.fetchable_public_urls in order/i
+    /System prepares readable_public_url_candidates for the same resource/i
   );
   assert.match(
     HARNESS_DEVELOPER_INSTRUCTIONS,
-    /FxTwitter API URL first[\s\S]*Jina Reader URL over the canonical x\.com status URL/i
+    /candidates are retrieval-route facts, not an instruction for you to implement a provider order/i
   );
+  assert.match(
+    HARNESS_DEVELOPER_INSTRUCTIONS,
+    /fact\.canonical_item_url is the x\.com status URL[\s\S]*fact\.retrieval_url is the concrete readable candidate/i
+  );
+  assert.doesNotMatch(HARNESS_DEVELOPER_INSTRUCTIONS, /FxTwitter API URL first/i);
+  assert.doesNotMatch(HARNESS_DEVELOPER_INSTRUCTIONS, /Jina Reader URL over the canonical x\.com status URL/i);
+  assert.doesNotMatch(HARNESS_DEVELOPER_INSTRUCTIONS, /available_context\.fetchable_public_urls in order/i);
   assert.doesNotMatch(HARNESS_DEVELOPER_INSTRUCTIONS, /available_context\.public_fetch_candidates in order/i);
 });
 

@@ -46,10 +46,17 @@ export class OutputSafetyGuard {
     const blockedCanonicalUrls = new Set(
       input.request.available_context.blocked_urls.map((url) => safeCanonicalizeUrl(url))
     );
-    const explicitlyFetchableUrls = new Set(
-      input.request.available_context.fetchable_public_urls.map((url) =>
-        safeCanonicalizeUrl(url)
+    const approvedPublicUrls = new Set(
+      input.request.available_context.approved_public_urls.map((url) =>
+        safeCanonicalizeUrl(url.canonical_url)
       )
+    );
+    const factPublicUrls = new Set(
+      input.request.available_context.public_source_facts.flatMap((fact) => [
+        safeCanonicalizeUrl(fact.canonical_item_url),
+        safeCanonicalizeUrl(fact.retrieval_url),
+        safeCanonicalizeUrl(fact.observed_url)
+      ])
     );
     const observedEvidencePublicUrls = new Set(
       (input.observedPublicUrls ?? []).map((url) => safeCanonicalizeUrl(url))
@@ -63,7 +70,10 @@ export class OutputSafetyGuard {
 
     // Retry turns need the already-approved public URLs to remain usable even if the
     // first pass cited only out-of-scope sources and got rejected.
-    for (const canonicalUrl of explicitlyFetchableUrls) {
+    for (const canonicalUrl of approvedPublicUrls) {
+      allowedSources.add(canonicalUrl);
+    }
+    for (const canonicalUrl of factPublicUrls) {
       allowedSources.add(canonicalUrl);
     }
     for (const canonicalUrl of observedEvidencePublicUrls) {
@@ -108,7 +118,8 @@ export class OutputSafetyGuard {
         }
 
         if (
-          explicitlyFetchableUrls.has(canonicalUrl) ||
+          approvedPublicUrls.has(canonicalUrl) ||
+          factPublicUrls.has(canonicalUrl) ||
           observedEvidencePublicUrls.has(canonicalUrl) ||
           linkedCanonicalUrls.has(canonicalUrl)
         ) {
@@ -149,6 +160,10 @@ export class OutputSafetyGuard {
       );
     }
 
+    violations.push(
+      ...evaluateKnowledgeWriteEvidenceIntegrity(input.request, input.response)
+    );
+
     if (violations.length === 0) {
       return {
         decision: "allow",
@@ -181,6 +196,41 @@ export class OutputSafetyGuard {
       retryInstruction
     };
   }
+}
+
+function evaluateKnowledgeWriteEvidenceIntegrity(
+  request: HarnessRequest,
+  response: HarnessResponse
+): string[] {
+  const violations: string[] = [];
+  const factsById = new Map(
+    request.available_context.public_source_facts.map((fact) => [
+      fact.fact_id,
+      fact
+    ])
+  );
+
+  for (const write of response.knowledge_writes) {
+    const hasTextPayload =
+      Boolean(write.summary?.trim()) || Boolean(write.normalized_text?.trim());
+    if (!hasTextPayload) {
+      continue;
+    }
+
+    if (write.evidence_fact_ids.length === 0) {
+      violations.push("knowledge write is missing evidence facts");
+      continue;
+    }
+
+    for (const factId of write.evidence_fact_ids) {
+      const fact = factsById.get(factId);
+      if (!fact || !fact.text.trim()) {
+        violations.push("knowledge write evidence fact is missing or empty");
+      }
+    }
+  }
+
+  return violations;
 }
 
 function isRecordVisible(

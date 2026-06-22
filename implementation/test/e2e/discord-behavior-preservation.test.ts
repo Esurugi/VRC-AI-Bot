@@ -91,7 +91,8 @@ test("AE-E2E-01 url_watch root URL creates one public knowledge thread and sends
           tags: ["shared"],
           content_hash: null,
           normalized_text: null,
-          source_kind: "webpage"
+          source_kind: "webpage",
+          evidence_fact_ids: [genericFactId("https://example.com/shared")]
         }
       ]
     })
@@ -148,7 +149,10 @@ test("knowledge_ingest feature with chat mode still creates public thread and pe
           tags: ["feature"],
           content_hash: "feature-knowledge-hash",
           normalized_text: "feature based summary",
-          source_kind: "webpage"
+          source_kind: "webpage",
+          evidence_fact_ids: [
+            genericFactId("https://example.com/feature-knowledge")
+          ]
         }
       ]
     })
@@ -568,7 +572,8 @@ test("knowledge_writes do not persist unobserved URL sources alongside an allowe
           tags: ["allowed"],
           content_hash: "allowed-source-hash",
           normalized_text: "観測済みURLの要約です。",
-          source_kind: "webpage"
+          source_kind: "webpage",
+          evidence_fact_ids: [genericFactId("https://example.com/allowed")]
         },
         {
           source_url: "https://not-observed.example.com/poison",
@@ -578,7 +583,8 @@ test("knowledge_writes do not persist unobserved URL sources alongside an allowe
           tags: ["poison"],
           content_hash: "unobserved-source-hash",
           normalized_text: "このURLは同じturnで観測されていません。",
-          source_kind: "webpage"
+          source_kind: "webpage",
+          evidence_fact_ids: ["fact:web:https://not-observed.example.com/poison:direct"]
         }
       ]
     })
@@ -598,7 +604,8 @@ test("knowledge_writes do not persist unobserved URL sources alongside an allowe
           tags: ["allowed"],
           content_hash: "allowed-source-hash",
           normalized_text: "観測済みURLの要約です。",
-          source_kind: "webpage"
+          source_kind: "webpage",
+          evidence_fact_ids: [genericFactId("https://example.com/allowed")]
         }
       ]
     })
@@ -1303,7 +1310,17 @@ function createWorkflow(t: test.TestContext) {
     sessionManager,
     promptRefiner,
     supervisor,
-    logger
+    logger,
+    async (url) => ({
+      requestedUrl: url,
+      finalUrl: url,
+      canonicalUrl: url,
+      public: true,
+      status: 200,
+      contentType: "text/plain",
+      title: "Fetched E2E Source",
+      text: `Fetched public text for ${url}.`
+    })
   );
   const watchLocations = [
     urlWatchLocation(),
@@ -1401,6 +1418,10 @@ function createWorkflow(t: test.TestContext) {
     indexOf: (event: FakeDiscordEvent | undefined) =>
       event === undefined ? -1 : world.sink.events.indexOf(event)
   };
+}
+
+function genericFactId(url: string): string {
+  return `fact:web:${url}:direct`;
 }
 
 type ProcessMessageInput = {

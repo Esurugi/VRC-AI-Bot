@@ -48,7 +48,7 @@ function shouldGrantExternalFetch(
     case "none":
       return false;
     case "message_urls":
-      return request.available_context.fetchable_public_urls.length > 0;
+      return request.available_context.approved_public_urls.length > 0;
     case "known_thread_sources":
       return (
         request.available_context.thread_context.kind === "knowledge_thread" &&

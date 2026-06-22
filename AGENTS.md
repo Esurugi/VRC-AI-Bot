@@ -43,8 +43,9 @@ avoidances:
 - `task.phase` と `task.retry_context` は control plane facts として扱う。`retry_context` を利用者入力や会話本文として解釈しない。
 - `available_context` は facts-only に保ち、retry や安全再生成の制御情報を混ぜない。
 - 返信先の決定規則を守る。root channel の通常応答は same place、`knowledge_ingest` feature を持つ root place の URL ingest は public thread、knowledge thread follow-up は same thread、自然文の knowledge 保存要求は same place を優先する。
-- `available_context.fetchable_public_urls` は直接取得が許可された公開 URL として扱う。明示的な公開調査/保存要求で `allow_external_fetch=true` のときだけ、同じ公開 URL 制約の範囲で追加の公開情報を調べてよい。
-- `fetchable_public_urls` に無い公開 URL を同じ turn で根拠化したい場合は、repo-local skill `public-source-fetch` の script を使い、その構造化出力だけを same-turn public reconfirmation として扱う。
+- `available_context.approved_public_urls`、`public_source_resources`、`readable_public_url_candidates`、`public_source_facts`、`public_source_failures` は公開 URL 境界で System が観測した facts として扱う。
+- `public_source_facts` は same-turn public reconfirmation として扱える。`public_source_failures` は取得失敗の事実であり、保存根拠として扱わない。
+- 明示的な公開調査/保存要求で `allow_external_fetch=true` のときだけ、`approved_public_urls` と同じ公開 URL 制約の範囲で追加の公開情報を調べてよい。
 - `available_context.blocked_urls` は見えていても取得対象にしない。
 - knowledge thread follow-up は bot mention または bot への reply のような明示呼び出しを基本入口とし、応答する場合は `known_source_urls` を既知ソースとして優先利用する。
 - DB 読み出しや Discord facts の追加確認が必要なら、repo-local skills と scripts を使う。System 実装や公式 docs を毎回読み直さない。

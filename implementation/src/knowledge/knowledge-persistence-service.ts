@@ -3,7 +3,10 @@ import { createHash, randomUUID } from "node:crypto";
 import type { Logger } from "pino";
 
 import type { Scope } from "../domain/types.js";
-import type { HarnessResponse } from "../harness/contracts.js";
+import type {
+  HarnessResponse,
+  PublicSourceFact
+} from "../harness/contracts.js";
 import { appendRuntimeTrace } from "../observability/runtime-trace.js";
 import {
   canonicalizeUrl,
@@ -41,6 +44,7 @@ export class KnowledgePersistenceService {
     sourceMessageId: string;
     replyThreadId: string | null;
     approvedEvidenceUrls: string[];
+    publicSourceFacts: PublicSourceFact[];
   }): void {
     appendRuntimeTrace("knowledge-persistence", "knowledge_persist_requested", {
       outcome: input.response.outcome,
@@ -52,12 +56,14 @@ export class KnowledgePersistenceService {
       placeId: input.placeId,
       sourceUrls: input.sourceUrls,
       approvedEvidenceUrls: input.approvedEvidenceUrls,
+      publicSourceFactIds: input.publicSourceFacts.map((fact) => fact.fact_id),
       knowledgeWrites: getKnowledgeWrites(input.response)
     });
 
     const { persistInputs, skipped } = buildPersistInputs({
       response: input.response,
-      approvedEvidenceUrls: input.approvedEvidenceUrls
+      approvedEvidenceUrls: input.approvedEvidenceUrls,
+      publicSourceFacts: input.publicSourceFacts
     });
     if (skipped.length > 0) {
       this.logger.debug(
@@ -161,6 +167,7 @@ function getKnowledgeWrites(response: HarnessResponse): KnowledgeWrite[] {
 function buildPersistInputs(input: {
   response: HarnessResponse;
   approvedEvidenceUrls: string[];
+  publicSourceFacts: PublicSourceFact[];
 }): {
   persistInputs: UrlInput[];
   skipped: SkippedKnowledgeWrite[];
@@ -170,6 +177,9 @@ function buildPersistInputs(input: {
     input.approvedEvidenceUrls
       .filter((url) => isAllowedPublicHttpUrl(url))
       .map((url) => canonicalizeUrl(url))
+  );
+  const publicSourceFactsById = new Map(
+    input.publicSourceFacts.map((fact) => [fact.fact_id, fact])
   );
   const persistInputs: UrlInput[] = [];
   const skipped: SkippedKnowledgeWrite[] = [];
@@ -195,6 +205,19 @@ function buildPersistInputs(input: {
         toSkippedKnowledgeWrite(
           item,
           "source url is not approved same-turn evidence"
+        )
+      );
+      continue;
+    }
+
+    if (
+      hasPersistableText(item) &&
+      !hasNonEmptyPublicSourceEvidence(item, publicSourceFactsById)
+    ) {
+      skipped.push(
+        toSkippedKnowledgeWrite(
+          item,
+          "evidence_fact_ids do not resolve to non-empty public_source_facts"
         )
       );
       continue;
@@ -231,6 +254,24 @@ function buildPersistInputs(input: {
     persistInputs,
     skipped
   };
+}
+
+function hasPersistableText(item: KnowledgeWrite): boolean {
+  return Boolean(item.summary?.trim() || item.normalized_text?.trim());
+}
+
+function hasNonEmptyPublicSourceEvidence(
+  item: KnowledgeWrite,
+  publicSourceFactsById: Map<string, PublicSourceFact>
+): boolean {
+  if (item.evidence_fact_ids.length === 0) {
+    return false;
+  }
+
+  return item.evidence_fact_ids.every((factId) => {
+    const fact = publicSourceFactsById.get(factId);
+    return Boolean(fact?.text.trim());
+  });
 }
 
 function toSkippedKnowledgeWrite(

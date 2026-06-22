@@ -213,7 +213,11 @@ function createRequest(input: {
         bot_directed_trigger_kind: input.isBotDirected ? "direct_mention" : null
       },
       discord_runtime_facts_path: null,
-      fetchable_public_urls: [],
+      approved_public_urls: [],
+      public_source_resources: [],
+      readable_public_url_candidates: [],
+      public_source_facts: [],
+      public_source_failures: [],
       blocked_urls: [],
       chat_behavior: null,
       chat_engagement: input.isBotDirected

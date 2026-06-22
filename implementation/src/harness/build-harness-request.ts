@@ -13,8 +13,8 @@ import {
   resolvePlaceChatBehavior,
   resolvePlaceFeatures
 } from "../domain/place-features.js";
+import { buildPublicSourceContext } from "../knowledge/public-source/source-resolver.js";
 import type { OverrideContext } from "../override/types.js";
-import { isAllowedPublicHttpUrl } from "../playwright/url-policy.js";
 import type {
   HarnessRequest,
   HarnessTaskPhase,
@@ -46,6 +46,9 @@ export function buildHarnessRequest(input: {
   recentRoomEvents?: RecentRoomEventFact[];
   publicSourceFacts?: NonNullable<
     HarnessRequest["available_context"]["public_source_facts"]
+  >;
+  publicSourceFailures?: NonNullable<
+    HarnessRequest["available_context"]["public_source_failures"]
   >;
   retryContext?:
     | {
@@ -96,10 +99,14 @@ export function buildHarnessRequest(input: {
     chatEngagement = null,
     recentRoomEvents = [],
     publicSourceFacts = [],
+    publicSourceFailures = [],
     retryContext = null
   } = input;
-  const fetchablePublicUrls: string[] = [];
-  const blockedUrls: string[] = [];
+  const publicSourceContext = buildPublicSourceContext({
+    urls: envelope.urls,
+    publicSourceFacts,
+    publicSourceFailures
+  });
   const isKnowledgePlace =
     isKnowledgeIngestPlace(watchLocation) ||
     threadContext.kind === "knowledge_thread" ||
@@ -112,14 +119,6 @@ export function buildHarnessRequest(input: {
         ? chatEngagement.trigger_kind
         : null
       : null;
-
-  for (const url of envelope.urls) {
-    if (isAllowedPublicHttpUrl(url)) {
-      fetchablePublicUrls.push(...toFetchablePublicUrls(url));
-      continue;
-    }
-    blockedUrls.push(url);
-  }
 
   return {
     request_id: randomUUID(),
@@ -183,10 +182,13 @@ export function buildHarnessRequest(input: {
         bot_directed_trigger_kind: deliveryTriggerKind
       },
       discord_runtime_facts_path: discordRuntimeFactsPath,
-      fetchable_public_urls: dedupeStrings(fetchablePublicUrls),
-      public_fetch_candidates: [],
-      public_source_facts: publicSourceFacts,
-      blocked_urls: dedupeStrings(blockedUrls),
+      approved_public_urls: publicSourceContext.approved_public_urls,
+      public_source_resources: publicSourceContext.public_source_resources,
+      readable_public_url_candidates:
+        publicSourceContext.readable_public_url_candidates,
+      public_source_facts: publicSourceContext.public_source_facts,
+      public_source_failures: publicSourceContext.public_source_failures,
+      blocked_urls: publicSourceContext.blocked_urls,
       chat_engagement: chatEngagement,
       recent_room_events: recentRoomEvents,
       chat_behavior: resolvePlaceChatBehavior(watchLocation)
@@ -211,65 +213,4 @@ export function buildHarnessRequest(input: {
             : null
     }
   };
-}
-
-function toFetchablePublicUrls(url: string): string[] {
-  const xStatus = extractXTwitterStatus(url);
-  if (!xStatus) {
-    return [url];
-  }
-
-  const fxTwitterApiUrl = `https://api.fxtwitter.com/2/status/${xStatus.id}`;
-  const xStatusUrl = `https://x.com/${xStatus.handle ?? "i/web"}/status/${xStatus.id}`;
-  const jinaReaderUrl = `https://r.jina.ai/${xStatusUrl}`;
-  return [fxTwitterApiUrl, jinaReaderUrl].filter(isAllowedPublicHttpUrl);
-}
-
-function extractXTwitterStatus(rawUrl: string): {
-  id: string;
-  handle: string | null;
-} | null {
-  let parsed: URL;
-  try {
-    parsed = new URL(rawUrl);
-  } catch {
-    return null;
-  }
-
-  const hostname = parsed.hostname.toLowerCase().replace(/^www\./, "");
-  if (!isXTwitterStatusHost(hostname)) {
-    return null;
-  }
-
-  const match =
-    parsed.pathname.match(/^\/[^/]+\/status(?:es)?\/(\d+)(?:\/|$)/i) ??
-    parsed.pathname.match(/^\/i\/web\/status(?:es)?\/(\d+)(?:\/|$)/i);
-  if (!match?.[1]) {
-    return null;
-  }
-
-  const firstPathSegment = parsed.pathname.split("/").filter(Boolean)[0] ?? null;
-  const handle =
-    firstPathSegment && firstPathSegment.toLowerCase() !== "i"
-      ? firstPathSegment
-      : null;
-  return {
-    id: match[1],
-    handle
-  };
-}
-
-function isXTwitterStatusHost(hostname: string): boolean {
-  return [
-    "x.com",
-    "twitter.com",
-    "fxtwitter.com",
-    "fixupx.com",
-    "fixvx.com",
-    "vxtwitter.com"
-  ].includes(hostname);
-}
-
-function dedupeStrings(values: string[]): string[] {
-  return [...new Set(values)];
 }

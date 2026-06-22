@@ -49,8 +49,19 @@ test("R6 supporting: knowledge_ingest feature remains canonical when legacy mode
     features: ["knowledge_ingest", "conversation"],
     is_knowledge_place: true
   });
-  assert.deepEqual(request.available_context.fetchable_public_urls, [
-    "https://example.com/source"
+  assert.deepEqual(request.available_context.approved_public_urls, [
+    {
+      original_url: "https://example.com/source",
+      canonical_url: "https://example.com/source"
+    }
+  ]);
+  assert.deepEqual(request.available_context.public_source_resources, [
+    {
+      resource_id: "web:https://example.com/source",
+      provider: "generic_web",
+      original_url: "https://example.com/source",
+      canonical_item_url: "https://example.com/source"
+    }
   ]);
 });
 

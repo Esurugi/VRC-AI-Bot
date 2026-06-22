@@ -8,7 +8,7 @@ import { SqliteStore } from "../../src/storage/sqlite-store.js";
 import { OutputSafetyGuard } from "../../src/harness/output-safety-guard.js";
 import type { HarnessRequest, HarnessResponse } from "../../src/harness/contracts.js";
 
-test("output safety keeps fetchable public urls available for retry grounding", () => {
+test("output safety keeps approved public urls available for retry grounding", () => {
   const tempDir = mkdtempSync(join(tmpdir(), "vrc-ai-bot-output-safety-"));
   const store = new SqliteStore(join(tempDir, "bot.sqlite"), process.cwd());
   store.migrate();
@@ -73,10 +73,19 @@ test("output safety keeps fetchable public urls available for retry grounding", 
         delivery_context: {
           is_bot_directed: false,
           bot_directed_trigger_kind: null
-        },
-        discord_runtime_facts_path: null,
-        fetchable_public_urls: ["https://x.com/openaidevs/status/2033636701848174967"],
-        blocked_urls: [],
+      },
+      discord_runtime_facts_path: null,
+      approved_public_urls: [
+        {
+          original_url: "https://x.com/openaidevs/status/2033636701848174967",
+          canonical_url: "https://x.com/openaidevs/status/2033636701848174967"
+        }
+      ],
+      public_source_resources: [],
+      readable_public_url_candidates: [],
+      public_source_facts: [],
+      public_source_failures: [],
+      blocked_urls: [],
         chat_behavior: null,
         chat_engagement: null,
         recent_room_events: []

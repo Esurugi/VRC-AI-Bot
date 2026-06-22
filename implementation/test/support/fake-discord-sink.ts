@@ -265,7 +265,6 @@ export function createFakeMessage(input: {
     },
     webhookId: null,
     system: false,
-    reference: null,
     mentions: {
       users: {
         has: (userId: string) =>

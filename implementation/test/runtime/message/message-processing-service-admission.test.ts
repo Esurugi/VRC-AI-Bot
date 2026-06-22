@@ -262,9 +262,9 @@ function createQueuedMessage(input: {
     rootChannelId: input.watchLocation.channelId,
     content: input.content,
     thread: input.thread,
-    mentionsBot: input.mentionsBot,
-    replyToBot: input.replyToBot,
-    isForum: input.watchLocation.features?.includes("forum_research") === true
+    isForum: input.watchLocation.features?.includes("forum_research") === true,
+    ...(input.mentionsBot === undefined ? {} : { mentionsBot: input.mentionsBot }),
+    ...(input.replyToBot === undefined ? {} : { replyToBot: input.replyToBot })
   });
   const envelope: MessageEnvelope = {
     guildId: input.watchLocation.guildId,
@@ -318,7 +318,10 @@ function createMessageDouble(input: {
     autoArchiveDuration: 1440,
     isThread: () => input.thread,
     sendTyping: async () => {},
-    fetchStarterMessage: async () => ({ id: "starter-message" })
+    fetchStarterMessage: async () => ({
+      id: "starter-message",
+      content: input.content
+    })
   };
 
   return {

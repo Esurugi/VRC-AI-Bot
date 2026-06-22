@@ -353,7 +353,21 @@ export function intent(input: {
   };
 }
 
-export function response(input: Partial<HarnessResponse>): HarnessResponse {
+type ScriptedHarnessResponseInput = Partial<
+  Omit<HarnessResponse, "knowledge_writes">
+> & {
+  knowledge_writes?: Array<
+    Omit<HarnessResponse["knowledge_writes"][number], "evidence_fact_ids"> & {
+      evidence_fact_ids?: string[];
+    }
+  >;
+};
+
+export function response(input: ScriptedHarnessResponseInput): HarnessResponse {
+  const knowledgeWrites = (input.knowledge_writes ?? []).map((write) => ({
+    ...write,
+    evidence_fact_ids: write.evidence_fact_ids ?? []
+  }));
   return {
     outcome: "chat_reply",
     repo_write_intent: false,
@@ -362,11 +376,11 @@ export function response(input: Partial<HarnessResponse>): HarnessResponse {
     target_thread_id: null,
     selected_source_ids: [],
     sources_used: [],
-    knowledge_writes: [],
     diagnostics: {
       notes: null
     },
     sensitivity_raise: "none",
-    ...input
+    ...input,
+    knowledge_writes: knowledgeWrites
   };
 }

@@ -66,7 +66,8 @@ test("knowledge thread follow-up knowledge ingest is coerced to chat reply", () 
         tags: ["update"],
         content_hash: null,
         normalized_text: null,
-        source_kind: "webpage"
+        source_kind: "webpage",
+        evidence_fact_ids: []
       }
     ],
     diagnostics: {
@@ -87,7 +88,7 @@ test("knowledge thread follow-up knowledge ingest is coerced to chat reply", () 
     },
     response,
     {
-      fetchablePublicUrlCount: 1
+      approvedPublicUrlCount: 1
     }
   );
 
@@ -157,7 +158,8 @@ test("root knowledge ingest can persist explicit save requests without pasted ur
         tags: ["research"],
         content_hash: null,
         normalized_text: "公開調査に基づく要点",
-        source_kind: "webpage"
+        source_kind: "webpage",
+        evidence_fact_ids: []
       }
     ],
     diagnostics: {
@@ -178,7 +180,7 @@ test("root knowledge ingest can persist explicit save requests without pasted ur
     },
     response,
     {
-      fetchablePublicUrlCount: 0
+      approvedPublicUrlCount: 0
     }
   );
 
@@ -202,7 +204,7 @@ test("root knowledge ingest can persist explicit save requests without pasted ur
   );
 });
 
-test("routeMessage prefetches readable X status body before answer turn", async (t) => {
+test("routeMessage falls back from empty FxTwitter result to Jina and keeps source identity separate", async (t) => {
   const tempDir = mkdtempSync(join(tmpdir(), "vrc-ai-bot-x-prefetch-"));
   const store = new SqliteStore(join(tempDir, "bot.sqlite"), process.cwd());
   store.migrate();
@@ -226,13 +228,25 @@ test("routeMessage prefetches readable X status body before answer turn", async 
     logger,
     async (url) => {
       fetchedUrls.push(url);
+      if (url === "https://api.fxtwitter.com/2/status/2068900130397569096") {
+        return {
+          requestedUrl: url,
+          finalUrl: url,
+          canonicalUrl: "https://x.com/am921543266/status/2068900130397569096",
+          public: true,
+          status: 200,
+          contentType: "application/json",
+          title: null,
+          text: ""
+        };
+      }
       return {
         requestedUrl: url,
         finalUrl: url,
-        canonicalUrl: url,
+        canonicalUrl: "https://x.com/am921543266/status/2068900130397569096",
         public: true,
         status: 200,
-        contentType: "application/json",
+        contentType: "text/markdown",
         title: "AM9:21 (@AM921543266)",
         text: "AM9:21 (@AM921543266): fetched post body"
       };
@@ -250,19 +264,31 @@ test("routeMessage prefetches readable X status body before answer turn", async 
     response: response({
       outcome: "knowledge_ingest",
       public_text: "取得しました。",
-      sources_used: ["https://api.fxtwitter.com/2/status/2068900130397569096"],
+      sources_used: [
+        "https://r.jina.ai/https://x.com/am921543266/status/2068900130397569096"
+      ],
       knowledge_writes: [
         {
-          source_url: "https://api.fxtwitter.com/2/status/2068900130397569096",
-          canonical_url: "https://api.fxtwitter.com/2/status/2068900130397569096",
+          source_url:
+            "https://r.jina.ai/https://x.com/am921543266/status/2068900130397569096",
+          canonical_url: "https://x.com/am921543266/status/2068900130397569096",
           title: "AM9:21 (@AM921543266)",
           summary: "fetched post body",
           tags: ["x-twitter"],
           content_hash: null,
           normalized_text: "fetched post body",
-          source_kind: "x_status"
+          source_kind: "x_status",
+          evidence_fact_ids: ["fact:x-status:2068900130397569096:jina"]
         }
       ]
+    })
+  });
+  scriptedCodex.enqueueAnswer({
+    response: response({
+      outcome: "chat_reply",
+      public_text: "取得しました。",
+      sources_used: [],
+      knowledge_writes: []
     })
   });
 
@@ -290,19 +316,205 @@ test("routeMessage prefetches readable X status body before answer turn", async 
   });
 
   assert.deepEqual(fetchedUrls, [
-    "https://api.fxtwitter.com/2/status/2068900130397569096"
+    "https://api.fxtwitter.com/2/status/2068900130397569096",
+    "https://r.jina.ai/https://x.com/am921543266/status/2068900130397569096"
   ]);
   assert.deepEqual(
-    scriptedCodex.requests[1]?.available_context.public_source_facts,
+    (scriptedCodex.requests[1]?.available_context as any).public_source_facts,
     [
       {
-        requested_url: "https://api.fxtwitter.com/2/status/2068900130397569096",
-        final_url: "https://api.fxtwitter.com/2/status/2068900130397569096",
-        canonical_url: "https://api.fxtwitter.com/2/status/2068900130397569096",
+        fact_id: "fact:x-status:2068900130397569096:jina",
+        resource_id: "x-status:2068900130397569096",
+        candidate_id: "x-status:2068900130397569096:jina",
+        provider: "x_twitter_jina",
+        original_url: "https://x.com/am921543266/status/2068900130397569096?s=46",
+        canonical_item_url: "https://x.com/am921543266/status/2068900130397569096",
+        retrieval_url:
+          "https://r.jina.ai/https://x.com/am921543266/status/2068900130397569096",
+        observed_url:
+          "https://r.jina.ai/https://x.com/am921543266/status/2068900130397569096",
         status: 200,
-        content_type: "application/json",
+        content_type: "text/markdown",
         title: "AM9:21 (@AM921543266)",
         text: "AM9:21 (@AM921543266): fetched post body"
+      }
+    ]
+  );
+  assert.deepEqual(
+    (scriptedCodex.requests[1]?.available_context as any).public_source_failures.map(
+      ({
+        resource_id,
+        candidate_id,
+        provider,
+        original_url,
+        canonical_item_url,
+        retrieval_url,
+        status
+      }: {
+        resource_id: string;
+        candidate_id: string;
+        provider: string;
+        original_url: string;
+        canonical_item_url: string;
+        retrieval_url: string;
+        status: number | null;
+      }) => ({
+        resource_id,
+        candidate_id,
+        provider,
+        original_url,
+        canonical_item_url,
+        retrieval_url,
+        status
+      })
+    ),
+    [
+      {
+        resource_id: "x-status:2068900130397569096",
+        candidate_id: "x-status:2068900130397569096:fxtwitter",
+        provider: "x_twitter_fxtwitter",
+        original_url: "https://x.com/am921543266/status/2068900130397569096?s=46",
+        canonical_item_url: "https://x.com/am921543266/status/2068900130397569096",
+        retrieval_url: "https://api.fxtwitter.com/2/status/2068900130397569096",
+        status: 200
+      }
+    ]
+  );
+});
+
+test("routeMessage records every failed X status retrieval attempt when no candidate succeeds", async (t) => {
+  const tempDir = mkdtempSync(join(tmpdir(), "vrc-ai-bot-x-prefetch-fail-"));
+  const store = new SqliteStore(join(tempDir, "bot.sqlite"), process.cwd());
+  store.migrate();
+  t.after(() => {
+    store.close();
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const scriptedCodex = new ScriptedCodexClient();
+  const codexClient = asCodexClient(scriptedCodex);
+  const sessionPolicyResolver = new SessionPolicyResolver();
+  const sessionManager = new SessionManager(store, codexClient, logger);
+  const fetchedUrls: string[] = [];
+  const runner = new HarnessRunner(
+    store,
+    codexClient,
+    sessionPolicyResolver,
+    sessionManager,
+    new ForumResearchPromptRefiner(codexClient, logger),
+    new ForumResearchSupervisor(codexClient, logger),
+    logger,
+    async (url) => {
+      fetchedUrls.push(url);
+      return {
+        requestedUrl: url,
+        finalUrl: url,
+        canonicalUrl: "https://x.com/am921543266/status/2068900130397569096",
+        public: true,
+        status: url.includes("api.fxtwitter.com") ? 200 : 502,
+        contentType: url.includes("api.fxtwitter.com")
+          ? "application/json"
+          : "text/markdown",
+        title: null,
+        text: url.includes("api.fxtwitter.com") ? "" : "Bad Gateway"
+      };
+    }
+  );
+
+  scriptedCodex.enqueueIntent(
+    intent({
+      outcome: "knowledge_ingest",
+      fetch: "message_urls",
+      write: true
+    })
+  );
+  scriptedCodex.enqueueAnswer({
+    response: response({
+      outcome: "chat_reply",
+      public_text: "取得できませんでした。",
+      sources_used: [],
+      knowledge_writes: []
+    })
+  });
+
+  await runner.routeMessage({
+    actorRole: "user",
+    scope: "server_public",
+    watchLocation: {
+      guildId: "guild-1",
+      channelId: "knowledge-root-1",
+      mode: "url_watch",
+      defaultScope: "server_public",
+      features: ["knowledge_ingest", "conversation"]
+    },
+    envelope: {
+      guildId: "guild-1",
+      channelId: "knowledge-root-1",
+      messageId: "message-x-fail",
+      authorId: "user-1",
+      placeType: "guild_text",
+      rawPlaceType: "GuildText",
+      content: "https://x.com/am921543266/status/2068900130397569096?s=46",
+      urls: ["https://x.com/am921543266/status/2068900130397569096?s=46"],
+      receivedAt: "2026-06-22T00:00:00.000Z"
+    }
+  });
+
+  assert.deepEqual(fetchedUrls, [
+    "https://api.fxtwitter.com/2/status/2068900130397569096",
+    "https://r.jina.ai/https://x.com/am921543266/status/2068900130397569096"
+  ]);
+  assert.deepEqual(
+    (scriptedCodex.requests[1]?.available_context as any).public_source_facts,
+    []
+  );
+  assert.deepEqual(
+    (scriptedCodex.requests[1]?.available_context as any).public_source_failures.map(
+      ({
+        resource_id,
+        candidate_id,
+        provider,
+        original_url,
+        canonical_item_url,
+        retrieval_url,
+        status
+      }: {
+        resource_id: string;
+        candidate_id: string;
+        provider: string;
+        original_url: string;
+        canonical_item_url: string;
+        retrieval_url: string;
+        status: number | null;
+      }) => ({
+        resource_id,
+        candidate_id,
+        provider,
+        original_url,
+        canonical_item_url,
+        retrieval_url,
+        status
+      })
+    ),
+    [
+      {
+        resource_id: "x-status:2068900130397569096",
+        candidate_id: "x-status:2068900130397569096:fxtwitter",
+        provider: "x_twitter_fxtwitter",
+        original_url: "https://x.com/am921543266/status/2068900130397569096?s=46",
+        canonical_item_url: "https://x.com/am921543266/status/2068900130397569096",
+        retrieval_url: "https://api.fxtwitter.com/2/status/2068900130397569096",
+        status: 200
+      },
+      {
+        resource_id: "x-status:2068900130397569096",
+        candidate_id: "x-status:2068900130397569096:jina",
+        provider: "x_twitter_jina",
+        original_url: "https://x.com/am921543266/status/2068900130397569096?s=46",
+        canonical_item_url: "https://x.com/am921543266/status/2068900130397569096",
+        retrieval_url:
+          "https://r.jina.ai/https://x.com/am921543266/status/2068900130397569096",
+        status: 502
       }
     ]
   );

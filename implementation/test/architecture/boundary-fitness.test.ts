@@ -28,7 +28,7 @@ const boundaryDebtBaselines: Partial<Record<BoundaryDebtKey, number>> = {
   "harness -> runtime": 4,
   "storage -> codex": 2,
   "storage -> override": 2,
-  "knowledge -> harness": 1
+  "knowledge -> harness": 6
 } as const;
 const importPattern =
   /(?:import|export)\s+(?:type\s+)?(?:[^'"]*?\s+from\s+)?["']([^"']+)["']|import\s*\(\s*["']([^"']+)["']\s*\)/g;

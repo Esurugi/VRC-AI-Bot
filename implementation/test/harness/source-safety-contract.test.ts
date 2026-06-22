@@ -102,7 +102,8 @@ test("R5 supporting: knowledge_writes cannot persist unobserved public URLs", ()
           tags: [],
           content_hash: null,
           normalized_text: null,
-          source_kind: "webpage"
+          source_kind: "webpage",
+          evidence_fact_ids: []
         }
       ]
     });
@@ -126,23 +127,69 @@ test("R5 X/Twitter: observed FxTwitter API URL can ground sources_used and knowl
   withSafetyGuard(({ guard }) => {
     const fxtwitterApiUrl =
       "https://api.fxtwitter.com/2/status/2033636701848174967";
+    const canonicalItemUrl =
+      "https://x.com/openaidevs/status/2033636701848174967";
     const request = createRequest({
       mode: "url_watch",
       allowExternalFetch: true,
-      fetchablePublicUrls: ["https://x.com/openaidevs/status/2033636701848174967"]
+      fetchablePublicUrls: [canonicalItemUrl],
+      typedEvidenceContext: {
+        approved_public_urls: [
+          {
+            original_url: canonicalItemUrl,
+            canonical_url: canonicalItemUrl
+          }
+        ],
+        public_source_resources: [
+          {
+            resource_id: "x-status:2033636701848174967",
+            provider: "x_status",
+            original_url: canonicalItemUrl,
+            canonical_item_url: canonicalItemUrl
+          }
+        ],
+        readable_public_url_candidates: [
+          {
+            candidate_id: "x-status:2033636701848174967:fxtwitter",
+            resource_id: "x-status:2033636701848174967",
+            provider: "x_twitter_fxtwitter",
+            original_url: canonicalItemUrl,
+            canonical_item_url: canonicalItemUrl,
+            retrieval_url: fxtwitterApiUrl
+          }
+        ],
+        public_source_facts: [
+          {
+            fact_id: "fact:x-status:2033636701848174967:fxtwitter",
+            resource_id: "x-status:2033636701848174967",
+            candidate_id: "x-status:2033636701848174967:fxtwitter",
+            provider: "x_twitter_fxtwitter",
+            original_url: canonicalItemUrl,
+            canonical_item_url: canonicalItemUrl,
+            retrieval_url: fxtwitterApiUrl,
+            observed_url: fxtwitterApiUrl,
+            status: 200,
+            content_type: "application/json",
+            title: "FxTwitter evidence",
+            text: "The same X/Twitter status was observed through a public API."
+          }
+        ],
+        public_source_failures: []
+      }
     });
     const response = createResponse({
       sourcesUsed: [fxtwitterApiUrl],
       knowledgeWrites: [
         {
           source_url: fxtwitterApiUrl,
-          canonical_url: fxtwitterApiUrl,
+          canonical_url: canonicalItemUrl,
           title: "FxTwitter evidence",
           summary: "The same X/Twitter status was observed through a public API.",
           tags: ["x-twitter"],
           content_hash: null,
           normalized_text: null,
-          source_kind: "webpage"
+          source_kind: "webpage",
+          evidence_fact_ids: ["fact:x-status:2033636701848174967:fxtwitter"]
         }
       ]
     });
@@ -183,7 +230,8 @@ test("R5 X/Twitter: unobserved FxTwitter API URL cannot ground sources_used or k
           tags: ["x-twitter"],
           content_hash: null,
           normalized_text: null,
-          source_kind: "webpage"
+          source_kind: "webpage",
+          evidence_fact_ids: []
         }
       ]
     });
@@ -228,6 +276,160 @@ test("R5 X/Twitter: public fetch candidate alone is not observed evidence", () =
     assert.match(evaluation.reason ?? "", /source url is not visible in current scope/);
     assert.deepEqual(evaluation.disallowedSources, [fxtwitterApiUrl]);
     assert.equal(evaluation.allowedSources.includes(fxtwitterApiUrl), false);
+  });
+});
+
+test("typed evidence: knowledge_writes cannot persist from candidate URLs without non-empty evidence facts", () => {
+  withSafetyGuard(({ guard }) => {
+    const canonicalItemUrl =
+      "https://x.com/openaidevs/status/2033636701848174967";
+    const jinaReaderUrl =
+      "https://r.jina.ai/https://x.com/openaidevs/status/2033636701848174967";
+    const request = createRequest({
+      mode: "url_watch",
+      allowExternalFetch: true,
+      fetchablePublicUrls: [],
+      typedEvidenceContext: {
+        approved_public_urls: [
+          {
+            original_url:
+              "https://x.com/openaidevs/status/2033636701848174967?s=46",
+            canonical_url: canonicalItemUrl
+          }
+        ],
+        public_source_resources: [
+          {
+            resource_id: "x-status:2033636701848174967",
+            provider: "x_status",
+            original_url:
+              "https://x.com/openaidevs/status/2033636701848174967?s=46",
+            canonical_item_url: canonicalItemUrl
+          }
+        ],
+        readable_public_url_candidates: [
+          {
+            candidate_id: "x-status:2033636701848174967:jina",
+            resource_id: "x-status:2033636701848174967",
+            provider: "x_twitter_jina",
+            original_url:
+              "https://x.com/openaidevs/status/2033636701848174967?s=46",
+            canonical_item_url: canonicalItemUrl,
+            retrieval_url: jinaReaderUrl
+          }
+        ],
+        public_source_facts: [],
+        public_source_failures: []
+      }
+    });
+    const response = createResponse({
+      sourcesUsed: [canonicalItemUrl],
+      knowledgeWrites: [
+        {
+          source_url: jinaReaderUrl,
+          canonical_url: canonicalItemUrl,
+          title: "Candidate only",
+          summary: "This write has only a candidate URL, not evidence text.",
+          tags: ["x-twitter"],
+          content_hash: null,
+          normalized_text: "This write has only a candidate URL.",
+          source_kind: "x_status",
+          evidence_fact_ids: ["public-source:x-status:2033636701848174967"]
+        }
+      ]
+    });
+
+    const evaluation = guard.evaluate({
+      request,
+      response,
+      linkedKnowledgeSources: [],
+      observedPublicUrls: [canonicalItemUrl, jinaReaderUrl]
+    });
+
+    assert.equal(evaluation.decision, "retry");
+    assert.match(
+      evaluation.reason ?? "",
+      /knowledge write evidence fact is missing or empty/
+    );
+    assert.deepEqual(evaluation.disallowedSources, []);
+  });
+});
+
+test("typed evidence: knowledge_writes cannot persist summary text from empty public_source_facts", () => {
+  withSafetyGuard(({ guard }) => {
+    const canonicalItemUrl =
+      "https://x.com/openaidevs/status/2033636701848174967";
+    const jinaReaderUrl =
+      "https://r.jina.ai/https://x.com/openaidevs/status/2033636701848174967";
+    const request = createRequest({
+      mode: "url_watch",
+      allowExternalFetch: true,
+      fetchablePublicUrls: [],
+      typedEvidenceContext: {
+        approved_public_urls: [
+          {
+            original_url: canonicalItemUrl,
+            canonical_url: canonicalItemUrl
+          }
+        ],
+        public_source_resources: [
+          {
+            resource_id: "x-status:2033636701848174967",
+            provider: "x_status",
+            original_url: canonicalItemUrl,
+            canonical_item_url: canonicalItemUrl
+          }
+        ],
+        readable_public_url_candidates: [],
+        public_source_facts: [
+          {
+            fact_id: "public-source:x-status:2033636701848174967",
+            resource_id: "x-status:2033636701848174967",
+            candidate_id: "x-status:2033636701848174967:jina",
+            provider: "x_twitter_jina",
+            original_url: canonicalItemUrl,
+            canonical_item_url: canonicalItemUrl,
+            retrieval_url: jinaReaderUrl,
+            observed_url: jinaReaderUrl,
+            status: 200,
+            content_type: "text/markdown",
+            title: "OpenAI Developers",
+            text: ""
+          }
+        ],
+        public_source_failures: []
+      }
+    });
+    const response = createResponse({
+      sourcesUsed: [canonicalItemUrl],
+      knowledgeWrites: [
+        {
+          source_url: jinaReaderUrl,
+          canonical_url: canonicalItemUrl,
+          title: "Empty fact",
+          summary: "This summary must not be saved from an empty fetched body.",
+          tags: ["x-twitter"],
+          content_hash: null,
+          normalized_text:
+            "This summary must not be saved from an empty fetched body.",
+          source_kind: "x_status",
+          evidence_fact_ids: ["public-source:x-status:2033636701848174967"]
+        }
+      ]
+    });
+
+    const evaluation = guard.evaluate({
+      request,
+      response,
+      linkedKnowledgeSources: [],
+      observedPublicUrls: [canonicalItemUrl, jinaReaderUrl]
+    });
+
+    assert.equal(evaluation.decision, "retry");
+    assert.match(
+      evaluation.reason ?? "",
+      /knowledge write evidence fact is missing or empty/
+    );
+    assert.deepEqual(evaluation.disallowedSources, []);
   });
 });
 
@@ -304,6 +506,7 @@ function createRequest(input: {
   fetchablePublicUrls: string[];
   publicFetchCandidates?: string[];
   blockedPublicUrls?: string[];
+  typedEvidenceContext?: Record<string, unknown>;
 }): HarnessRequest {
   return {
     request_id: "request-1",
@@ -368,8 +571,33 @@ function createRequest(input: {
         bot_directed_trigger_kind: null
       },
       discord_runtime_facts_path: null,
-      fetchable_public_urls: input.fetchablePublicUrls,
-      public_fetch_candidates: input.publicFetchCandidates ?? [],
+      ...(input.typedEvidenceContext ?? {}),
+      approved_public_urls:
+        (input.typedEvidenceContext?.approved_public_urls as unknown[] | undefined) ??
+        input.fetchablePublicUrls.map((url) => ({
+          original_url: url,
+          canonical_url: url
+        })),
+      public_source_resources:
+        (input.typedEvidenceContext?.public_source_resources as unknown[] | undefined) ??
+        [],
+      readable_public_url_candidates:
+        (input.typedEvidenceContext
+          ?.readable_public_url_candidates as unknown[] | undefined) ??
+        (input.publicFetchCandidates ?? []).map((url) => ({
+          candidate_id: url,
+          resource_id: url,
+          provider: "generic_web",
+          original_url: url,
+          canonical_item_url: url,
+          retrieval_url: url
+        })),
+      public_source_facts:
+        (input.typedEvidenceContext?.public_source_facts as unknown[] | undefined) ??
+        [],
+      public_source_failures:
+        (input.typedEvidenceContext
+          ?.public_source_failures as unknown[] | undefined) ?? [],
       blocked_urls: input.blockedPublicUrls ?? [],
       chat_behavior: null,
       chat_engagement: null,
@@ -380,7 +608,7 @@ function createRequest(input: {
       phase: "answer",
       retry_context: null
     }
-  };
+  } as unknown as HarnessRequest;
 }
 
 function createResponse(input: {

@@ -65,7 +65,7 @@ test("knowledge thread follow-ups never grant knowledge writes", () => {
         bot_directed_trigger_kind: null
       },
       discord_runtime_facts_path: null,
-      fetchable_public_urls: ["https://example.com/update"],
+      ...publicSourceContext(["https://example.com/update"]),
       blocked_urls: [],
       chat_behavior: null,
       chat_engagement: null,
@@ -186,7 +186,7 @@ test("forum research feature grants external fetch even when legacy mode says ch
         bot_directed_trigger_kind: "direct_mention"
       },
       discord_runtime_facts_path: null,
-      fetchable_public_urls: [],
+      ...publicSourceContext([]),
       blocked_urls: [],
       chat_behavior: null,
       chat_engagement: null,
@@ -285,7 +285,7 @@ test("workspace-write active does not imply fetch or knowledge write capabilitie
         bot_directed_trigger_kind: "direct_mention"
       },
       discord_runtime_facts_path: null,
-      fetchable_public_urls: [],
+      ...publicSourceContext([]),
       blocked_urls: [],
       chat_behavior: "directed_help_chat",
       chat_engagement: null,
@@ -324,3 +324,23 @@ test("workspace-write active does not imply fetch or knowledge write capabilitie
   assert.equal(resolved.allow_knowledge_write, false);
   assert.equal(resolved.allow_moderation, true);
 });
+
+function publicSourceContext(urls: string[]): Pick<
+  HarnessRequest["available_context"],
+  | "approved_public_urls"
+  | "public_source_resources"
+  | "readable_public_url_candidates"
+  | "public_source_facts"
+  | "public_source_failures"
+> {
+  return {
+    approved_public_urls: urls.map((url) => ({
+      original_url: url,
+      canonical_url: url
+    })),
+    public_source_resources: [],
+    readable_public_url_candidates: [],
+    public_source_facts: [],
+    public_source_failures: []
+  };
+}
