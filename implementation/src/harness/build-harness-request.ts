@@ -211,16 +211,21 @@ export function buildHarnessRequest(input: {
 }
 
 function buildSamePostPublicFetchCandidates(url: string): string[] {
-  const xStatusId = extractXTwitterStatusId(url);
-  if (!xStatusId) {
+  const xStatus = extractXTwitterStatus(url);
+  if (!xStatus) {
     return [];
   }
 
-  const fxTwitterApiUrl = `https://api.fxtwitter.com/2/status/${xStatusId}`;
-  return isAllowedPublicHttpUrl(fxTwitterApiUrl) ? [fxTwitterApiUrl] : [];
+  const fxTwitterApiUrl = `https://api.fxtwitter.com/2/status/${xStatus.id}`;
+  const xStatusUrl = `https://x.com/${xStatus.handle ?? "i/web"}/status/${xStatus.id}`;
+  const jinaReaderUrl = `https://r.jina.ai/${xStatusUrl}`;
+  return [fxTwitterApiUrl, jinaReaderUrl].filter(isAllowedPublicHttpUrl);
 }
 
-function extractXTwitterStatusId(rawUrl: string): string | null {
+function extractXTwitterStatus(rawUrl: string): {
+  id: string;
+  handle: string | null;
+} | null {
   let parsed: URL;
   try {
     parsed = new URL(rawUrl);
@@ -229,12 +234,37 @@ function extractXTwitterStatusId(rawUrl: string): string | null {
   }
 
   const hostname = parsed.hostname.toLowerCase().replace(/^www\./, "");
-  if (hostname !== "x.com" && hostname !== "twitter.com") {
+  if (!isXTwitterStatusHost(hostname)) {
     return null;
   }
 
-  const match = parsed.pathname.match(/^\/[^/]+\/status(?:es)?\/(\d+)(?:\/|$)/i);
-  return match?.[1] ?? null;
+  const match =
+    parsed.pathname.match(/^\/[^/]+\/status(?:es)?\/(\d+)(?:\/|$)/i) ??
+    parsed.pathname.match(/^\/i\/web\/status(?:es)?\/(\d+)(?:\/|$)/i);
+  if (!match?.[1]) {
+    return null;
+  }
+
+  const firstPathSegment = parsed.pathname.split("/").filter(Boolean)[0] ?? null;
+  const handle =
+    firstPathSegment && firstPathSegment.toLowerCase() !== "i"
+      ? firstPathSegment
+      : null;
+  return {
+    id: match[1],
+    handle
+  };
+}
+
+function isXTwitterStatusHost(hostname: string): boolean {
+  return [
+    "x.com",
+    "twitter.com",
+    "fxtwitter.com",
+    "fixupx.com",
+    "fixvx.com",
+    "vxtwitter.com"
+  ].includes(hostname);
 }
 
 function dedupeStrings(values: string[]): string[] {

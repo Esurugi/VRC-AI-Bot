@@ -257,22 +257,32 @@ test("harness instructions allow narrow FxTwitter evidence for X/Twitter status 
   );
   assert.match(
     HARNESS_DEVELOPER_INSTRUCTIONS,
-    /original X\/Twitter page yields only a shell page[\s\S]*run public-source-fetch on that API URL before saying the post body cannot be read/i
+    /fxtwitter\.com\/\{handle\}\/status\/\{id\}/i
   );
   assert.match(
     HARNESS_DEVELOPER_INSTRUCTIONS,
-    /public-source-fetch succeeds[\s\S]*non-empty title or text[\s\S]*sources_used[\s\S]*knowledge_writes/i
+    /Jina Reader over the canonical X URL/i
   );
   assert.match(
     HARNESS_DEVELOPER_INSTRUCTIONS,
-    /successful fetch with no title\/text is fetched-but-unreadable/i
+    /https:\/\/r\.jina\.ai\/https:\/\/x\.com\/\{handle\}\/status\/\{id\}/i
   );
   assert.match(
     HARNESS_DEVELOPER_INSTRUCTIONS,
-    /FxTwitter JSON[\s\S]*title\/text contain the public status author and text/i
+    /use available_context\.public_fetch_candidates in order[\s\S]*Run public-source-fetch on the next candidate before saying the post body cannot be read/i
   );
-  assert.match(HARNESS_DEVELOPER_INSTRUCTIONS, /Jina Reader/i);
-  assert.match(HARNESS_DEVELOPER_INSTRUCTIONS, /fallback/i);
+  assert.match(
+    HARNESS_DEVELOPER_INSTRUCTIONS,
+    /HTTP 2xx\/3xx[\s\S]*non-empty title or text[\s\S]*sources_used[\s\S]*knowledge_writes/i
+  );
+  assert.match(
+    HARNESS_DEVELOPER_INSTRUCTIONS,
+    /no title\/text, 4xx, or 5xx is fetched-but-unreadable/i
+  );
+  assert.match(
+    HARNESS_DEVELOPER_INSTRUCTIONS,
+    /FxTwitter JSON or Jina Reader text[\s\S]*title\/text contain the public status author and\/or text/i
+  );
 });
 
 test("clear explanation sessions inline the explaining-clearly skill", () => {

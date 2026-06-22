@@ -36,20 +36,18 @@ export async function fetchPublicSource(
   if (!isAllowedPublicHttpUrl(finalUrl)) {
     throw new Error("final URL is not a public HTTP(S) URL");
   }
-  if (!response.ok) {
-    throw new Error(`public fetch failed with status ${response.status}`);
-  }
-
   const contentType = response.headers.get("content-type");
   const bodyText = await readResponseText(response, MAX_BODY_READ_CHARS);
   const extracted = extractPublicSourceText(bodyText, contentType);
+  const effectiveStatus =
+    extractJinaReaderTargetStatus(bodyText, finalUrl) ?? response.status;
 
   return {
     requestedUrl,
     finalUrl,
     canonicalUrl: canonicalizeUrl(finalUrl),
     public: true,
-    status: response.status,
+    status: effectiveStatus,
     contentType,
     title: extracted.title,
     text: extracted.text
@@ -224,6 +222,30 @@ function collectGenericJsonText(parsed: unknown): {
 function extractHtmlTitle(value: string): string | null {
   const match = value.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
   return match?.[1] ? normalizeWhitespace(stripHtml(match[1])) : null;
+}
+
+function extractJinaReaderTargetStatus(
+  bodyText: string,
+  finalUrl: string
+): number | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(finalUrl);
+  } catch {
+    return null;
+  }
+
+  if (parsed.hostname.toLowerCase() !== "r.jina.ai") {
+    return null;
+  }
+
+  const match = bodyText.match(/Warning:\s*Target URL returned error\s+(\d{3})\b/i);
+  if (!match?.[1]) {
+    return null;
+  }
+
+  const status = Number.parseInt(match[1], 10);
+  return Number.isFinite(status) ? status : null;
 }
 
 function stripHtml(value: string): string {

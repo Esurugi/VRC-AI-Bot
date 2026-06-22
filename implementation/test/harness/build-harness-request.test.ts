@@ -198,7 +198,7 @@ test("buildHarnessRequest derives chat behavior from configured conversation pro
   assert.equal(knowledgeRequest.available_context.chat_behavior, null);
 });
 
-test("buildHarnessRequest separates FxTwitter API into public fetch candidates for X status URLs", () => {
+test("buildHarnessRequest separates X status mirrors into public fetch candidates", () => {
   const request = buildHarnessRequest({
     actorRole: "user",
     scope: "server_public",
@@ -227,6 +227,69 @@ test("buildHarnessRequest separates FxTwitter API into public fetch candidates f
     "https://x.com/am921543266/status/2068900130397569096?s=46"
   ]);
   assert.deepEqual(request.available_context.public_fetch_candidates, [
-    "https://api.fxtwitter.com/2/status/2068900130397569096"
+    "https://api.fxtwitter.com/2/status/2068900130397569096",
+    "https://r.jina.ai/https://x.com/am921543266/status/2068900130397569096"
+  ]);
+});
+
+test("buildHarnessRequest derives X status candidates from mirror URLs", () => {
+  const request = buildHarnessRequest({
+    actorRole: "user",
+    scope: "server_public",
+    watchLocation: {
+      guildId: "guild",
+      channelId: "knowledge-root",
+      mode: "url_watch",
+      defaultScope: "server_public",
+      features: ["knowledge_ingest", "conversation"]
+    },
+    envelope: {
+      guildId: "guild",
+      channelId: "knowledge-root",
+      messageId: "message-fx",
+      authorId: "user-1",
+      placeType: "guild_text",
+      rawPlaceType: "GuildText",
+      content: "https://fixupx.com/OpenAIDevs/status/2033636701848174967",
+      urls: ["https://fixupx.com/OpenAIDevs/status/2033636701848174967"],
+      receivedAt: "2026-06-22T00:00:00.000Z"
+    },
+    taskKind: "route_message"
+  });
+
+  assert.deepEqual(request.available_context.public_fetch_candidates, [
+    "https://api.fxtwitter.com/2/status/2033636701848174967",
+    "https://r.jina.ai/https://x.com/OpenAIDevs/status/2033636701848174967"
+  ]);
+});
+
+test("buildHarnessRequest derives X status candidates from i/web status URLs", () => {
+  const request = buildHarnessRequest({
+    actorRole: "user",
+    scope: "server_public",
+    watchLocation: {
+      guildId: "guild",
+      channelId: "knowledge-root",
+      mode: "url_watch",
+      defaultScope: "server_public",
+      features: ["knowledge_ingest", "conversation"]
+    },
+    envelope: {
+      guildId: "guild",
+      channelId: "knowledge-root",
+      messageId: "message-x-web",
+      authorId: "user-1",
+      placeType: "guild_text",
+      rawPlaceType: "GuildText",
+      content: "https://x.com/i/web/status/2033636701848174967",
+      urls: ["https://x.com/i/web/status/2033636701848174967"],
+      receivedAt: "2026-06-22T00:00:00.000Z"
+    },
+    taskKind: "route_message"
+  });
+
+  assert.deepEqual(request.available_context.public_fetch_candidates, [
+    "https://api.fxtwitter.com/2/status/2033636701848174967",
+    "https://r.jina.ai/https://x.com/i/web/status/2033636701848174967"
   ]);
 });
