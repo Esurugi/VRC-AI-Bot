@@ -77,11 +77,17 @@ type BotApplicationDependencyFactoryOptions = {
   fetchChannel: (channelId: string) => Promise<Channel | null>;
 };
 
+type ResourceRuntimeConfig = {
+  maxConcurrentKeys?: number;
+  codexIdleCloseMs?: number;
+};
+
 export function createBotApplicationDependencies(
   config: AppConfig = loadConfig(),
   dependencies: BotApplicationDependencies = {},
   options: BotApplicationDependencyFactoryOptions
 ): BotApplicationResolvedDependencies {
+  const runtimeConfig = config as AppConfig & ResourceRuntimeConfig;
   const logger =
     dependencies.logger ??
     pino({
@@ -104,7 +110,10 @@ export function createBotApplicationDependencies(
       config.codexAppServerCommand,
       process.cwd(),
       config.codexHomePath,
-      logger
+      logger,
+      {
+        idleCloseMs: runtimeConfig.codexIdleCloseMs ?? 1_800_000
+      }
     );
   const sessionPolicyResolver =
     dependencies.sessionPolicyResolver ?? new SessionPolicyResolver();
@@ -177,8 +186,9 @@ export function createBotApplicationDependencies(
     );
   const queue =
     dependencies.queue ??
-    new OrderedMessageQueue<QueuedMessage>((item) =>
-      messageProcessingService.process(item)
+    new OrderedMessageQueue<QueuedMessage>(
+      (item) => messageProcessingService.process(item),
+      runtimeConfig.maxConcurrentKeys ?? 4
     );
   const chatChannelCounterService =
     dependencies.chatChannelCounterService ?? new ChatChannelCounterService(store);
@@ -195,6 +205,7 @@ export function createBotApplicationDependencies(
       chatChannelCounterService,
       chatEngagementPolicy,
       chatRuntimeControlService,
+      recentChatHistoryService,
       featureThreadService,
       plainTextAttachmentService,
       logger

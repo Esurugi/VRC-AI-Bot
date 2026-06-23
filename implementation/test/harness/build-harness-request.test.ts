@@ -72,6 +72,58 @@ test("buildHarnessRequest includes chat engagement facts and structured room con
   ]);
 });
 
+test("buildHarnessRequest keeps recent_room_events as facts-plane data only", () => {
+  const request = buildHarnessRequest({
+    actorRole: "user",
+    scope: "conversation_only",
+    watchLocation: {
+      guildId: "guild",
+      channelId: "root-channel",
+      mode: "chat",
+      defaultScope: "conversation_only",
+      chatBehavior: "ambient_room_chat"
+    },
+    envelope: {
+      guildId: "guild",
+      channelId: "thread-or-channel",
+      messageId: "message-1",
+      authorId: "user-1",
+      placeType: "chat_channel",
+      rawPlaceType: "GuildText",
+      content: "おおーー",
+      urls: [],
+      receivedAt: "2026-03-15T13:20:00.000Z"
+    },
+    taskKind: "route_message",
+    recentRoomEvents: [
+      {
+        message_id: "human-1",
+        author: "uhima",
+        is_bot: false,
+        reply_to_message_id: null,
+        mentions_bot: false,
+        content: "最近の話題です"
+      }
+    ]
+  });
+
+  const [event] = request.available_context.recent_room_events;
+  assert.deepEqual(Object.keys(event!).sort(), [
+    "author",
+    "content",
+    "is_bot",
+    "mentions_bot",
+    "message_id",
+    "reply_to_message_id"
+  ]);
+  assert.equal("retry_context" in request.available_context, false);
+  assert.equal("task_phase" in request.available_context, false);
+  assert.equal("routing_hint" in event!, false);
+  assert.equal("reply_policy" in event!, false);
+  assert.equal("control_plane" in event!, false);
+  assert.equal("safety_regeneration" in event!, false);
+});
+
 test("buildHarnessRequest marks knowledge places and explicit bot-directed delivery", () => {
   const request = buildHarnessRequest({
     actorRole: "user",

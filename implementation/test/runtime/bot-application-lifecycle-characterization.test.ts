@@ -5,8 +5,10 @@ import test from "node:test";
 import { BotApplication } from "../../src/app/bot-app.js";
 import type { AppConfig } from "../../src/domain/types.js";
 
-test("characterization before BotApplication composition-root split: start preserves lifecycle order", async () => {
-  const harness = createBotApplicationHarness();
+test("OCV.01 BotApplication starts Discord lifecycle without eager-starting Codex", async () => {
+  const harness = createBotApplicationHarness({
+    failCodexStart: new Error("Codex must lazy-start from AI turn requests")
+  });
 
   try {
     await harness.app.start();
@@ -16,22 +18,25 @@ test("characterization before BotApplication composition-root split: start prese
       "store.migrate",
       "watchLocations.sync",
       "runtimeLock.acquire",
-      "codex.start",
+      "chatCounter.resetAll",
       "discord.login",
       "discord.ready",
       "admin.registerCommands",
       "recovery.recoverPendingMessages",
       "retry.drainDueJobs",
+      "weekly.poll",
       "retry.start"
     ]);
+    assert.equal(harness.steps.includes("codex.start"), false);
   } finally {
     await harness.app.stop();
   }
 });
 
-test("characterization before BotApplication composition-root split: start failure runs stop-equivalent cleanup", async () => {
+test("OCV.01 start failure cleanup does not require Codex eager start", async () => {
   const harness = createBotApplicationHarness({
-    failRecovery: new Error("startup recovery failed")
+    failRecovery: new Error("startup recovery failed"),
+    failCodexStart: new Error("Codex must lazy-start from AI turn requests")
   });
 
   await assert.rejects(() => harness.app.start(), /startup recovery failed/);
@@ -40,7 +45,7 @@ test("characterization before BotApplication composition-root split: start failu
     "store.migrate",
     "watchLocations.sync",
     "runtimeLock.acquire",
-    "codex.start",
+    "chatCounter.resetAll",
     "discord.login",
     "discord.ready",
     "admin.registerCommands",
@@ -51,12 +56,14 @@ test("characterization before BotApplication composition-root split: start failu
     "discord.destroy",
     "store.close"
   ]);
+  assert.equal(harness.steps.includes("codex.start"), false);
   assert.equal(harness.steps.includes("retry.start"), false);
 });
 
-test("characterization before BotApplication composition-root split: full dependency override does not fall back to default runtime instances", async () => {
+test("OCV.01 full dependency override does not fall back to default runtime instances", async () => {
   const harness = createBotApplicationHarness({
-    config: createPoisonDefaultConfig()
+    config: createPoisonDefaultConfig(),
+    failCodexStart: new Error("Codex must lazy-start from AI turn requests")
   });
 
   assert.equal(harness.app.store, harness.store);
@@ -69,7 +76,6 @@ test("characterization before BotApplication composition-root split: full depend
       "watchLocations.sync",
       "runtimeLock.acquire",
       "chatCounter.resetAll",
-      "codex.start",
       "discord.login",
       "discord.ready",
       "admin.registerCommands",
@@ -78,6 +84,7 @@ test("characterization before BotApplication composition-root split: full depend
       "weekly.poll",
       "retry.start"
     ]);
+    assert.equal(harness.steps.includes("codex.start"), false);
   } finally {
     await harness.app.stop();
   }
@@ -85,6 +92,7 @@ test("characterization before BotApplication composition-root split: full depend
 
 type HarnessOptions = {
   config?: AppConfig;
+  failCodexStart?: Error;
   failRecovery?: Error;
 };
 
@@ -100,6 +108,9 @@ function createBotApplicationHarness(options: HarnessOptions = {}): {
   const codexClient = {
     start: async () => {
       steps.push("codex.start");
+      if (options.failCodexStart) {
+        throw options.failCodexStart;
+      }
     },
     close: async () => {
       steps.push("codex.close");

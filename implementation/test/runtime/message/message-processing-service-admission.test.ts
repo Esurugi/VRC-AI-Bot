@@ -263,8 +263,12 @@ function createQueuedMessage(input: {
     content: input.content,
     thread: input.thread,
     isForum: input.watchLocation.features?.includes("forum_research") === true,
-    ...(input.mentionsBot === undefined ? {} : { mentionsBot: input.mentionsBot }),
-    ...(input.replyToBot === undefined ? {} : { replyToBot: input.replyToBot })
+    ...(input.mentionsBot === undefined
+      ? {}
+      : { mentionsBot: input.mentionsBot }),
+    ...(input.replyToBot === undefined
+      ? {}
+      : { replyToBot: input.replyToBot })
   });
   const envelope: MessageEnvelope = {
     guildId: input.watchLocation.guildId,

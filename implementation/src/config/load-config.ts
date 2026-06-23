@@ -36,11 +36,28 @@ const envSchema = z.object({
   DISCORD_OWNER_USER_IDS: z.string().min(1),
   BOT_DB_PATH: z.string().min(1),
   BOT_LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace"]),
+  NODE_ENV: z.string().optional(),
   CODEX_APP_SERVER_CMD: z.string().min(1).default("codex app-server"),
   CODEX_HOME: z.string().min(1).optional(),
   BOT_WATCH_LOCATIONS_PATH: z.string().min(1).default("./config/watch-locations.json"),
   BOT_CHAT_RUNTIME_CONTROLS_PATH: z.string().min(1).optional(),
-  BOT_WEEKLY_MEETUP_ANNOUNCEMENT_PATH: z.string().min(1).optional()
+  BOT_WEEKLY_MEETUP_ANNOUNCEMENT_PATH: z.string().min(1).optional(),
+  BOT_MAX_CONCURRENT_KEYS: positiveIntegerEnv(
+    "BOT_MAX_CONCURRENT_KEYS",
+    () => (process.env.NODE_ENV === "production" ? 1 : 4)
+  ),
+  BOT_RETRY_POLL_INTERVAL_MS: positiveIntegerEnv(
+    "BOT_RETRY_POLL_INTERVAL_MS",
+    15_000
+  ),
+  BOT_CODEX_IDLE_CLOSE_MS: positiveIntegerEnv(
+    "BOT_CODEX_IDLE_CLOSE_MS",
+    1_800_000
+  ),
+  BOT_AMBIENT_SPARSE_INTERVAL: positiveIntegerEnv(
+    "BOT_AMBIENT_SPARSE_INTERVAL",
+    5
+  )
 });
 
 const featureProfileSchema = z.object({
@@ -122,7 +139,14 @@ const chatRuntimeControlsSchema = z.object({
 const DEFAULT_WEEKLY_MEETUP_ANNOUNCEMENT_PATH =
   "./config/weekly-meetup-announcement.json";
 
-export function loadConfig(cwd = process.cwd()): AppConfig {
+type OracleRuntimeConfig = {
+  maxConcurrentKeys: number;
+  retryPollIntervalMs: number;
+  codexIdleCloseMs: number;
+  ambientSparseInterval: number;
+};
+
+export function loadConfig(cwd = process.cwd()): AppConfig & OracleRuntimeConfig {
   const env = envSchema.parse(process.env);
   const watchLocationPath = resolve(cwd, env.BOT_WATCH_LOCATIONS_PATH);
   const watchLocations = readWatchLocations(watchLocationPath);
@@ -146,10 +170,47 @@ export function loadConfig(cwd = process.cwd()): AppConfig {
     botLogLevel: env.BOT_LOG_LEVEL,
     codexAppServerCommand: env.CODEX_APP_SERVER_CMD,
     codexHomePath: env.CODEX_HOME ? resolve(cwd, env.CODEX_HOME) : null,
+    maxConcurrentKeys: env.BOT_MAX_CONCURRENT_KEYS,
+    retryPollIntervalMs: env.BOT_RETRY_POLL_INTERVAL_MS,
+    codexIdleCloseMs: env.BOT_CODEX_IDLE_CLOSE_MS,
+    ambientSparseInterval: env.BOT_AMBIENT_SPARSE_INTERVAL,
     watchLocations,
     chatRuntimeControls,
     weeklyMeetupAnnouncement
   };
+}
+
+function positiveIntegerEnv(name: string, defaultValue: number | (() => number)) {
+  return z
+    .preprocess(
+      (value) =>
+        value === undefined
+          ? String(
+              typeof defaultValue === "function" ? defaultValue() : defaultValue
+            )
+          : value,
+      z.string().min(1)
+    )
+    .transform((value, ctx) => {
+      if (!/^\d+$/.test(value)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `${name} must be a positive integer`
+        });
+        return z.NEVER;
+      }
+
+      const parsed = Number(value);
+      if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `${name} must be a positive integer`
+        });
+        return z.NEVER;
+      }
+
+      return parsed;
+    });
 }
 
 function readWatchLocations(path: string): WatchLocationConfig[] {

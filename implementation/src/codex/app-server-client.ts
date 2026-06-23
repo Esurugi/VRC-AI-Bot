@@ -172,6 +172,10 @@ type NamespaceSandboxProbeResult = {
   args: string[];
 };
 
+type CodexAppServerClientOptions = {
+  idleCloseMs?: number;
+};
+
 export const HARNESS_DEVELOPER_INSTRUCTIONS = buildHarnessDeveloperInstructions();
 
 export function buildHarnessDeveloperInstructions(
@@ -389,15 +393,20 @@ export class CodexAppServerClient {
   private nextRequestId = 1;
   private stdoutBuffer = "";
   private started = false;
+  private startingPromise: Promise<void> | null = null;
+  private idleCloseTimer: NodeJS.Timeout | null = null;
   private sessionInvalidationGeneration = 0;
   private namespaceSandboxUnsupported = false;
+  private readonly idleCloseMs: number | null;
 
   constructor(
     private readonly command: string,
     private readonly cwd: string,
     private readonly codexHomePath: string | null,
-    private readonly logger: Logger
+    private readonly logger: Logger,
+    options: CodexAppServerClientOptions = {}
   ) {
+    this.idleCloseMs = options.idleCloseMs ?? null;
     this.threadConfigOverride = readMcpDisabledConfigOverride(
       this.codexHomePath
         ? getDefaultCodexConfigPath(this.codexHomePath)
@@ -406,10 +415,42 @@ export class CodexAppServerClient {
   }
 
   async start(): Promise<void> {
-    if (this.started) {
+    await this.ensureStarted();
+  }
+
+  async ensureStarted(): Promise<void> {
+    if (this.started && this.process) {
+      if (this.isProcessWritable(this.process)) {
+        this.cancelIdleClose();
+        return;
+      }
+      const child = this.process;
+      this.handleProcessFailure(
+        child,
+        this.buildProcessStoppedError(child),
+        "process_stale",
+        this.buildProcessStateTrace(child)
+      );
+    }
+
+    if (this.startingPromise) {
+      await this.startingPromise;
       return;
     }
 
+    this.cancelIdleClose();
+    const startingPromise = this.startProcess();
+    this.startingPromise = startingPromise;
+    try {
+      await startingPromise;
+    } finally {
+      if (this.startingPromise === startingPromise) {
+        this.startingPromise = null;
+      }
+    }
+  }
+
+  private async startProcess(): Promise<void> {
     const childEnv = buildCodexChildEnv(process.env, this.codexHomePath);
     const sandboxProbe = probeNamespaceSandboxSupport({
       appServerCommand: this.command,
@@ -426,32 +467,56 @@ export class CodexAppServerClient {
       args: sandboxProbe.args
     });
 
-    this.process = spawn(this.command, {
+    const invocation = buildCodexAppServerInvocation(this.command);
+    const child = spawn(invocation.command, invocation.args, {
       cwd: this.cwd,
       env: childEnv,
-      shell: true,
       stdio: ["pipe", "pipe", "pipe"]
     });
-    this.process.stdout.setEncoding("utf8");
-    this.process.stderr.setEncoding("utf8");
-    this.process.stdout.on("data", (chunk) => this.handleStdout(chunk));
-    this.process.stderr.on("data", (chunk) => {
+    this.process = child;
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => this.handleStdout(chunk));
+    child.stderr.on("data", (chunk) => {
       this.logger.debug({ chunk }, "codex app-server stderr");
     });
-    this.process.on("exit", (code, signal) => {
-      const error = new Error(
-        `codex app-server exited unexpectedly (code=${code ?? "null"}, signal=${signal ?? "null"})`
+    child.stdin.on("error", (error) => {
+      this.handleProcessFailure(
+        child,
+        error instanceof Error ? error : new Error(String(error)),
+        "process_stdin_error",
+        {
+          error: error instanceof Error ? error.message : String(error)
+        }
       );
+    });
+    child.on("error", (error) => {
+      this.handleProcessFailure(
+        child,
+        new Error(`codex app-server spawn failed: ${error.message}`),
+        "process_error",
+        {
+          error: error.message
+        }
+      );
+    });
+    child.on("exit", (code, signal) => {
       appendRuntimeTrace("codex-app-server", "process_exit", {
         code,
         signal
       });
-      this.rejectAll(error);
-      this.started = false;
-      this.process = null;
+    });
+    child.on("close", (code, signal) => {
+      const error = new Error(
+        `codex app-server exited unexpectedly (code=${code ?? "null"}, signal=${signal ?? "null"})`
+      );
+      this.handleProcessFailure(child, error, "process_close", {
+        code,
+        signal
+      });
     });
 
-    await this.request("initialize", {
+    await this.requestRaw("initialize", {
       clientInfo: {
         name: "vrc-ai-bot",
         version: "0.1.0"
@@ -469,6 +534,7 @@ export class CodexAppServerClient {
   }
 
   async close(): Promise<void> {
+    this.cancelIdleClose();
     if (!this.process) {
       return;
     }
@@ -476,6 +542,7 @@ export class CodexAppServerClient {
     const process = this.process;
     this.process = null;
     this.started = false;
+    this.rejectAll(new Error("codex app-server closed"));
     appendRuntimeTrace("codex-app-server", "process_close_requested", {});
     process.kill();
   }
@@ -1173,10 +1240,17 @@ export class CodexAppServerClient {
     }
   }
 
-  private request(method: string, params?: unknown): Promise<unknown> {
-    if (!this.process) {
-      throw new Error("codex app-server is not running");
+  private async request(method: string, params?: unknown): Promise<unknown> {
+    await this.ensureStarted();
+    try {
+      return await this.requestRaw(method, params);
+    } finally {
+      this.scheduleIdleCloseIfIdle();
     }
+  }
+
+  private requestRaw(method: string, params?: unknown): Promise<unknown> {
+    const child = this.requireWritableProcess();
 
     const id = this.nextRequestId++;
     const payload: JsonRpcRequest = {
@@ -1193,18 +1267,29 @@ export class CodexAppServerClient {
         params: summarizeTraceParams(method, params)
       });
       this.pending.set(id, { method, resolve, reject });
-      this.process?.stdin.write(`${JSON.stringify(payload)}\n`);
+      this.writeRequestPayload(child, id, `${JSON.stringify(payload)}\n`);
     });
   }
 
-  private requestWithTimeout(
+  private async requestWithTimeout(
     method: string,
     params: unknown,
     timeoutMs: number
   ): Promise<unknown> {
-    if (!this.process) {
-      throw new Error("codex app-server is not running");
+    await this.ensureStarted();
+    try {
+      return await this.requestRawWithTimeout(method, params, timeoutMs);
+    } finally {
+      this.scheduleIdleCloseIfIdle();
     }
+  }
+
+  private requestRawWithTimeout(
+    method: string,
+    params: unknown,
+    timeoutMs: number
+  ): Promise<unknown> {
+    const child = this.requireWritableProcess();
 
     const id = this.nextRequestId++;
     const payload: JsonRpcRequest = {
@@ -1254,21 +1339,163 @@ export class CodexAppServerClient {
           reject(error);
         }
       });
-      this.process?.stdin.write(`${JSON.stringify(payload)}\n`);
+      this.writeRequestPayload(child, id, `${JSON.stringify(payload)}\n`);
     });
   }
 
   private notify(method: string, params?: unknown): void {
-    if (!this.process) {
-      throw new Error("codex app-server is not running");
-    }
+    const child = this.requireWritableProcess();
 
     const payload: JsonRpcRequest = {
       jsonrpc: "2.0",
       method,
       params
     };
-    this.process.stdin.write(`${JSON.stringify(payload)}\n`);
+    this.writeNotificationPayload(child, `${JSON.stringify(payload)}\n`);
+  }
+
+  private requireWritableProcess(): ChildProcessWithoutNullStreams {
+    const child = this.process;
+    if (!child) {
+      throw new Error("codex app-server is not running");
+    }
+
+    if (!this.isProcessWritable(child)) {
+      const error = this.buildProcessStoppedError(child);
+      this.handleProcessFailure(child, error, "process_stale", {
+        ...this.buildProcessStateTrace(child)
+      });
+      throw error;
+    }
+
+    return child;
+  }
+
+  private isProcessWritable(child: ChildProcessWithoutNullStreams): boolean {
+    return (
+      child.exitCode === null &&
+      child.signalCode === null &&
+      !child.stdin.destroyed &&
+      !child.stdin.writableEnded
+    );
+  }
+
+  private buildProcessStoppedError(
+    child: ChildProcessWithoutNullStreams
+  ): Error {
+    return new Error(
+      `codex app-server exited unexpectedly (code=${child.exitCode ?? "null"}, signal=${child.signalCode ?? "null"})`
+    );
+  }
+
+  private buildProcessStateTrace(
+    child: ChildProcessWithoutNullStreams
+  ): Record<string, unknown> {
+    return {
+      code: child.exitCode,
+      signal: child.signalCode,
+      stdin_destroyed: child.stdin.destroyed,
+      stdin_writable_ended: child.stdin.writableEnded
+    };
+  }
+
+  private writeRequestPayload(
+    child: ChildProcessWithoutNullStreams,
+    id: number,
+    payload: string
+  ): void {
+    try {
+      child.stdin.write(payload, (error: Error | null | undefined) => {
+        if (error) {
+          this.failRequestWrite(child, id, error);
+        }
+      });
+    } catch (error) {
+      this.failRequestWrite(
+        child,
+        id,
+        error instanceof Error ? error : new Error(String(error))
+      );
+    }
+  }
+
+  private writeNotificationPayload(
+    child: ChildProcessWithoutNullStreams,
+    payload: string
+  ): void {
+    try {
+      child.stdin.write(payload, (error: Error | null | undefined) => {
+        if (error) {
+          this.handleProcessFailure(child, error, "process_stdin_write_error", {
+            error: error.message
+          });
+        }
+      });
+    } catch (error) {
+      const failure = error instanceof Error ? error : new Error(String(error));
+      this.handleProcessFailure(child, failure, "process_stdin_write_error", {
+        error: failure.message
+      });
+      throw failure;
+    }
+  }
+
+  private failRequestWrite(
+    child: ChildProcessWithoutNullStreams,
+    id: number,
+    error: Error
+  ): void {
+    const pending = this.pending.get(id);
+    if (pending) {
+      this.pending.delete(id);
+      pending.reject(error);
+    }
+    this.handleProcessFailure(child, error, "process_stdin_write_error", {
+      id,
+      error: error.message
+    });
+  }
+
+  private scheduleIdleCloseIfIdle(): void {
+    if (this.idleCloseMs === null) {
+      return;
+    }
+
+    this.cancelIdleClose();
+    if (
+      !this.process ||
+      !this.started ||
+      this.pending.size > 0 ||
+      this.pendingTurnCompletions.size > 0 ||
+      this.activeTurnCompletions.size > 0
+    ) {
+      return;
+    }
+
+    this.idleCloseTimer = setTimeout(() => {
+      this.idleCloseTimer = null;
+      if (
+        !this.process ||
+        this.pending.size > 0 ||
+        this.pendingTurnCompletions.size > 0 ||
+        this.activeTurnCompletions.size > 0
+      ) {
+        return;
+      }
+
+      void this.close().catch((error) => {
+        this.logger.warn({ error }, "failed to close idle codex app-server");
+      });
+    }, this.idleCloseMs);
+  }
+
+  private cancelIdleClose(): void {
+    if (!this.idleCloseTimer) {
+      return;
+    }
+
+    clearTimeout(this.idleCloseTimer);
+    this.idleCloseTimer = null;
   }
 
   private handleStdout(chunk: string): void {
@@ -1495,6 +1722,24 @@ export class CodexAppServerClient {
     }
 
     this.logger.debug({ method }, "ignoring codex notification");
+  }
+
+  private handleProcessFailure(
+    child: ChildProcessWithoutNullStreams,
+    error: Error,
+    event: string,
+    details: Record<string, unknown>
+  ): void {
+    if (this.process !== child) {
+      return;
+    }
+
+    appendRuntimeTrace("codex-app-server", event, details);
+    this.started = false;
+    this.process = null;
+    this.stdoutBuffer = "";
+    this.cancelIdleClose();
+    this.rejectAll(error);
   }
 
   private rejectAll(error: Error): void {
@@ -1845,6 +2090,22 @@ function probeNamespaceSandboxSupport(input: {
     namespaceSandboxUnsupported,
     command: invocation.command,
     args: invocation.args
+  };
+}
+
+function buildCodexAppServerInvocation(command: string): {
+  command: string;
+  args: string[];
+} {
+  const tokens = tokenizeCommand(command);
+  const executable = tokens[0];
+  if (!executable) {
+    throw new Error("CODEX_APP_SERVER_CMD did not contain an executable");
+  }
+
+  return {
+    command: executable,
+    args: tokens.slice(1)
   };
 }
 

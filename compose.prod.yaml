@@ -1,0 +1,29 @@
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile.prod
+    image: vrc-ai-bot:prod
+    restart: unless-stopped
+    env_file:
+      - ${BOT_PROD_ENV_FILE:-/data/vrc-ai-bot/.env}
+    environment:
+      HOME: /data/codex-home
+      CODEX_HOME: /data/codex-home/.codex
+      NODE_ENV: production
+      BOT_DB_PATH: /data/vrc-ai-bot/bot.sqlite
+      BOT_WATCH_LOCATIONS_PATH: /data/vrc-ai-bot/config/watch-locations.json
+      BOT_CHAT_RUNTIME_CONTROLS_PATH: /data/vrc-ai-bot/config/chat-runtime-controls.json
+      BOT_WEEKLY_MEETUP_ANNOUNCEMENT_PATH: /data/vrc-ai-bot/config/weekly-meetup-announcement.json
+      BOT_MAX_CONCURRENT_KEYS: "1"
+      BOT_RETRY_POLL_INTERVAL_MS: "15000"
+      BOT_CODEX_IDLE_CLOSE_MS: "1800000"
+      BOT_RUNTIME_TRACE_DIR: /data/vrc-ai-bot/traces
+      BOT_RUNTIME_TRACE_RETENTION_DAYS: "14"
+      BOT_RUNTIME_TRACE_MAX_BYTES: "104857600"
+    volumes:
+      - /data/vrc-ai-bot:/data/vrc-ai-bot
+      - /data/codex-home:/data/codex-home
+      - /data/backups:/data/backups
+    working_dir: /app
+    command: ["pnpm", "start"]
