@@ -92,9 +92,35 @@ function loadPromptRefinerReference(): string {
     return cachedPromptRefinerReference;
   }
 
-  cachedPromptRefinerReference = readFileSync(
-    PROMPT_REFINER_REFERENCE_PATH,
-    "utf8"
-  ).trim();
+  try {
+    cachedPromptRefinerReference = readFileSync(
+      PROMPT_REFINER_REFERENCE_PATH,
+      "utf8"
+    ).trim();
+  } catch (error) {
+    if (!isMissingPromptReference(error)) {
+      throw error;
+    }
+    cachedPromptRefinerReference = DEFAULT_PROMPT_REFINER_REFERENCE;
+  }
   return cachedPromptRefinerReference;
 }
+
+function isMissingPromptReference(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === "ENOENT"
+  );
+}
+
+const DEFAULT_PROMPT_REFINER_REFERENCE = [
+  "Convert the raw forum request into a concise hidden prompt for the forum research supervisor.",
+  "",
+  "Preserve the user's actual question, constraints, starter message, latest follow-up, fetchable public URLs, and known source URLs.",
+  "Frame the task for public-source research and supervisor planning, not for direct conversational answering.",
+  "Do not answer the user, perform external research, invent facts or URLs, route by channel name or message length, or include retry/safety/orchestration hints in facts.",
+  "",
+  "Return only the requested structured object with refined_prompt, progress_notice, and prompt_rationale_summary."
+].join("\n");

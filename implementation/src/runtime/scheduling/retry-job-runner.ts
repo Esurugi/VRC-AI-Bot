@@ -15,6 +15,7 @@ import { resolveRetryWatchLocation } from "../types.js";
 
 export class RetryJobRunner {
   private timer: NodeJS.Timeout | null = null;
+  private readonly intervalMs: number;
 
   constructor(
     private readonly config: AppConfig,
@@ -26,8 +27,10 @@ export class RetryJobRunner {
     private readonly messageProcessingService: MessageProcessingService,
     private readonly plainTextAttachmentService: PlainTextAttachmentService,
     private readonly logger: Logger,
-    private readonly intervalMs = 5_000
-  ) {}
+    intervalMs?: number
+  ) {
+    this.intervalMs = intervalMs ?? config.runtime.retryPollIntervalMs;
+  }
 
   start(): void {
     if (this.timer) {

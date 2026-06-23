@@ -104,7 +104,10 @@ export function createBotApplicationDependencies(
       config.codexAppServerCommand,
       process.cwd(),
       config.codexHomePath,
-      logger
+      logger,
+      {
+        idleCloseMs: config.runtime.codexIdleCloseMs
+      }
     );
   const sessionPolicyResolver =
     dependencies.sessionPolicyResolver ?? new SessionPolicyResolver();
@@ -177,8 +180,9 @@ export function createBotApplicationDependencies(
     );
   const queue =
     dependencies.queue ??
-    new OrderedMessageQueue<QueuedMessage>((item) =>
-      messageProcessingService.process(item)
+    new OrderedMessageQueue<QueuedMessage>(
+      (item) => messageProcessingService.process(item),
+      config.runtime.maxConcurrentKeys
     );
   const chatChannelCounterService =
     dependencies.chatChannelCounterService ?? new ChatChannelCounterService(store);
@@ -195,6 +199,7 @@ export function createBotApplicationDependencies(
       chatChannelCounterService,
       chatEngagementPolicy,
       chatRuntimeControlService,
+      recentChatHistoryService,
       featureThreadService,
       plainTextAttachmentService,
       logger

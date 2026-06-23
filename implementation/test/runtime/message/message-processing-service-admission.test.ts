@@ -263,8 +263,12 @@ function createQueuedMessage(input: {
     content: input.content,
     thread: input.thread,
     isForum: input.watchLocation.features?.includes("forum_research") === true,
-    ...(input.mentionsBot === undefined ? {} : { mentionsBot: input.mentionsBot }),
-    ...(input.replyToBot === undefined ? {} : { replyToBot: input.replyToBot })
+    ...(input.mentionsBot === undefined
+      ? {}
+      : { mentionsBot: input.mentionsBot }),
+    ...(input.replyToBot === undefined
+      ? {}
+      : { replyToBot: input.replyToBot })
   });
   const envelope: MessageEnvelope = {
     guildId: input.watchLocation.guildId,
@@ -425,9 +429,16 @@ function createConfig(): AppConfig {
     discordOwnerUserIds: [],
     botDbPath: "bot.sqlite",
     botLogLevel: "info",
+    runtime: {
+      maxConcurrentKeys: 4,
+      retryPollIntervalMs: 15_000,
+      codexIdleCloseMs: 1_800_000,
+      ambientSparseInterval: 5
+    },
     codexAppServerCommand: "codex-app-server",
     codexHomePath: null,
     watchLocations: [],
+    chatRuntimeControls: null,
     weeklyMeetupAnnouncement: null
   };
 }

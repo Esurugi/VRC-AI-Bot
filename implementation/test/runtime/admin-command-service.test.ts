@@ -262,9 +262,16 @@ function createConfig(watchLocations: WatchLocationConfig[]): AppConfig {
     discordOwnerUserIds: ["owner-user"],
     botDbPath: ":memory:",
     botLogLevel: "info",
+    runtime: {
+      maxConcurrentKeys: 4,
+      retryPollIntervalMs: 15_000,
+      codexIdleCloseMs: 1_800_000,
+      ambientSparseInterval: 5
+    },
     codexAppServerCommand: "codex",
     codexHomePath: null,
     watchLocations,
+    chatRuntimeControls: null,
     weeklyMeetupAnnouncement: null
   };
 }

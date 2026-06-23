@@ -1444,6 +1444,12 @@ function appConfig(watchLocations: WatchLocationConfig[]): AppConfig {
     discordOwnerUserIds: ["owner-1"],
     botDbPath: ":memory:",
     botLogLevel: "fatal",
+    runtime: {
+      maxConcurrentKeys: 4,
+      retryPollIntervalMs: 15_000,
+      codexIdleCloseMs: 1_800_000,
+      ambientSparseInterval: 5
+    },
     codexAppServerCommand: "test",
     codexHomePath: null,
     watchLocations,

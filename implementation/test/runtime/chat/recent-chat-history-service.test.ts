@@ -2,9 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { Collection } from "discord.js";
+import type { WatchLocationConfig } from "../../../src/domain/types.js";
 
 import {
   buildRecentRoomEventFacts,
+  RecentChatHistoryService,
   shouldCollectRecentRoomEvents
 } from "../../../src/runtime/chat/recent-chat-history-service.js";
 
@@ -176,13 +178,620 @@ test("recent room event collection uses ambient conversation policy instead of l
   );
 });
 
+test("observed Discord messages populate a per-channel room-event ring buffer before REST history fetch", async () => {
+  const botUserId = "bot";
+  const service = new RecentChatHistoryService(createLogger());
+  const fetchCalls: Array<{ limit: number; before?: string }> = [];
+
+  for (let index = 1; index <= 12; index += 1) {
+    service.observe(
+      createHistoryMessage({
+        id: `a-${String(index).padStart(2, "0")}`,
+        channelId: "channel-a",
+        clientUserId: botUserId,
+        authorId: index === 5 ? botUserId : `user-${index}`,
+        authorBot: index === 5,
+        authorDisplayName: index === 5 ? "ティラピコ" : `user ${index}`,
+        content: `observed ${index}`,
+        createdAt: `2026-03-15T13:${String(index).padStart(2, "0")}:00.000Z`,
+        mentionsBot: index === 4
+      })
+    );
+  }
+  service.observe(
+    createHistoryMessage({
+      id: "other-channel",
+      channelId: "channel-b",
+      clientUserId: botUserId,
+      authorId: "user-other",
+      authorDisplayName: "other",
+      content: "wrong channel",
+      createdAt: "2026-03-15T13:30:00.000Z"
+    })
+  );
+  service.observe(
+    createHistoryMessage({
+      id: "other-bot",
+      channelId: "channel-a",
+      clientUserId: botUserId,
+      authorId: "bot-other",
+      authorBot: true,
+      authorDisplayName: "other bot",
+      content: "must be excluded",
+      createdAt: "2026-03-15T13:31:00.000Z"
+    })
+  );
+  service.observe(
+    createHistoryMessage({
+      id: "webhook",
+      channelId: "channel-a",
+      clientUserId: botUserId,
+      authorId: "webhook-author",
+      authorDisplayName: "webhook",
+      content: "must be excluded",
+      createdAt: "2026-03-15T13:32:00.000Z",
+      webhookId: "webhook-1"
+    })
+  );
+  service.observe(
+    createHistoryMessage({
+      id: "system",
+      channelId: "channel-a",
+      clientUserId: botUserId,
+      authorId: "system-author",
+      authorDisplayName: "system",
+      content: "must be excluded",
+      createdAt: "2026-03-15T13:33:00.000Z",
+      system: true
+    })
+  );
+
+  const context = await service.collect({
+    watchLocation: createAmbientWatchLocation("channel-a"),
+    message: createCollectMessage({
+      id: "current",
+      channelId: "channel-a",
+      clientUserId: botUserId,
+      fetchCalls
+    })
+  });
+
+  assert.deepEqual(
+    context.recentRoomEvents.map((event) => event.message_id),
+    [
+      "a-01",
+      "a-02",
+      "a-03",
+      "a-04",
+      "a-05",
+      "a-06",
+      "a-07",
+      "a-08",
+      "a-09",
+      "a-10",
+      "a-11",
+      "a-12"
+    ]
+  );
+  assert.equal(context.recentRoomEvents[4]?.is_bot, true);
+  assert.equal(context.recentRoomEvents[3]?.mentions_bot, true);
+  assert.deepEqual(fetchCalls, []);
+});
+
+test("observed current message is not included when collecting for that same message", async () => {
+  const botUserId = "bot";
+  const service = new RecentChatHistoryService(createLogger());
+  const fetchCalls: Array<{ limit: number; before?: string }> = [];
+
+  service.observe(
+    createHistoryMessage({
+      id: "current",
+      channelId: "channel-a",
+      clientUserId: botUserId,
+      authorId: "user-current",
+      authorDisplayName: "current",
+      content: "current message",
+      createdAt: "2026-03-15T13:20:00.000Z"
+    })
+  );
+
+  const context = await service.collect({
+    watchLocation: createAmbientWatchLocation("channel-a"),
+    message: createCollectMessage({
+      id: "current",
+      channelId: "channel-a",
+      clientUserId: botUserId,
+      createdAt: "2026-03-15T13:20:00.000Z",
+      fetchCalls
+    })
+  });
+
+  assert.deepEqual(fetchCalls, [{ limit: 50, before: "current" }]);
+  assert.deepEqual(context.recentRoomEvents, []);
+});
+
+test("observed previous current and next messages collect only the previous event", async () => {
+  const botUserId = "bot";
+  const service = new RecentChatHistoryService(createLogger());
+  const fetchCalls: Array<{ limit: number; before?: string }> = [];
+
+  for (const event of [
+    { id: "prev", minute: "19" },
+    { id: "current", minute: "20" },
+    { id: "next", minute: "21" }
+  ]) {
+    service.observe(
+      createHistoryMessage({
+        id: event.id,
+        channelId: "channel-a",
+        clientUserId: botUserId,
+        authorId: `user-${event.id}`,
+        authorDisplayName: event.id,
+        content: `${event.id} message`,
+        createdAt: `2026-03-15T13:${event.minute}:00.000Z`
+      })
+    );
+  }
+
+  const context = await service.collect({
+    watchLocation: createAmbientWatchLocation("channel-a"),
+    message: createCollectMessage({
+      id: "current",
+      channelId: "channel-a",
+      clientUserId: botUserId,
+      createdAt: "2026-03-15T13:20:00.000Z",
+      fetchCalls
+    })
+  });
+
+  assert.deepEqual(fetchCalls, [{ limit: 50, before: "prev" }]);
+  assert.deepEqual(
+    context.recentRoomEvents.map((event) => event.message_id),
+    ["prev"]
+  );
+});
+
+test("full observed ring buffer can skip REST fallback without mixing in the current message", async () => {
+  const botUserId = "bot";
+  const service = new RecentChatHistoryService(createLogger());
+  const fetchCalls: Array<{ limit: number; before?: string }> = [];
+
+  for (let index = 1; index <= 11; index += 1) {
+    service.observe(
+      createHistoryMessage({
+        id: `prev-${String(index).padStart(2, "0")}`,
+        channelId: "channel-a",
+        clientUserId: botUserId,
+        authorId: `user-prev-${index}`,
+        authorDisplayName: `prev ${index}`,
+        content: `previous ${index}`,
+        createdAt: `2026-03-15T13:${String(index).padStart(2, "0")}:00.000Z`
+      })
+    );
+  }
+  service.observe(
+    createHistoryMessage({
+      id: "current",
+      channelId: "channel-a",
+      clientUserId: botUserId,
+      authorId: "user-current",
+      authorDisplayName: "current",
+      content: "current message",
+      createdAt: "2026-03-15T13:20:00.000Z"
+    })
+  );
+
+  const context = await service.collect({
+    watchLocation: createAmbientWatchLocation("channel-a"),
+    message: createCollectMessage({
+      id: "current",
+      channelId: "channel-a",
+      clientUserId: botUserId,
+      createdAt: "2026-03-15T13:20:00.000Z",
+      fetchCalls
+    })
+  });
+
+  assert.deepEqual(fetchCalls, []);
+  assert.deepEqual(
+    context.recentRoomEvents.map((event) => event.message_id),
+    [
+      "prev-01",
+      "prev-02",
+      "prev-03",
+      "prev-04",
+      "prev-05",
+      "prev-06",
+      "prev-07",
+      "prev-08",
+      "prev-09",
+      "prev-10",
+      "prev-11"
+    ]
+  );
+});
+
+test("REST failure observed fallback excludes the current message", async () => {
+  const botUserId = "bot";
+  const service = new RecentChatHistoryService(createLogger());
+  const fetchCalls: Array<{ limit: number; before?: string }> = [];
+
+  service.observe(
+    createHistoryMessage({
+      id: "prev",
+      channelId: "channel-a",
+      clientUserId: botUserId,
+      authorId: "user-prev",
+      authorDisplayName: "prev",
+      content: "previous message",
+      createdAt: "2026-03-15T13:19:00.000Z"
+    })
+  );
+  service.observe(
+    createHistoryMessage({
+      id: "current",
+      channelId: "channel-a",
+      clientUserId: botUserId,
+      authorId: "user-current",
+      authorDisplayName: "current",
+      content: "current message",
+      createdAt: "2026-03-15T13:20:00.000Z"
+    })
+  );
+
+  const context = await service.collect({
+    watchLocation: createAmbientWatchLocation("channel-a"),
+    message: createCollectMessage({
+      id: "current",
+      channelId: "channel-a",
+      clientUserId: botUserId,
+      createdAt: "2026-03-15T13:20:00.000Z",
+      fetchCalls,
+      fetchError: new Error("REST unavailable")
+    })
+  });
+
+  assert.deepEqual(fetchCalls, [{ limit: 50, before: "prev" }]);
+  assert.deepEqual(
+    context.recentRoomEvents.map((event) => event.message_id),
+    ["prev"]
+  );
+});
+
+test("recent room event collection falls back to Discord REST only on cold start", async () => {
+  const botUserId = "bot";
+  const service = new RecentChatHistoryService(createLogger());
+  const fetchCalls: Array<{ limit: number; before?: string }> = [];
+  const fetchedHistory = new Collection<string, never>([
+    [
+      "older-2",
+      createHistoryMessage({
+        id: "older-2",
+        channelId: "channel-a",
+        clientUserId: botUserId,
+        authorId: "user-2",
+        authorDisplayName: "user 2",
+        content: "older 2",
+        createdAt: "2026-03-15T13:18:00.000Z"
+      })
+    ],
+    [
+      "older-1",
+      createHistoryMessage({
+        id: "older-1",
+        channelId: "channel-a",
+        clientUserId: botUserId,
+        authorId: "user-1",
+        authorDisplayName: "user 1",
+        content: "older 1",
+        createdAt: "2026-03-15T13:17:00.000Z"
+      })
+    ]
+  ]);
+
+  const context = await service.collect({
+    watchLocation: createAmbientWatchLocation("channel-a"),
+    message: createCollectMessage({
+      id: "current",
+      channelId: "channel-a",
+      clientUserId: botUserId,
+      fetchCalls,
+      fetchedHistory
+    })
+  });
+
+  assert.deepEqual(fetchCalls, [{ limit: 50, before: "current" }]);
+  assert.deepEqual(
+    context.recentRoomEvents.map((event) => event.message_id),
+    ["older-1", "older-2"]
+  );
+});
+
+test("observed room-event history uses Discord REST only to fill an insufficient ring buffer", async () => {
+  const botUserId = "bot";
+  const service = new RecentChatHistoryService(createLogger());
+  const fetchCalls: Array<{ limit: number; before?: string }> = [];
+  const fetchedHistory = new Collection<string, never>([
+    [
+      "rest-2",
+      createHistoryMessage({
+        id: "rest-2",
+        channelId: "channel-a",
+        clientUserId: botUserId,
+        authorId: "user-rest-2",
+        authorDisplayName: "rest 2",
+        content: "rest 2",
+        createdAt: "2026-03-15T13:18:00.000Z"
+      })
+    ],
+    [
+      "rest-1",
+      createHistoryMessage({
+        id: "rest-1",
+        channelId: "channel-a",
+        clientUserId: botUserId,
+        authorId: "user-rest-1",
+        authorDisplayName: "rest 1",
+        content: "rest 1",
+        createdAt: "2026-03-15T13:17:00.000Z"
+      })
+    ]
+  ]);
+
+  service.observe(
+    createHistoryMessage({
+      id: "observed-1",
+      channelId: "channel-a",
+      clientUserId: botUserId,
+      authorId: "user-observed",
+      authorDisplayName: "observed",
+      content: "observed 1",
+      createdAt: "2026-03-15T13:19:00.000Z"
+    })
+  );
+
+  const context = await service.collect({
+    watchLocation: createAmbientWatchLocation("channel-a"),
+    message: createCollectMessage({
+      id: "current",
+      channelId: "channel-a",
+      clientUserId: botUserId,
+      fetchCalls,
+      fetchedHistory
+    })
+  });
+
+  assert.deepEqual(fetchCalls, [{ limit: 50, before: "observed-1" }]);
+  assert.deepEqual(
+    context.recentRoomEvents.map((event) => event.message_id),
+    ["rest-1", "rest-2", "observed-1"]
+  );
+});
+
+test("recent room event collection filters observed future events relative to the collected message", async () => {
+  const botUserId = "bot";
+  const service = new RecentChatHistoryService(createLogger());
+  const fetchCalls: Array<{ limit: number; before?: string }> = [];
+
+  for (const event of [
+    { id: "a", minute: "10" },
+    { id: "b", minute: "11" },
+    { id: "c", minute: "12" }
+  ]) {
+    service.observe(
+      createHistoryMessage({
+        id: event.id,
+        channelId: "channel-a",
+        clientUserId: botUserId,
+        authorId: `user-${event.id}`,
+        authorDisplayName: `user ${event.id}`,
+        content: `observed ${event.id}`,
+        createdAt: `2026-03-15T13:${event.minute}:00.000Z`
+      })
+    );
+  }
+
+  const context = await service.collect({
+    watchLocation: createAmbientWatchLocation("channel-a"),
+    message: createCollectMessage({
+      id: "a",
+      channelId: "channel-a",
+      clientUserId: botUserId,
+      createdAt: "2026-03-15T13:10:00.000Z",
+      fetchCalls
+    })
+  });
+
+  assert.deepEqual(fetchCalls, [{ limit: 50, before: "a" }]);
+  assert.deepEqual(context.recentRoomEvents, []);
+});
+
+test("insufficient filtered observed history fetches REST before the collected message, not a future observed message", async () => {
+  const botUserId = "bot";
+  const service = new RecentChatHistoryService(createLogger());
+  const fetchCalls: Array<{ limit: number; before?: string }> = [];
+  const fetchedHistory = new Collection<string, never>([
+    [
+      "rest-1",
+      createHistoryMessage({
+        id: "rest-1",
+        channelId: "channel-a",
+        clientUserId: botUserId,
+        authorId: "user-rest",
+        authorDisplayName: "rest",
+        content: "older rest",
+        createdAt: "2026-03-15T13:09:00.000Z"
+      })
+    ]
+  ]);
+
+  service.observe(
+    createHistoryMessage({
+      id: "a",
+      channelId: "channel-a",
+      clientUserId: botUserId,
+      authorId: "user-a",
+      authorDisplayName: "user a",
+      content: "observed a",
+      createdAt: "2026-03-15T13:10:00.000Z"
+    })
+  );
+  service.observe(
+    createHistoryMessage({
+      id: "future",
+      channelId: "channel-a",
+      clientUserId: botUserId,
+      authorId: "user-future",
+      authorDisplayName: "future",
+      content: "future event",
+      createdAt: "2026-03-15T13:11:00.000Z"
+    })
+  );
+
+  const context = await service.collect({
+    watchLocation: createAmbientWatchLocation("channel-a"),
+    message: createCollectMessage({
+      id: "a",
+      channelId: "channel-a",
+      clientUserId: botUserId,
+      createdAt: "2026-03-15T13:10:00.000Z",
+      fetchCalls,
+      fetchedHistory
+    })
+  });
+
+  assert.deepEqual(fetchCalls, [{ limit: 50, before: "a" }]);
+  assert.deepEqual(
+    context.recentRoomEvents.map((event) => event.message_id),
+    ["rest-1"]
+  );
+});
+
+test("twelve or more observed events after the collected message cannot bypass future-event filtering", async () => {
+  const botUserId = "bot";
+  const service = new RecentChatHistoryService(createLogger());
+  const fetchCalls: Array<{ limit: number; before?: string }> = [];
+  const fetchedHistory = new Collection<string, never>([
+    [
+      "rest-before-a",
+      createHistoryMessage({
+        id: "rest-before-a",
+        channelId: "channel-a",
+        clientUserId: botUserId,
+        authorId: "user-rest",
+        authorDisplayName: "rest",
+        content: "older than a",
+        createdAt: "2026-03-15T13:09:00.000Z"
+      })
+    ]
+  ]);
+
+  service.observe(
+    createHistoryMessage({
+      id: "a",
+      channelId: "channel-a",
+      clientUserId: botUserId,
+      authorId: "user-a",
+      authorDisplayName: "user a",
+      content: "observed a",
+      createdAt: "2026-03-15T13:10:00.000Z"
+    })
+  );
+  for (let index = 1; index <= 12; index += 1) {
+    service.observe(
+      createHistoryMessage({
+        id: `future-${String(index).padStart(2, "0")}`,
+        channelId: "channel-a",
+        clientUserId: botUserId,
+        authorId: `user-future-${index}`,
+        authorDisplayName: `future ${index}`,
+        content: `future event ${index}`,
+        createdAt: `2026-03-15T13:${String(10 + index).padStart(2, "0")}:00.000Z`
+      })
+    );
+  }
+
+  const context = await service.collect({
+    watchLocation: createAmbientWatchLocation("channel-a"),
+    message: createCollectMessage({
+      id: "a",
+      channelId: "channel-a",
+      clientUserId: botUserId,
+      createdAt: "2026-03-15T13:10:00.000Z",
+      fetchCalls,
+      fetchedHistory
+    })
+  });
+
+  assert.deepEqual(fetchCalls, [{ limit: 50, before: "a" }]);
+  assert.deepEqual(
+    context.recentRoomEvents.map((event) => event.message_id),
+    ["rest-before-a"]
+  );
+});
+
+function createLogger() {
+  return {
+    warn: () => undefined
+  };
+}
+
+function createAmbientWatchLocation(channelId: string): WatchLocationConfig {
+  return {
+    guildId: "guild",
+    channelId,
+    mode: "chat",
+    defaultScope: "conversation_only",
+    features: ["conversation"],
+    chatBehavior: "ambient_room_chat"
+  };
+}
+
+function createCollectMessage(input: {
+  id: string;
+  channelId: string;
+  clientUserId: string;
+  createdAt?: string;
+  fetchCalls: Array<{ limit: number; before?: string }>;
+  fetchedHistory?: Collection<string, never>;
+  fetchError?: Error;
+}) {
+  return {
+    id: input.id,
+    channelId: input.channelId,
+    createdAt: new Date(input.createdAt ?? "2026-03-15T13:20:00.000Z"),
+    client: {
+      user: {
+        id: input.clientUserId
+      }
+    },
+    channel: {
+      isThread: () => false,
+      messages: {
+        fetch: async (options: { limit: number; before?: string }) => {
+          input.fetchCalls.push(options);
+          if (input.fetchError) {
+            throw input.fetchError;
+          }
+          return input.fetchedHistory ?? new Collection<string, never>();
+        }
+      }
+    }
+  } as never;
+}
+
 function createHistoryMessage(input: {
   id: string;
+  channelId?: string;
+  clientUserId?: string;
   authorId: string;
+  authorBot?: boolean;
   authorDisplayName: string;
   content: string;
   createdAt: string;
   mentionsBot?: boolean;
+  webhookId?: string | null;
+  system?: boolean;
   replyToMessageId?: string;
   replyToAuthorId?: string;
   replyToAuthorDisplayName?: string;
@@ -198,9 +807,17 @@ function createHistoryMessage(input: {
 
   return {
     id: input.id,
+    channelId: input.channelId ?? "channel",
+    client: {
+      user: input.clientUserId
+        ? {
+            id: input.clientUserId
+          }
+        : null
+    },
     author: {
       id: input.authorId,
-      bot: false,
+      bot: input.authorBot ?? false,
       globalName: input.authorDisplayName,
       username: input.authorDisplayName
     },
@@ -209,8 +826,8 @@ function createHistoryMessage(input: {
     },
     content: input.content,
     createdAt: new Date(input.createdAt),
-    webhookId: null,
-    system: false,
+    webhookId: input.webhookId ?? null,
+    system: input.system ?? false,
     reference: input.replyToMessageId
       ? {
           messageId: input.replyToMessageId

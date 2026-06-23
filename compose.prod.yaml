@@ -1,0 +1,19 @@
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile.prod
+    image: vrc-ai-bot:prod
+    restart: unless-stopped
+    env_file:
+      - ${BOT_PROD_ENV_FILE:-/data/vrc-ai-bot/.env}
+    environment:
+      HOME: /data/codex-home
+      CODEX_HOME: /data/codex-home/.codex
+      NODE_ENV: production
+    volumes:
+      - /data/vrc-ai-bot:/data/vrc-ai-bot
+      - /data/codex-home:/data/codex-home
+      - /data/backups:/data/backups
+    working_dir: /app
+    command: ["pnpm", "start"]

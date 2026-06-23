@@ -71,11 +71,19 @@ export type AppConfig = {
   discordOwnerUserIds: string[];
   botDbPath: string;
   botLogLevel: "fatal" | "error" | "warn" | "info" | "debug" | "trace";
+  runtime: AppRuntimeConfig;
   codexAppServerCommand: string;
   codexHomePath: string | null;
   watchLocations: WatchLocationConfig[];
   chatRuntimeControls?: ChatRuntimeControlsConfig | null;
   weeklyMeetupAnnouncement: WeeklyMeetupAnnouncementConfig | null;
+};
+
+export type AppRuntimeConfig = {
+  maxConcurrentKeys: number;
+  retryPollIntervalMs: number;
+  codexIdleCloseMs: number;
+  ambientSparseInterval: number;
 };
 
 export type ChatRuntimeControlsConfig = {

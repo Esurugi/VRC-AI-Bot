@@ -163,7 +163,6 @@ export class BotApplication {
 
     try {
       this.chatChannelCounterService.resetAll();
-      await this.codexClient.start();
       this.bindEvents();
       await this.client.login(this.config.discordBotToken);
       if (!this.client.isReady()) {

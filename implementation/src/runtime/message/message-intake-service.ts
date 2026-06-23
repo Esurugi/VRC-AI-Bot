@@ -16,6 +16,7 @@ import {
   type ChatEngagementEvaluation,
   toChatEngagementFact
 } from "../chat/chat-engagement-policy.js";
+import { RecentChatHistoryService } from "../chat/recent-chat-history-service.js";
 import { ChatRuntimeControlService } from "../chat/chat-runtime-control-service.js";
 import { FeatureThreadService } from "../thread/feature-thread-service.js";
 import type { QueuedMessage } from "../types.js";
@@ -29,6 +30,7 @@ export class MessageIntakeService {
     private readonly chatChannelCounterService: ChatChannelCounterService,
     private readonly chatEngagementPolicy: ChatEngagementPolicy,
     private readonly chatRuntimeControlService: ChatRuntimeControlService,
+    private readonly recentChatHistoryService: RecentChatHistoryService,
     private readonly featureThreadService: FeatureThreadService,
     private readonly plainTextAttachmentService: PlainTextAttachmentService,
     private readonly logger: Logger
@@ -43,6 +45,8 @@ export class MessageIntakeService {
     if (!watchLocation) {
       return;
     }
+
+    this.recentChatHistoryService.observe(message);
 
     if (!isEligibleMessage(message)) {
       return;
@@ -99,6 +103,7 @@ export class MessageIntakeService {
     const chatEngagement = resolveQueuedChatEngagement({
       engagement,
       channelId: typedMessage.channelId,
+      ambientSparseInterval: this.config.runtime.ambientSparseInterval,
       increment: (channelId) => this.chatChannelCounterService.increment(channelId)
     });
     if (chatEngagement === null && engagement.decision === "sparse") {
@@ -146,6 +151,7 @@ export class MessageIntakeService {
 function resolveQueuedChatEngagement(input: {
   engagement: ChatEngagementEvaluation;
   channelId: string;
+  ambientSparseInterval: number;
   increment: (channelId: string) => { ordinary_message_count?: number } | null;
 }): ReturnType<typeof toChatEngagementFact> {
   if (input.engagement.triggerKind) {
@@ -158,7 +164,7 @@ function resolveQueuedChatEngagement(input: {
 
   const counter = input.increment(input.channelId);
   const ordinaryMessageCount = counter?.ordinary_message_count ?? 0;
-  if (ordinaryMessageCount % 5 !== 0) {
+  if (ordinaryMessageCount % input.ambientSparseInterval !== 0) {
     return null;
   }
 
