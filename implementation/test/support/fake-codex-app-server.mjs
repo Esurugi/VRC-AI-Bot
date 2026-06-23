@@ -7,8 +7,14 @@ const spawnLogPath = args.get("spawn-log");
 const exitAfter = args.get("exit-after");
 const exitBeforeResponse = args.get("exit-before-response");
 const noResponseOnce = args.get("no-response-once");
+const closeStdinAfterResponseOnce = args.get("close-stdin-after-response-once");
+const holdOpen = args.has("hold-open");
 const plannedFailure = buildPlannedFailure();
 const DEFERRED_FAILURE_EXIT_MS = 30;
+
+if (holdOpen) {
+  setInterval(() => {}, 1_000);
+}
 
 if (spawnLogPath && !plannedFailure?.deferSpawnLog) {
   appendFileSync(spawnLogPath, `spawn ${process.pid}\n`, "utf8");
@@ -61,7 +67,18 @@ readline.on("line", (line) => {
     return;
   }
 
-  process.stdout.write(responseLine);
+  process.stdout.write(responseLine, () => {
+    if (
+      shouldFailOnce(
+        "close-stdin-after-response-once",
+        closeStdinAfterResponseOnce,
+        request.method
+      )
+    ) {
+      process.stdin.destroy();
+      setInterval(() => {}, 1_000);
+    }
+  });
 });
 
 function buildResult(method) {
@@ -115,8 +132,11 @@ function buildPlannedFailure() {
       ? "exit-after"
       : noResponseOnce
         ? "no-response-once"
-        : null;
-  const method = exitBeforeResponse ?? exitAfter ?? noResponseOnce;
+        : closeStdinAfterResponseOnce
+          ? "close-stdin-after-response-once"
+          : null;
+  const method =
+    exitBeforeResponse ?? exitAfter ?? noResponseOnce ?? closeStdinAfterResponseOnce;
   if (!kind || !method || !spawnLogPath) {
     return null;
   }
@@ -130,7 +150,9 @@ function buildPlannedFailure() {
     markerPath,
     reservedByThisProcess,
     consumedByThisProcess: false,
-    deferSpawnLog: kind === "no-response-once" ? false : !existsSync(markerPath)
+    deferSpawnLog:
+      (kind === "exit-before-response" || kind === "exit-after") &&
+      !existsSync(markerPath)
   };
 }
 
@@ -210,6 +232,8 @@ function parseArgs(values) {
     if (key?.startsWith("--") && value !== undefined) {
       parsed.set(key.slice(2), value);
       index += 1;
+    } else if (key?.startsWith("--")) {
+      parsed.set(key.slice(2), "");
     }
   }
   return parsed;

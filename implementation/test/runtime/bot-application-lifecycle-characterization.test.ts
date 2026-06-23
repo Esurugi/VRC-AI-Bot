@@ -258,6 +258,12 @@ function createConfig(): AppConfig {
     discordOwnerUserIds: ["owner-1"],
     botDbPath: ":memory:",
     botLogLevel: "fatal",
+    runtime: {
+      maxConcurrentKeys: 4,
+      retryPollIntervalMs: 15_000,
+      codexIdleCloseMs: 1_800_000,
+      ambientSparseInterval: 5
+    },
     codexAppServerCommand: "codex-app-server",
     codexHomePath: null,
     watchLocations: [],

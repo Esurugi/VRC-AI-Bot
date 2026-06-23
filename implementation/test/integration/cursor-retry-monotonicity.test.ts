@@ -227,9 +227,16 @@ function createConfig(): AppConfig {
     discordOwnerUserIds: [],
     botDbPath: "bot.sqlite",
     botLogLevel: "info",
+    runtime: {
+      maxConcurrentKeys: 4,
+      retryPollIntervalMs: 15_000,
+      codexIdleCloseMs: 1_800_000,
+      ambientSparseInterval: 5
+    },
     codexAppServerCommand: "codex-app-server",
     codexHomePath: null,
     watchLocations: [],
+    chatRuntimeControls: null,
     weeklyMeetupAnnouncement: null
   };
 }

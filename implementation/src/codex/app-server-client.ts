@@ -151,6 +151,7 @@ const NAMESPACE_SANDBOX_PROBE_TIMEOUT_MS = 5_000;
 const ROOT_AGENTS_SYSTEM_PROMPT_HEADING = "## System Prompt Injection";
 const BWRAP_NAMESPACE_FAILURE_PATTERN =
   /bwrap:\s*No permissions to create a new namespace/i;
+const namespaceSandboxProbeCache = createNamespaceSandboxProbeCache();
 
 type HarnessDeveloperInstructionOptions = {
   includeClearExplanationSkill?: boolean;
@@ -164,6 +165,7 @@ type CodexThreadSandboxMode = CodexSandboxMode | "danger-full-access";
 
 type NamespaceSandboxProbeResult = {
   status:
+    | "skipped_env_disabled"
     | "skipped_non_linux"
     | "skipped_unrecognized_command"
     | "supported_or_unknown"
@@ -173,9 +175,34 @@ type NamespaceSandboxProbeResult = {
   args: string[];
 };
 
+type NamespaceSandboxProbeInput = {
+  appServerCommand: string;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+};
+
+type NamespaceSandboxProbeCache = {
+  probe: (
+    input: NamespaceSandboxProbeInput,
+    runProbe: (input: NamespaceSandboxProbeInput) => NamespaceSandboxProbeResult
+  ) => NamespaceSandboxProbeResult;
+  clear: () => void;
+};
+
 type CodexAppServerClientOptions = {
   idleCloseMs?: number;
   initializeTimeoutMs?: number;
+};
+
+type CodexCommandInvocation = {
+  command: string;
+  args: string[];
+  shell?: false;
+};
+
+type CodexCommandInvocationOptions = {
+  platform?: NodeJS.Platform;
+  env?: NodeJS.ProcessEnv;
 };
 
 export const HARNESS_DEVELOPER_INSTRUCTIONS = buildHarnessDeveloperInstructions();
@@ -397,6 +424,8 @@ export class CodexAppServerClient {
   private started = false;
   private startingPromise: Promise<void> | null = null;
   private idleCloseTimer: NodeJS.Timeout | null = null;
+  private readonly closedStdinChildren =
+    new WeakSet<ChildProcessWithoutNullStreams>();
   private sessionInvalidationGeneration = 0;
   private namespaceSandboxUnsupported = false;
   private readonly idleCloseMs: number | null;
@@ -476,6 +505,7 @@ export class CodexAppServerClient {
     const child = spawn(invocation.command, invocation.args, {
       cwd: this.cwd,
       env: childEnv,
+      shell: invocation.shell ?? false,
       stdio: ["pipe", "pipe", "pipe"]
     });
     this.process = child;
@@ -484,6 +514,9 @@ export class CodexAppServerClient {
     child.stdout.on("data", (chunk) => this.handleStdout(chunk));
     child.stderr.on("data", (chunk) => {
       this.logger.debug({ chunk }, "codex app-server stderr");
+    });
+    child.stdin.on("close", () => {
+      this.closedStdinChildren.add(child);
     });
     child.stdin.on("error", (error) => {
       this.handleProcessFailure(
@@ -513,7 +546,7 @@ export class CodexAppServerClient {
     });
     child.on("close", (code, signal) => {
       const error = new Error(
-        `codex app-server exited unexpectedly (code=${code ?? "null"}, signal=${signal ?? "null"})`
+        `codex app-server exited unexpectedly during read/write (code=${code ?? "null"}, signal=${signal ?? "null"})`
       );
       this.handleProcessFailure(child, error, "process_close", {
         code,
@@ -1391,6 +1424,8 @@ export class CodexAppServerClient {
     return (
       child.exitCode === null &&
       child.signalCode === null &&
+      child.stdin.writable &&
+      !this.closedStdinChildren.has(child) &&
       !child.stdin.destroyed &&
       !child.stdin.writableEnded
     );
@@ -1399,8 +1434,18 @@ export class CodexAppServerClient {
   private buildProcessStoppedError(
     child: ChildProcessWithoutNullStreams
   ): Error {
+    if (
+      child.exitCode === null &&
+      child.signalCode === null &&
+      (!child.stdin.writable || this.closedStdinChildren.has(child))
+    ) {
+      return new Error(
+        "codex app-server write stream is not writable"
+      );
+    }
+
     return new Error(
-      `codex app-server exited unexpectedly (code=${child.exitCode ?? "null"}, signal=${child.signalCode ?? "null"})`
+      `codex app-server exited unexpectedly during read/write (code=${child.exitCode ?? "null"}, signal=${child.signalCode ?? "null"})`
     );
   }
 
@@ -1756,6 +1801,7 @@ export class CodexAppServerClient {
     this.stdoutBuffer = "";
     this.cancelIdleClose();
     this.rejectAll(error);
+    terminateChildIfAlive(child, "SIGTERM");
   }
 
   private handleInitializeFailure(
@@ -1774,9 +1820,7 @@ export class CodexAppServerClient {
       this.rejectAll(error);
     }
 
-    if (!child.killed) {
-      child.kill();
-    }
+    terminateChildIfAlive(child, "SIGTERM");
   }
 
   private rejectAll(error: Error): void {
@@ -2059,6 +2103,31 @@ function delay(ms: number): Promise<void> {
   });
 }
 
+function terminateChildIfAlive(
+  child: ChildProcessWithoutNullStreams,
+  signal: NodeJS.Signals
+): void {
+  if (
+    child.exitCode !== null ||
+    child.signalCode !== null ||
+    child.killed
+  ) {
+    return;
+  }
+
+  try {
+    if (process.platform === "win32" && child.pid !== undefined) {
+      spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
+        stdio: "ignore",
+        windowsHide: true
+      });
+    }
+    child.kill(signal);
+  } catch {
+    // Best-effort cleanup; keep the original process failure as the caller error.
+  }
+}
+
 function resolveThreadSandbox(input: {
   requestedSandbox: CodexSandboxMode;
   namespaceSandboxUnsupported: boolean;
@@ -2079,11 +2148,24 @@ function resolveThreadSandbox(input: {
   return input.requestedSandbox;
 }
 
-function probeNamespaceSandboxSupport(input: {
-  appServerCommand: string;
-  cwd: string;
-  env: NodeJS.ProcessEnv;
-}): NamespaceSandboxProbeResult {
+function probeNamespaceSandboxSupport(
+  input: NamespaceSandboxProbeInput
+): NamespaceSandboxProbeResult {
+  return namespaceSandboxProbeCache.probe(input, runNamespaceSandboxProbe);
+}
+
+function runNamespaceSandboxProbe(
+  input: NamespaceSandboxProbeInput
+): NamespaceSandboxProbeResult {
+  if (!shouldRunNamespaceSandboxProbe(input.env)) {
+    return {
+      status: "skipped_env_disabled",
+      namespaceSandboxUnsupported: false,
+      command: null,
+      args: []
+    };
+  }
+
   const invocation = buildNamespaceSandboxProbeInvocation(
     input.appServerCommand
   );
@@ -2130,20 +2212,118 @@ function probeNamespaceSandboxSupport(input: {
   };
 }
 
-function buildCodexAppServerInvocation(command: string): {
-  command: string;
-  args: string[];
-} {
+function createNamespaceSandboxProbeCache(): NamespaceSandboxProbeCache {
+  const cache = new Map<string, NamespaceSandboxProbeResult>();
+  return {
+    probe: (input, runProbe) => {
+      const cacheKey = buildNamespaceSandboxProbeCacheKey(input);
+      const cached = cache.get(cacheKey);
+      if (cached) {
+        return cloneNamespaceSandboxProbeResult(cached);
+      }
+
+      const result = runProbe(input);
+      cache.set(cacheKey, cloneNamespaceSandboxProbeResult(result));
+      return result;
+    },
+    clear: () => {
+      cache.clear();
+    }
+  };
+}
+
+function shouldRunNamespaceSandboxProbe(env: NodeJS.ProcessEnv): boolean {
+  const value = env.BOT_NAMESPACE_SANDBOX_PROBE?.trim().toLowerCase();
+  if (!value || value === "auto") {
+    return true;
+  }
+
+  if (value === "0" || value === "false" || value === "off") {
+    return false;
+  }
+
+  if (value === "1" || value === "true" || value === "on") {
+    return true;
+  }
+
+  return true;
+}
+
+function buildNamespaceSandboxProbeCacheKey(
+  input: NamespaceSandboxProbeInput
+): string {
+  return JSON.stringify({
+    appServerCommand: input.appServerCommand,
+    cwd: resolve(input.cwd),
+    codexHome: input.env.CODEX_HOME ?? ""
+  });
+}
+
+function cloneNamespaceSandboxProbeResult(
+  result: NamespaceSandboxProbeResult
+): NamespaceSandboxProbeResult {
+  return {
+    ...result,
+    args: [...result.args]
+  };
+}
+
+function clearNamespaceSandboxProbeCache(): void {
+  namespaceSandboxProbeCache.clear();
+}
+
+function buildCodexAppServerInvocation(
+  command: string,
+  options: NodeJS.Platform | CodexCommandInvocationOptions = {}
+): CodexCommandInvocation {
+  const platform = typeof options === "string"
+    ? options
+    : options.platform ?? process.platform;
+  const env = typeof options === "string" ? process.env : options.env ?? process.env;
   const tokens = tokenizeCommand(command);
   const executable = tokens[0];
   if (!executable) {
     throw new Error("CODEX_APP_SERVER_CMD did not contain an executable");
   }
 
+  if (platform === "win32" && shouldUseWindowsCmdWrapper(executable)) {
+    return {
+      command: env.ComSpec || "cmd.exe",
+      args: ["/d", "/s", "/c", ...buildWindowsCmdCommandLineArgs(tokens)],
+      shell: false
+    };
+  }
+
   return {
     command: executable,
-    args: tokens.slice(1)
+    args: tokens.slice(1),
+    shell: false
   };
+}
+
+function shouldUseWindowsCmdWrapper(executable: string): boolean {
+  const basename = executable.split(/[\\/]/).at(-1)?.toLowerCase() ?? executable;
+  if (basename === "node" || basename === "node.exe") {
+    return false;
+  }
+
+  return !/\.(?:exe|com)$/i.test(basename);
+}
+
+function buildWindowsCmdCommandLineArgs(tokens: string[]): string[] {
+  return tokens.map(quoteWindowsCmdArgument);
+}
+
+function quoteWindowsCmdArgument(token: string): string {
+  if (token.length === 0) {
+    return '""';
+  }
+
+  if (!/[\s"&()<>^|]/.test(token)) {
+    return token;
+  }
+
+  return `"${token.replaceAll('"', '\\"')}"`;
 }
 
 function buildNamespaceSandboxProbeInvocation(
@@ -2983,6 +3163,10 @@ export const __testOnly = {
   buildTurnStartParams,
   buildTurnSteerParams,
   resolveThreadSandbox,
+  buildCodexAppServerInvocation,
+  probeNamespaceSandboxSupport,
+  createNamespaceSandboxProbeCache,
+  clearNamespaceSandboxProbeCache,
   buildNamespaceSandboxProbeInvocation,
   isNamespaceSandboxUnsupportedOutput,
   findLatestTurnSnapshot,

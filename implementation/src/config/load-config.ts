@@ -136,14 +136,7 @@ const chatRuntimeControlsSchema = z.object({
   enabledChannelIds: z.array(z.string().min(1))
 });
 
-type OracleRuntimeConfig = {
-  maxConcurrentKeys: number;
-  retryPollIntervalMs: number;
-  codexIdleCloseMs: number;
-  ambientSparseInterval: number;
-};
-
-export function loadConfig(cwd = process.cwd()): AppConfig & OracleRuntimeConfig {
+export function loadConfig(cwd = process.cwd()): AppConfig {
   const env = envSchema.parse(process.env);
   const watchLocationPath = resolve(cwd, env.BOT_WATCH_LOCATIONS_PATH);
   const watchLocations = readWatchLocations(watchLocationPath);
@@ -165,12 +158,14 @@ export function loadConfig(cwd = process.cwd()): AppConfig & OracleRuntimeConfig
       .filter(Boolean),
     botDbPath: resolve(cwd, env.BOT_DB_PATH),
     botLogLevel: env.BOT_LOG_LEVEL,
+    runtime: {
+      maxConcurrentKeys: env.BOT_MAX_CONCURRENT_KEYS,
+      retryPollIntervalMs: env.BOT_RETRY_POLL_INTERVAL_MS,
+      codexIdleCloseMs: env.BOT_CODEX_IDLE_CLOSE_MS,
+      ambientSparseInterval: env.BOT_AMBIENT_SPARSE_INTERVAL
+    },
     codexAppServerCommand: env.CODEX_APP_SERVER_CMD,
     codexHomePath: env.CODEX_HOME ? resolve(cwd, env.CODEX_HOME) : null,
-    maxConcurrentKeys: env.BOT_MAX_CONCURRENT_KEYS,
-    retryPollIntervalMs: env.BOT_RETRY_POLL_INTERVAL_MS,
-    codexIdleCloseMs: env.BOT_CODEX_IDLE_CLOSE_MS,
-    ambientSparseInterval: env.BOT_AMBIENT_SPARSE_INTERVAL,
     watchLocations,
     chatRuntimeControls,
     weeklyMeetupAnnouncement

@@ -5,12 +5,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { loadConfig } from "../../src/config/load-config.js";
+import type { AppRuntimeConfig } from "../../src/domain/types.js";
 
 test("RES.01.01 uses the development-compatible max concurrency default outside production", () => {
   const workspace = createWorkspace();
   try {
     withEnv(workspace, {}, () => {
-      const config = readOracleRuntimeConfig(loadConfig(workspace));
+      const config = readRuntimeConfig(loadConfig(workspace));
 
       assert.equal(config.maxConcurrentKeys, 4);
       assert.equal(config.retryPollIntervalMs, 15_000);
@@ -32,11 +33,14 @@ test("RES.01.01 and retry runtime config can be overridden from env", () => {
         BOT_CODEX_IDLE_CLOSE_MS: "900000"
       },
       () => {
-        const config = readOracleRuntimeConfig(loadConfig(workspace));
+        const config = loadConfig(workspace);
 
-        assert.equal(config.maxConcurrentKeys, 2);
-        assert.equal(config.retryPollIntervalMs, 30_000);
-        assert.equal(config.codexIdleCloseMs, 900_000);
+        assert.deepEqual(config.runtime, {
+          maxConcurrentKeys: 2,
+          retryPollIntervalMs: 30_000,
+          codexIdleCloseMs: 900_000,
+          ambientSparseInterval: 5
+        });
       }
     );
   } finally {
@@ -84,9 +88,9 @@ test("RES.01.01 uses max concurrency 1 for NODE_ENV=production", () => {
   const workspace = createWorkspace();
   try {
     withEnv(workspace, { NODE_ENV: "production" }, () => {
-      const config = readOracleRuntimeConfig(loadConfig(workspace));
+      const config = loadConfig(workspace);
 
-      assert.equal(config.maxConcurrentKeys, 1);
+      assert.equal(config.runtime.maxConcurrentKeys, 1);
     });
   } finally {
     rmSync(workspace, { recursive: true, force: true });
@@ -97,9 +101,9 @@ test("RES.01.01 keeps max concurrency 4 for NODE_ENV=development", () => {
   const workspace = createWorkspace();
   try {
     withEnv(workspace, { NODE_ENV: "development" }, () => {
-      const config = readOracleRuntimeConfig(loadConfig(workspace));
+      const config = loadConfig(workspace);
 
-      assert.equal(config.maxConcurrentKeys, 4);
+      assert.equal(config.runtime.maxConcurrentKeys, 4);
     });
   } finally {
     rmSync(workspace, { recursive: true, force: true });
@@ -110,9 +114,9 @@ test("RES.01.02 reads ambient sparse interval from env", () => {
   const workspace = createWorkspace();
   try {
     withEnv(workspace, { BOT_AMBIENT_SPARSE_INTERVAL: "10" }, () => {
-      const config = readOracleRuntimeConfig(loadConfig(workspace));
+      const config = loadConfig(workspace);
 
-      assert.equal(config.ambientSparseInterval, 10);
+      assert.equal(config.runtime.ambientSparseInterval, 10);
     });
   } finally {
     rmSync(workspace, { recursive: true, force: true });
@@ -135,21 +139,10 @@ test("RES.01.02 rejects invalid ambient sparse interval values", () => {
   }
 });
 
-type OracleRuntimeConfig = {
-  maxConcurrentKeys: number;
-  retryPollIntervalMs: number;
-  codexIdleCloseMs: number;
-  ambientSparseInterval: number;
-};
-
-function readOracleRuntimeConfig(config: unknown): OracleRuntimeConfig {
-  const record = config as Record<string, unknown>;
-  return {
-    maxConcurrentKeys: record.maxConcurrentKeys as number,
-    retryPollIntervalMs: record.retryPollIntervalMs as number,
-    codexIdleCloseMs: record.codexIdleCloseMs as number,
-    ambientSparseInterval: record.ambientSparseInterval as number
-  };
+function readRuntimeConfig(
+  config: ReturnType<typeof loadConfig>
+): AppRuntimeConfig {
+  return config.runtime;
 }
 
 function createWorkspace(): string {

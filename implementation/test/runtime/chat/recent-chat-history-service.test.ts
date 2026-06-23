@@ -278,6 +278,186 @@ test("observed Discord messages populate a per-channel room-event ring buffer be
   assert.deepEqual(fetchCalls, []);
 });
 
+test("observed current message is not included when collecting for that same message", async () => {
+  const botUserId = "bot";
+  const service = new RecentChatHistoryService(createLogger());
+  const fetchCalls: Array<{ limit: number; before?: string }> = [];
+
+  service.observe(
+    createHistoryMessage({
+      id: "current",
+      channelId: "channel-a",
+      clientUserId: botUserId,
+      authorId: "user-current",
+      authorDisplayName: "current",
+      content: "current message",
+      createdAt: "2026-03-15T13:20:00.000Z"
+    })
+  );
+
+  const context = await service.collect({
+    watchLocation: createAmbientWatchLocation("channel-a"),
+    message: createCollectMessage({
+      id: "current",
+      channelId: "channel-a",
+      clientUserId: botUserId,
+      createdAt: "2026-03-15T13:20:00.000Z",
+      fetchCalls
+    })
+  });
+
+  assert.deepEqual(fetchCalls, [{ limit: 50, before: "current" }]);
+  assert.deepEqual(context.recentRoomEvents, []);
+});
+
+test("observed previous current and next messages collect only the previous event", async () => {
+  const botUserId = "bot";
+  const service = new RecentChatHistoryService(createLogger());
+  const fetchCalls: Array<{ limit: number; before?: string }> = [];
+
+  for (const event of [
+    { id: "prev", minute: "19" },
+    { id: "current", minute: "20" },
+    { id: "next", minute: "21" }
+  ]) {
+    service.observe(
+      createHistoryMessage({
+        id: event.id,
+        channelId: "channel-a",
+        clientUserId: botUserId,
+        authorId: `user-${event.id}`,
+        authorDisplayName: event.id,
+        content: `${event.id} message`,
+        createdAt: `2026-03-15T13:${event.minute}:00.000Z`
+      })
+    );
+  }
+
+  const context = await service.collect({
+    watchLocation: createAmbientWatchLocation("channel-a"),
+    message: createCollectMessage({
+      id: "current",
+      channelId: "channel-a",
+      clientUserId: botUserId,
+      createdAt: "2026-03-15T13:20:00.000Z",
+      fetchCalls
+    })
+  });
+
+  assert.deepEqual(fetchCalls, [{ limit: 50, before: "prev" }]);
+  assert.deepEqual(
+    context.recentRoomEvents.map((event) => event.message_id),
+    ["prev"]
+  );
+});
+
+test("full observed ring buffer can skip REST fallback without mixing in the current message", async () => {
+  const botUserId = "bot";
+  const service = new RecentChatHistoryService(createLogger());
+  const fetchCalls: Array<{ limit: number; before?: string }> = [];
+
+  for (let index = 1; index <= 11; index += 1) {
+    service.observe(
+      createHistoryMessage({
+        id: `prev-${String(index).padStart(2, "0")}`,
+        channelId: "channel-a",
+        clientUserId: botUserId,
+        authorId: `user-prev-${index}`,
+        authorDisplayName: `prev ${index}`,
+        content: `previous ${index}`,
+        createdAt: `2026-03-15T13:${String(index).padStart(2, "0")}:00.000Z`
+      })
+    );
+  }
+  service.observe(
+    createHistoryMessage({
+      id: "current",
+      channelId: "channel-a",
+      clientUserId: botUserId,
+      authorId: "user-current",
+      authorDisplayName: "current",
+      content: "current message",
+      createdAt: "2026-03-15T13:20:00.000Z"
+    })
+  );
+
+  const context = await service.collect({
+    watchLocation: createAmbientWatchLocation("channel-a"),
+    message: createCollectMessage({
+      id: "current",
+      channelId: "channel-a",
+      clientUserId: botUserId,
+      createdAt: "2026-03-15T13:20:00.000Z",
+      fetchCalls
+    })
+  });
+
+  assert.deepEqual(fetchCalls, []);
+  assert.deepEqual(
+    context.recentRoomEvents.map((event) => event.message_id),
+    [
+      "prev-01",
+      "prev-02",
+      "prev-03",
+      "prev-04",
+      "prev-05",
+      "prev-06",
+      "prev-07",
+      "prev-08",
+      "prev-09",
+      "prev-10",
+      "prev-11"
+    ]
+  );
+});
+
+test("REST failure observed fallback excludes the current message", async () => {
+  const botUserId = "bot";
+  const service = new RecentChatHistoryService(createLogger());
+  const fetchCalls: Array<{ limit: number; before?: string }> = [];
+
+  service.observe(
+    createHistoryMessage({
+      id: "prev",
+      channelId: "channel-a",
+      clientUserId: botUserId,
+      authorId: "user-prev",
+      authorDisplayName: "prev",
+      content: "previous message",
+      createdAt: "2026-03-15T13:19:00.000Z"
+    })
+  );
+  service.observe(
+    createHistoryMessage({
+      id: "current",
+      channelId: "channel-a",
+      clientUserId: botUserId,
+      authorId: "user-current",
+      authorDisplayName: "current",
+      content: "current message",
+      createdAt: "2026-03-15T13:20:00.000Z"
+    })
+  );
+
+  const context = await service.collect({
+    watchLocation: createAmbientWatchLocation("channel-a"),
+    message: createCollectMessage({
+      id: "current",
+      channelId: "channel-a",
+      clientUserId: botUserId,
+      createdAt: "2026-03-15T13:20:00.000Z",
+      fetchCalls,
+      fetchError: new Error("REST unavailable")
+    })
+  });
+
+  assert.deepEqual(fetchCalls, [{ limit: 50, before: "prev" }]);
+  assert.deepEqual(
+    context.recentRoomEvents.map((event) => event.message_id),
+    ["prev"]
+  );
+});
+
 test("recent room event collection falls back to Discord REST only on cold start", async () => {
   const botUserId = "bot";
   const service = new RecentChatHistoryService(createLogger());
@@ -423,10 +603,7 @@ test("recent room event collection filters observed future events relative to th
   });
 
   assert.deepEqual(fetchCalls, [{ limit: 50, before: "a" }]);
-  assert.deepEqual(
-    context.recentRoomEvents.map((event) => event.message_id),
-    ["a"]
-  );
+  assert.deepEqual(context.recentRoomEvents, []);
 });
 
 test("insufficient filtered observed history fetches REST before the collected message, not a future observed message", async () => {
@@ -486,7 +663,7 @@ test("insufficient filtered observed history fetches REST before the collected m
   assert.deepEqual(fetchCalls, [{ limit: 50, before: "a" }]);
   assert.deepEqual(
     context.recentRoomEvents.map((event) => event.message_id),
-    ["rest-1", "a"]
+    ["rest-1"]
   );
 });
 
@@ -577,6 +754,7 @@ function createCollectMessage(input: {
   createdAt?: string;
   fetchCalls: Array<{ limit: number; before?: string }>;
   fetchedHistory?: Collection<string, never>;
+  fetchError?: Error;
 }) {
   return {
     id: input.id,
@@ -592,6 +770,9 @@ function createCollectMessage(input: {
       messages: {
         fetch: async (options: { limit: number; before?: string }) => {
           input.fetchCalls.push(options);
+          if (input.fetchError) {
+            throw input.fetchError;
+          }
           return input.fetchedHistory ?? new Collection<string, never>();
         }
       }

@@ -11,14 +11,6 @@ services:
       HOME: /data/codex-home
       CODEX_HOME: /data/codex-home/.codex
       NODE_ENV: production
-      BOT_DB_PATH: /data/vrc-ai-bot/bot.sqlite
-      BOT_WATCH_LOCATIONS_PATH: /data/vrc-ai-bot/config/watch-locations.json
-      BOT_MAX_CONCURRENT_KEYS: "1"
-      BOT_RETRY_POLL_INTERVAL_MS: "15000"
-      BOT_CODEX_IDLE_CLOSE_MS: "1800000"
-      BOT_RUNTIME_TRACE_DIR: /data/vrc-ai-bot/traces
-      BOT_RUNTIME_TRACE_RETENTION_DAYS: "14"
-      BOT_RUNTIME_TRACE_MAX_BYTES: "104857600"
     volumes:
       - /data/vrc-ai-bot:/data/vrc-ai-bot
       - /data/codex-home:/data/codex-home

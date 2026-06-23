@@ -84,6 +84,8 @@ test("retry runner uses BOT_RETRY_POLL_INTERVAL_MS from config when interval is 
 type RuntimeConfigOverrides = {
   maxConcurrentKeys?: number;
   retryPollIntervalMs?: number;
+  codexIdleCloseMs?: number;
+  ambientSparseInterval?: number;
 };
 
 type ProcessMessage = (item: {
@@ -103,8 +105,13 @@ function createConfig(overrides: RuntimeConfigOverrides = {}): AppConfig {
     watchLocations: [],
     chatRuntimeControls: null,
     weeklyMeetupAnnouncement: null,
-    ...overrides
-  } as AppConfig;
+    runtime: {
+      maxConcurrentKeys: overrides.maxConcurrentKeys ?? 4,
+      retryPollIntervalMs: overrides.retryPollIntervalMs ?? 15_000,
+      codexIdleCloseMs: overrides.codexIdleCloseMs ?? 1_800_000,
+      ambientSparseInterval: overrides.ambientSparseInterval ?? 5
+    }
+  };
 }
 
 function createDependencyOverrides(input: {

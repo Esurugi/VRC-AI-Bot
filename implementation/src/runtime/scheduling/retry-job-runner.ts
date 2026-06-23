@@ -13,10 +13,6 @@ import { PlainTextAttachmentService } from "../message/plain-text-attachment-ser
 import type { QueuedMessage } from "../types.js";
 import { resolveRetryWatchLocation } from "../types.js";
 
-type RetryRuntimeConfig = {
-  retryPollIntervalMs?: number;
-};
-
 export class RetryJobRunner {
   private timer: NodeJS.Timeout | null = null;
   private readonly intervalMs: number;
@@ -33,8 +29,7 @@ export class RetryJobRunner {
     private readonly logger: Logger,
     intervalMs?: number
   ) {
-    const runtimeConfig = config as AppConfig & RetryRuntimeConfig;
-    this.intervalMs = intervalMs ?? runtimeConfig.retryPollIntervalMs ?? 15_000;
+    this.intervalMs = intervalMs ?? config.runtime.retryPollIntervalMs;
   }
 
   start(): void {

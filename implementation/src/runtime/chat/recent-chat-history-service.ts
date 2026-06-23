@@ -66,7 +66,10 @@ export class RecentChatHistoryService {
     }
 
     const observed = this.readObservedEventsUpToMessage(input.message);
-    if (observed.length >= HISTORY_CONTEXT_LIMIT) {
+    if (
+      observed.length >= HISTORY_CONTEXT_LIMIT ||
+      this.hasObservedContextWindowAtCapacity(input.message)
+    ) {
       return {
         recentRoomEvents: observed.map((entry) => entry.fact)
       };
@@ -116,8 +119,15 @@ export class RecentChatHistoryService {
     message: Message<true>
   ): ObservedRoomEvent[] {
     return this.readObservedEvents(message.channelId).filter(
+      (event) => compareObservedRoomEventToMessage(event, message) < 0
+    );
+  }
+
+  private hasObservedContextWindowAtCapacity(message: Message<true>): boolean {
+    const observedAtOrBefore = this.readObservedEvents(message.channelId).filter(
       (event) => compareObservedRoomEventToMessage(event, message) <= 0
     );
+    return observedAtOrBefore.length >= HISTORY_CONTEXT_LIMIT;
   }
 }
 
@@ -205,7 +215,7 @@ function mergeRecentRoomEvents(
 ): RecentRoomEventFact[] {
   const byId = new Map<string, RecentRoomEventFact>();
   for (const event of [...fetchedEvents, ...observedEvents]) {
-    if (compareMessageIdToMessage(event.message_id, currentMessage) > 0) {
+    if (isSameOrAfterMessage(event.message_id, currentMessage)) {
       continue;
     }
     byId.set(event.message_id, event);
@@ -240,11 +250,16 @@ function compareObservedRoomEventToMessage(
   return event.createdAtMs - message.createdAt.getTime();
 }
 
-function compareMessageIdToMessage(
+function isSameOrAfterMessage(
   messageId: string,
   message: Message<true>
-): number {
-  return compareSnowflakeIds(messageId, message.id) ?? 0;
+): boolean {
+  const snowflakeOrder = compareSnowflakeIds(messageId, message.id);
+  if (snowflakeOrder !== null) {
+    return snowflakeOrder >= 0;
+  }
+
+  return messageId === message.id;
 }
 
 function compareSnowflakeIds(left: string, right: string): number | null {

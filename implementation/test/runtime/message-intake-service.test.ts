@@ -152,7 +152,7 @@ test("conversation feature uses chat visibility even when legacy mode says url w
 test("RES.01.02 ambient sparse interval is configurable instead of fixed at five messages", async () => {
   const enqueued: unknown[] = [];
   const service = new MessageIntakeService(
-    createConfig({ ambientSparseInterval: 10 }),
+    createConfig({ runtime: { ambientSparseInterval: 10 } }),
     {
       enqueue: (item: unknown) => {
         enqueued.push(item);
@@ -193,7 +193,9 @@ test("RES.01.02 ambient sparse interval is configurable instead of fixed at five
   );
 });
 
-function createConfig(overrides: Partial<AppConfig> & Record<string, unknown> = {}): AppConfig {
+function createConfig(input: {
+  runtime?: Partial<AppConfig["runtime"]>;
+} = {}): AppConfig {
   return {
     discordBotToken: "token",
     discordApplicationId: "application",
@@ -214,8 +216,14 @@ function createConfig(overrides: Partial<AppConfig> & Record<string, unknown> = 
     ],
     chatRuntimeControls: null,
     weeklyMeetupAnnouncement: null,
-    ...overrides
-  } as AppConfig;
+    runtime: {
+      maxConcurrentKeys: 4,
+      retryPollIntervalMs: 15_000,
+      codexIdleCloseMs: 1_800_000,
+      ambientSparseInterval: 5,
+      ...input.runtime
+    }
+  };
 }
 
 function createMessageDouble() {

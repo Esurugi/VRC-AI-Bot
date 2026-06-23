@@ -159,15 +159,18 @@ test("OPS.01 production compose starts built artifacts instead of the dev runtim
 
 test("OPS.01 and PER.01 production compose mount /data as the durable runtime unit", () => {
   const compose = readRequiredRootFile("compose.prod.yaml");
+  const envExample = readRequiredRootFile("production.env.example");
 
   assertContainsAll(compose, [
     "/data/vrc-ai-bot:/data/vrc-ai-bot",
     "/data/codex-home:/data/codex-home",
     "/data/backups:/data/backups",
     "HOME: /data/codex-home",
-    "CODEX_HOME: /data/codex-home/.codex",
-    "BOT_DB_PATH: /data/vrc-ai-bot/bot.sqlite",
-    "BOT_WATCH_LOCATIONS_PATH: /data/vrc-ai-bot/config/watch-locations.json"
+    "CODEX_HOME: /data/codex-home/.codex"
+  ]);
+  assertContainsAll(envExample, [
+    "BOT_DB_PATH=/data/vrc-ai-bot/bot.sqlite",
+    "BOT_WATCH_LOCATIONS_PATH=/data/vrc-ai-bot/config/watch-locations.json"
   ]);
 });
 
@@ -219,6 +222,48 @@ test("OPS.01 production Dockerfile builds dist and defaults to pnpm start", () =
     dockerfile.content.includes("dist") || dockerfile.content.includes("/app"),
     `${dockerfile.path} must make the compiled dist artifact the production runtime surface.`
   );
+});
+
+test("OPS.01 Docker images pin the @openai/codex package version", () => {
+  for (const dockerfilePath of ["Dockerfile", "Dockerfile.prod"]) {
+    const content = readRequiredRootFile(dockerfilePath);
+
+    assert.match(
+      content,
+      /ARG\s+CODEX_CLI_VERSION=\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?\b/,
+      `${dockerfilePath} must declare a pinned CODEX_CLI_VERSION build arg.`
+    );
+    assert.match(
+      content,
+      /npm\s+install\s+-g\s+@openai\/codex@\$\{CODEX_CLI_VERSION\}/,
+      `${dockerfilePath} must install @openai/codex from the pinned CODEX_CLI_VERSION.`
+    );
+    assert.doesNotMatch(
+      content,
+      /npm\s+install\s+-g\s+@openai\/codex(?:\s|\\|\r?\n|$)/,
+      `${dockerfilePath} must not install floating @openai/codex.`
+    );
+  }
+});
+
+test("OPS.01 production compose leaves adjustable BOT runtime knobs to env_file", () => {
+  const compose = readRequiredRootFile("compose.prod.yaml");
+  const adjustableKeys = [
+    "BOT_MAX_CONCURRENT_KEYS",
+    "BOT_RETRY_POLL_INTERVAL_MS",
+    "BOT_CODEX_IDLE_CLOSE_MS",
+    "BOT_AMBIENT_SPARSE_INTERVAL",
+    "BOT_RUNTIME_TRACE_RETENTION_DAYS",
+    "BOT_RUNTIME_TRACE_MAX_BYTES"
+  ];
+
+  for (const key of adjustableKeys) {
+    assert.doesNotMatch(
+      compose,
+      new RegExp(`^\\s+${key}:`, "m"),
+      `${key} is an operator-tunable runtime knob and must not be fixed in compose.prod.yaml service environment.`
+    );
+  }
 });
 
 test("OPS.01 public-source-fetch command allowlist is executable in the production image", () => {
@@ -358,11 +403,32 @@ test("PER.01 backup manifest records the production env secret recovery contract
 });
 
 test("trace retention design is externally configurable under the /data runtime tree", () => {
-  const compose = readRequiredRootFile("compose.prod.yaml");
+  const envExample = readRequiredRootFile("production.env.example");
 
-  assertContainsAll(compose, [
-    "BOT_RUNTIME_TRACE_DIR: /data/vrc-ai-bot/traces",
-    "BOT_RUNTIME_TRACE_RETENTION_DAYS",
-    "BOT_RUNTIME_TRACE_MAX_BYTES"
+  assertContainsAll(envExample, [
+    "BOT_RUNTIME_TRACE_DIR=/data/vrc-ai-bot/traces",
+    "BOT_RUNTIME_TRACE_RETENTION_DAYS=",
+    "BOT_RUNTIME_TRACE_MAX_BYTES="
   ]);
+});
+
+test("OPS.01 ops README documents host/container execution boundaries", () => {
+  const readme = readRequiredRootFile("scripts/ops/README.md");
+
+  assertContainsAll(readme, [
+    "prepare-oracle-data-dirs.sh",
+    "backup-runtime.sh",
+    "compose.prod.yaml",
+    "/data"
+  ]);
+  assert.match(
+    readme,
+    /host(?:-|\s)only|host\s+preflight|run\s+on\s+the\s+host/i,
+    "scripts/ops/README.md must identify which ops commands run on the host."
+  );
+  assert.match(
+    readme,
+    /container|docker compose|compose\.prod\.yaml/i,
+    "scripts/ops/README.md must identify the container/compose runtime contract."
+  );
 });

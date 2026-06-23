@@ -2,6 +2,8 @@
 
 FROM node:24-bookworm-slim AS base
 
+ARG CODEX_CLI_VERSION=0.142.0
+
 ENV PNPM_HOME=/pnpm
 ENV PATH=${PNPM_HOME}:${PATH}
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
@@ -11,7 +13,8 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/* \
   && corepack enable \
   && corepack prepare pnpm@10.6.5 --activate \
-  && npm install -g @openai/codex
+  && npm install -g @openai/codex@${CODEX_CLI_VERSION} \
+  && codex --version
 
 WORKDIR /app
 

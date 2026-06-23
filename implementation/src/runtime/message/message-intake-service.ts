@@ -23,10 +23,6 @@ import type { QueuedMessage } from "../types.js";
 import { PlainTextAttachmentService } from "./plain-text-attachment-service.js";
 import { shouldShowProcessingReaction } from "./processing-visibility.js";
 
-type AmbientSparseRuntimeConfig = {
-  ambientSparseInterval?: number;
-};
-
 export class MessageIntakeService {
   constructor(
     private readonly config: AppConfig,
@@ -107,9 +103,7 @@ export class MessageIntakeService {
     const chatEngagement = resolveQueuedChatEngagement({
       engagement,
       channelId: typedMessage.channelId,
-      ambientSparseInterval:
-        (this.config as AppConfig & AmbientSparseRuntimeConfig)
-          .ambientSparseInterval ?? 5,
+      ambientSparseInterval: this.config.runtime.ambientSparseInterval,
       increment: (channelId) => this.chatChannelCounterService.increment(channelId)
     });
     if (chatEngagement === null && engagement.decision === "sparse") {
