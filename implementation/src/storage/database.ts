@@ -25,7 +25,8 @@ export {
   ForumResearchStateRepository,
   MessageProcessingRepository,
   RetryJobRepository,
-  ScheduledDeliveryRepository
+  ScheduledDeliveryRepository,
+  ThreadWorkflowRouteRepository
 } from "./repositories/runtime-repositories.js";
 
 export type {
@@ -45,6 +46,8 @@ export type {
   RetryJobRow,
   SanctionStateRow,
   ScheduledDeliveryRow,
+  ThreadWorkflow,
+  ThreadWorkflowRouteRow,
   SoftBlockNoticeRow,
   SourceLinkRow,
   ThreadKnowledgeContextRow,

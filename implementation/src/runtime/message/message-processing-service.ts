@@ -13,10 +13,12 @@ import { writeDiscordRuntimeSnapshot } from "../../discord/runtime-facts.js";
 import {
   isClearExplanationPlace,
   isConversationPlace,
-  isForumResearchPlace
+  isForumResearchPlace,
+  isQuestionGatewayPlace
 } from "../../domain/place-features.js";
 import { isThreadEnvelope } from "../../domain/response-boundary.js";
-import type { AppConfig } from "../../domain/types.js";
+import { resolveScope } from "../../discord/facts.js";
+import type { AppConfig, WatchLocationConfig } from "../../domain/types.js";
 import { HarnessRunner } from "../../harness/harness-runner.js";
 import { appendRuntimeTrace } from "../../observability/runtime-trace.js";
 import { RecentChatHistoryService } from "../chat/recent-chat-history-service.js";
@@ -32,10 +34,14 @@ import {
 } from "../forum/forum-first-turn-preprocessor.js";
 import {
   CLEAR_EXPLANATION_DECLINE_NOTICE,
-  CLEAR_EXPLANATION_FORUM_REDIRECT_NOTICE,
-  ClearExplanationRoutingGate
+  ClearExplanationRoutingGate,
+  buildClearExplanationQuestionGatewayRedirectNotice
 } from "../clear-explanation/clear-explanation-routing-gate.js";
+import {
+  ThreadWorkflowGateway
+} from "../thread/thread-workflow-gateway.js";
 import { SqliteStore, type RetryJobRow } from "../../storage/database.js";
+import type { ThreadWorkflow } from "../../storage/types.js";
 import {
   buildRetrySchedulerEnvelope,
   buildSamePlaceReplyTarget,
@@ -84,7 +90,8 @@ export class MessageProcessingService {
     private readonly moderationIntegration: BotModerationIntegration,
     private readonly moderationExecutor: ModerationExecutor,
     private readonly replyDispatchService: ReplyDispatchService,
-    private readonly logger: Logger
+    private readonly logger: Logger,
+    private readonly threadWorkflowGateway?: ThreadWorkflowGateway
   ) {}
 
   async process(item: QueuedMessage): Promise<void> {
@@ -140,20 +147,26 @@ export class MessageProcessingService {
       return;
     }
 
+    const routedItem = await this.resolveThreadWorkflowRouteIfNeeded(admittedItem);
+    if (!routedItem) {
+      this.markMessageCompleted(admittedItem);
+      return;
+    }
+
     const typingIndicator = shouldShowTypingIndicator({
-      watchLocation: admittedItem.watchLocation,
-      chatEngagement: admittedItem.chatEngagement
+      watchLocation: routedItem.watchLocation,
+      chatEngagement: routedItem.chatEngagement
     })
-      ? isForumResearchPlace(admittedItem.watchLocation)
-        ? this.startTypingIndicator(admittedItem.message.channel, {
+      ? isForumResearchPlace(routedItem.watchLocation)
+        ? this.startTypingIndicator(routedItem.message.channel, {
             owner: "forum_high_thinking",
-            messageId: admittedItem.envelope.messageId,
-            channelId: admittedItem.envelope.channelId
+            messageId: routedItem.envelope.messageId,
+            channelId: routedItem.envelope.channelId
           })
-        : this.startTypingIndicator(admittedItem.message.channel, {
+        : this.startTypingIndicator(routedItem.message.channel, {
             owner: "message_processing",
-            messageId: admittedItem.envelope.messageId,
-            channelId: admittedItem.envelope.channelId
+            messageId: routedItem.envelope.messageId,
+            channelId: routedItem.envelope.channelId
           })
       : createNoopTypingIndicator();
     try {
@@ -161,46 +174,48 @@ export class MessageProcessingService {
       let replyTarget = buildSamePlaceReplyTarget(item);
       let forumBootstrap: ForumFirstTurnPreparation;
       try {
-        const redirected = await this.redirectClearExplanationIfNeeded(admittedItem);
+        const redirected = await this.redirectClearExplanationIfNeeded(routedItem, {
+          runRouteGate: !isQuestionGatewayPlace(admittedItem.watchLocation)
+        });
         if (redirected) {
-          this.markMessageCompleted(admittedItem);
+          this.markMessageCompleted(routedItem);
           return;
         }
 
         forumBootstrap =
           await this.forumFirstTurnPreprocessor.resolveEffectiveContentOverride({
-            message: admittedItem.message,
-            envelope: admittedItem.envelope,
-            watchLocation: admittedItem.watchLocation,
-            actorRole: admittedItem.actorRole,
-            scope: admittedItem.scope
+            message: routedItem.message,
+            envelope: routedItem.envelope,
+            watchLocation: routedItem.watchLocation,
+            actorRole: routedItem.actorRole,
+            scope: routedItem.scope
           });
         routed = await this.resolveHarnessMessage(
-          admittedItem,
+          routedItem,
           forumBootstrap,
           typingIndicator,
           admission
         );
       } catch (error) {
-        await this.handleRuntimeFailure(admittedItem, {
+        await this.handleRuntimeFailure(routedItem, {
           stage: "fetch_or_resolve",
           error,
-          replyTarget: buildSamePlaceReplyTarget(admittedItem)
+          replyTarget: buildSamePlaceReplyTarget(routedItem)
         });
         return;
       }
 
       try {
-        replyTarget = await this.replyDispatchService.dispatchResolvedMessage(admittedItem, routed);
+        replyTarget = await this.replyDispatchService.dispatchResolvedMessage(routedItem, routed);
       } catch (error) {
-        await this.handleRuntimeFailure(admittedItem, extractStageFailure(error, admittedItem, "dispatch"));
+        await this.handleRuntimeFailure(routedItem, extractStageFailure(error, routedItem, "dispatch"));
         return;
       }
 
       try {
-        await this.runPostResponseModeration(admittedItem, routed);
+        await this.runPostResponseModeration(routedItem, routed);
       } catch (error) {
-        await this.handleRuntimeFailure(admittedItem, {
+        await this.handleRuntimeFailure(routedItem, {
           stage: "post_response",
           error,
           replyTarget
@@ -208,13 +223,13 @@ export class MessageProcessingService {
         return;
       }
 
-      this.markMessageCompleted(admittedItem);
+      this.markMessageCompleted(routedItem);
     } catch (error) {
-      this.logger.error({ error, messageId: admittedItem.envelope.messageId }, "queue item failed");
-      await this.handleRuntimeFailure(admittedItem, {
+      this.logger.error({ error, messageId: routedItem.envelope.messageId }, "queue item failed");
+      await this.handleRuntimeFailure(routedItem, {
         stage: "fetch_or_resolve",
         error,
-        replyTarget: buildSamePlaceReplyTarget(admittedItem)
+        replyTarget: buildSamePlaceReplyTarget(routedItem)
       });
     } finally {
       typingIndicator.stop();
@@ -302,6 +317,30 @@ export class MessageProcessingService {
     return this.deriveChatEngagement(item);
   }
 
+  private async resolveThreadWorkflowRouteIfNeeded(
+    item: QueuedMessage
+  ): Promise<QueuedMessage | null> {
+    if (!this.threadWorkflowGateway) {
+      return item;
+    }
+
+    const resolution = await this.threadWorkflowGateway.resolve({
+      message: item.message,
+      envelope: item.envelope,
+      watchLocation: item.watchLocation
+    });
+    if (resolution.decision === "pass") {
+      return item;
+    }
+
+    if (resolution.decision === "fail") {
+      await this.replyDispatchService.sendFollowupInSamePlace(item, resolution.notice);
+      return null;
+    }
+
+    return routeQueuedMessageToWorkflow(item, resolution.workflow);
+  }
+
   private async deriveChatEngagement(
     item: QueuedMessage
   ): Promise<ProcessingAdmission> {
@@ -328,8 +367,16 @@ export class MessageProcessingService {
     };
   }
 
-  private async redirectClearExplanationIfNeeded(item: QueuedMessage): Promise<boolean> {
+  private async redirectClearExplanationIfNeeded(
+    item: QueuedMessage,
+    input: {
+      runRouteGate: boolean;
+    } = {
+      runRouteGate: true
+    }
+  ): Promise<boolean> {
     if (
+      !input.runRouteGate ||
       !isClearExplanationPlace(item.watchLocation) ||
       !isThreadEnvelope(item.envelope)
     ) {
@@ -347,7 +394,10 @@ export class MessageProcessingService {
     await this.replyDispatchService.sendFollowupInSamePlace(
       item,
       decision === "redirect_to_forum_research"
-        ? CLEAR_EXPLANATION_FORUM_REDIRECT_NOTICE
+        ? buildClearExplanationQuestionGatewayRedirectNotice(
+            this.config.watchLocations,
+            item.watchLocation
+          )
         : CLEAR_EXPLANATION_DECLINE_NOTICE
     );
     return true;
@@ -794,6 +844,48 @@ function toQueuedChatEngagement(
   return evaluation.triggerKind
     ? toChatEngagementFact({ evaluation })
     : null;
+}
+
+function routeQueuedMessageToWorkflow(
+  item: QueuedMessage,
+  workflow: ThreadWorkflow
+): QueuedMessage {
+  const watchLocation = buildWorkflowWatchLocation(item.watchLocation, workflow);
+  return {
+    ...item,
+    watchLocation,
+    scope: resolveScope(item.message, watchLocation),
+    envelope: {
+      ...item.envelope,
+      placeType:
+        workflow === "forum_research"
+          ? "forum_post_thread"
+          : item.envelope.placeType
+    }
+  };
+}
+
+function buildWorkflowWatchLocation(
+  source: WatchLocationConfig,
+  workflow: ThreadWorkflow
+): WatchLocationConfig {
+  if (workflow === "forum_research") {
+    return {
+      ...source,
+      mode: "forum_longform",
+      defaultScope: "conversation_only",
+      features: ["forum_research", "conversation"],
+      chatBehavior: null
+    };
+  }
+
+  return {
+    ...source,
+    mode: "chat",
+    defaultScope: "server_public",
+    features: ["clear_explanation", "conversation"],
+    chatBehavior: null
+  };
 }
 
 function isLegacyForumRetryJobWithoutResolvedWatchLocation(

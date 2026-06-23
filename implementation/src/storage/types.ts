@@ -225,4 +225,22 @@ export type ClearExplanationGateStateRow = {
   updated_at: string;
 };
 
+export const THREAD_WORKFLOW_VALUES = [
+  "clear_explanation",
+  "forum_research"
+] as const;
+export type ThreadWorkflow = (typeof THREAD_WORKFLOW_VALUES)[number];
+
+export type ThreadWorkflowRouteRow = {
+  thread_id: string;
+  root_channel_id: string;
+  first_message_id: string;
+  workflow: ThreadWorkflow;
+  selected_by: "starter_gateway" | "command";
+  selected_by_actor_id: string | null;
+  reason: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export type { Scope, VisibleCandidate };

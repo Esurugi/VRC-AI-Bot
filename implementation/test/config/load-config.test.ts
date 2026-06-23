@@ -240,6 +240,75 @@ test("loadConfig treats clear explanation as a primary place feature", () => {
   }
 });
 
+test("loadConfig accepts question gateway feature profiles", () => {
+  const workspace = createTempWorkspace();
+  try {
+    writeJson(join(workspace, "watch-locations.json"), {
+      featureProfiles: {
+        "question-gateway": {
+          features: ["question_gateway", "conversation"],
+          defaultScope: "server_public"
+        }
+      },
+      assignments: [
+        {
+          guildId: "guild",
+          channelId: "question-gateway-root",
+          featureProfile: "question-gateway"
+        }
+      ]
+    });
+
+    withEnv(workspace, () => {
+      const config = loadConfig(workspace);
+
+      assert.deepEqual(config.watchLocations, [
+        {
+          guildId: "guild",
+          channelId: "question-gateway-root",
+          featureProfileId: "question-gateway",
+          mode: "chat",
+          features: ["question_gateway", "conversation"],
+          defaultScope: "server_public",
+          chatBehavior: null
+        }
+      ]);
+    });
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("loadConfig treats question gateway as a primary place feature", () => {
+  const workspace = createTempWorkspace();
+  try {
+    writeJson(join(workspace, "watch-locations.json"), {
+      featureProfiles: {
+        mixed: {
+          features: ["question_gateway", "forum_research", "conversation"],
+          defaultScope: "conversation_only"
+        }
+      },
+      assignments: [
+        {
+          guildId: "guild",
+          channelId: "mixed-root",
+          featureProfile: "mixed"
+        }
+      ]
+    });
+
+    withEnv(workspace, () => {
+      assert.throws(
+        () => loadConfig(workspace),
+        /feature profile: mixed declares multiple primary place features: forum_research, question_gateway/
+      );
+    });
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
 test("loadConfig rejects legacy locations whose mode and features disagree", () => {
   const workspace = createTempWorkspace();
   try {

@@ -3,13 +3,35 @@ import { z } from "zod";
 
 import type { CodexAppServerClient } from "../../codex/app-server-client.js";
 import { CLEAR_EXPLANATION_GATE_CODEX_MODEL_PROFILE } from "../../codex/session-policy.js";
+import {
+  isForumResearchPlace,
+  isQuestionGatewayPlace
+} from "../../domain/place-features.js";
 import type { MessageEnvelope, WatchLocationConfig } from "../../domain/types.js";
 import type { SqliteStore } from "../../storage/database.js";
 import type { ClearExplanationGateDecision } from "../../storage/types.js";
 
-export const FORUM_RESEARCH_CHANNEL_ID = "1365209960396361738";
+export function buildClearExplanationQuestionGatewayRedirectNotice(
+  watchLocations: WatchLocationConfig[],
+  source: WatchLocationConfig
+): string {
+  const target =
+    findConfiguredPlace(watchLocations, source, isQuestionGatewayPlace) ??
+    findConfiguredPlace(watchLocations, source, isForumResearchPlace);
+  const targetText = target ? `<#${target.channelId}>` : "質問受付";
+  return `この内容は ${targetText} の「高度質問」の方が向いていそうです。広い検討・調査・比較・設計相談のように、じっくり考える必要がある質問はそちらに投稿してください。`;
+}
+
 export const CLEAR_EXPLANATION_FORUM_REDIRECT_NOTICE =
-  `この内容は <#${FORUM_RESEARCH_CHANNEL_ID}> の「高度質問」の方が向いていそうです。広い検討・調査・比較・設計相談のように、じっくり考える必要がある質問はそちらに投稿してください。`;
+  buildClearExplanationQuestionGatewayRedirectNotice([], {
+    guildId: "fallback",
+    channelId: "fallback",
+    mode: "chat",
+    defaultScope: "server_public",
+    features: ["clear_explanation", "conversation"],
+    chatBehavior: null
+  });
+
 export const CLEAR_EXPLANATION_DECLINE_NOTICE =
   "ここは概念や仕組みをじっくり理解するための場所なので、この内容は教えてティラピコ向きではなさそうです。このスレッドでは処理しません。";
 
@@ -147,4 +169,17 @@ export class ClearExplanationRoutingGate {
       }
     }
   }
+}
+
+function findConfiguredPlace(
+  watchLocations: WatchLocationConfig[],
+  source: WatchLocationConfig,
+  predicate: (watchLocation: WatchLocationConfig) => boolean
+): WatchLocationConfig | null {
+  return (
+    watchLocations.find(
+      (watchLocation) =>
+        watchLocation.guildId === source.guildId && predicate(watchLocation)
+    ) ?? null
+  );
 }

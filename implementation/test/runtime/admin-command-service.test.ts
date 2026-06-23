@@ -4,9 +4,11 @@ import { ChannelType, type Channel } from "discord.js";
 
 import {
   AdminCommandService,
+  buildOverrideCommandDefinitions,
   canStartOverrideFromOrigin
 } from "../../src/runtime/admin/admin-command-service.js";
 import type { AppConfig, WatchLocationConfig } from "../../src/domain/types.js";
+import type { ThreadWorkflowRouteRow } from "../../src/storage/types.js";
 
 test("override-start cannot begin from an unconfigured origin channel", () => {
   assert.equal(
@@ -25,6 +27,37 @@ test("override-start can begin from a configured origin channel", () => {
       features: ["conversation"]
     }),
     true
+  );
+});
+
+test("command definitions include workflow-switch with allowed workflow choices", () => {
+  const commands = buildOverrideCommandDefinitions() as Array<{
+    name?: string;
+    options?: Array<{
+      name?: string;
+      choices?: Array<{ name: string; value: string }>;
+    }>;
+  }>;
+  const commandNames = commands.map((command) => command.name).sort();
+
+  for (const commandName of [
+    "override-end",
+    "override-start",
+    "weekly-meetup-test",
+    "workflow-switch"
+  ]) {
+    assert.ok(commandNames.includes(commandName), `${commandName} is registered`);
+  }
+
+  const workflowSwitch = commands.find((command) => command.name === "workflow-switch");
+  assert.ok(workflowSwitch);
+  const workflowOption = workflowSwitch.options?.find(
+    (option) => option.name === "workflow"
+  );
+  assert.ok(workflowOption);
+  assert.deepEqual(
+    workflowOption.choices?.map((choice) => choice.value).sort(),
+    ["clear_explanation", "forum_research"]
   );
 });
 
@@ -255,6 +288,136 @@ test("override-start with initial prompt copies only visible prompt and bootstra
   assert.match(replies[0] ?? "", /thread=<#override-thread>/);
 });
 
+test("workflow-switch lets the question thread starter switch an existing route", async () => {
+  const { service, gateway, store } = createWorkflowSwitchService({
+    route: createWorkflowRoute()
+  });
+  const { interaction, replies } = createWorkflowSwitchInteraction({
+    userId: "starter-user",
+    isAdmin: false,
+    workflow: "forum_research",
+    channel: createThreadChannel({
+      starterAuthorId: "starter-user"
+    })
+  });
+
+  const handled = await service.handle(interaction as never);
+
+  assert.equal(handled, true);
+  assert.equal(gateway.calls.length, 1);
+  assert.deepEqual(gateway.calls[0], {
+    threadId: "question-thread",
+    rootChannelId: "question-root",
+    firstMessageId: "starter-message",
+    workflow: "forum_research",
+    actorId: "starter-user",
+    reason: "manual switch"
+  });
+  assert.equal(store.route?.workflow, "forum_research");
+  assert.equal(store.route?.selected_by, "command");
+  assert.equal(store.route?.selected_by_actor_id, "starter-user");
+  assert.match(replies[0] ?? "", /forum_research/);
+});
+
+test("workflow-switch lets an owner or admin switch even when not the starter", async () => {
+  const { service, gateway, store } = createWorkflowSwitchService({
+    route: createWorkflowRoute()
+  });
+  const { interaction, replies } = createWorkflowSwitchInteraction({
+    userId: "admin-user",
+    isAdmin: true,
+    workflow: "clear_explanation",
+    channel: createThreadChannel({
+      starterAuthorId: "starter-user"
+    })
+  });
+
+  const handled = await service.handle(interaction as never);
+
+  assert.equal(handled, true);
+  assert.equal(gateway.calls.length, 1);
+  assert.equal(gateway.calls[0]?.actorId, "admin-user");
+  assert.equal(store.route?.workflow, "clear_explanation");
+  assert.equal(store.route?.selected_by_actor_id, "admin-user");
+  assert.match(replies[0] ?? "", /clear_explanation/);
+});
+
+test("workflow-switch rejects a user who is neither starter nor owner/admin", async () => {
+  const { service, gateway, store } = createWorkflowSwitchService({
+    route: createWorkflowRoute()
+  });
+  const { interaction, replies } = createWorkflowSwitchInteraction({
+    userId: "random-user",
+    isAdmin: false,
+    workflow: "forum_research",
+    channel: createThreadChannel({
+      starterAuthorId: "starter-user"
+    })
+  });
+
+  const handled = await service.handle(interaction as never);
+
+  assert.equal(handled, true);
+  assert.equal(gateway.calls.length, 0);
+  assert.equal(store.route?.workflow, "clear_explanation");
+  assert.equal(store.route?.selected_by, "starter_gateway");
+  assert.match(replies[0] ?? "", /thread starter|owner\/admin/);
+});
+
+test("workflow-switch rejects commands outside a question-gateway thread", async () => {
+  const { service, gateway, store } = createWorkflowSwitchService({
+    route: createWorkflowRoute({
+      root_channel_id: "plain-root"
+    }),
+    watchLocations: [
+      {
+        guildId: "guild",
+        channelId: "plain-root",
+        mode: "chat",
+        defaultScope: "conversation_only",
+        features: ["conversation"]
+      }
+    ]
+  });
+  const { interaction, replies } = createWorkflowSwitchInteraction({
+    userId: "starter-user",
+    isAdmin: false,
+    workflow: "forum_research",
+    channel: createThreadChannel({
+      parentId: "plain-root",
+      starterAuthorId: "starter-user"
+    })
+  });
+
+  const handled = await service.handle(interaction as never);
+
+  assert.equal(handled, true);
+  assert.equal(gateway.calls.length, 0);
+  assert.equal(store.route?.workflow, "clear_explanation");
+  assert.match(replies[0] ?? "", /question_gateway|question-gateway/);
+});
+
+test("workflow-switch rejects when the thread has no existing route row", async () => {
+  const { service, gateway, store } = createWorkflowSwitchService({
+    route: null
+  });
+  const { interaction, replies } = createWorkflowSwitchInteraction({
+    userId: "starter-user",
+    isAdmin: false,
+    workflow: "forum_research",
+    channel: createThreadChannel({
+      starterAuthorId: "starter-user"
+    })
+  });
+
+  const handled = await service.handle(interaction as never);
+
+  assert.equal(handled, true);
+  assert.equal(gateway.calls.length, 0);
+  assert.equal(store.route, null);
+  assert.match(replies[0] ?? "", /保存されていない|existing route|初期化/);
+});
+
 function createConfig(watchLocations: WatchLocationConfig[]): AppConfig {
   return {
     discordBotToken: "token",
@@ -273,5 +436,230 @@ function createConfig(watchLocations: WatchLocationConfig[]): AppConfig {
     watchLocations,
     chatRuntimeControls: null,
     weeklyMeetupAnnouncement: null
+  };
+}
+
+function createWorkflowSwitchService(input: {
+  route: ThreadWorkflowRouteRow | null;
+  watchLocations?: WatchLocationConfig[];
+}) {
+  const store = createWorkflowRouteStore(input.route);
+  const gateway = createWorkflowGatewayDouble(store);
+  const logger = { warn: () => undefined, debug: () => undefined } as never;
+  const ServiceCtor = AdminCommandService as unknown as {
+    new (...args: unknown[]): AdminCommandService;
+  };
+  const service = new ServiceCtor(
+    {
+      channels: {
+        fetch: async () => null
+      }
+    },
+    createConfig(input.watchLocations ?? [questionGatewayWatchLocation()]),
+    store,
+    {} as never,
+    {} as never,
+    {} as never,
+    {} as never,
+    {} as never,
+    logger,
+    gateway
+  );
+
+  return {
+    service,
+    gateway,
+    store
+  };
+}
+
+function createWorkflowRouteStore(initialRoute: ThreadWorkflowRouteRow | null) {
+  const state = {
+    route: initialRoute,
+    marks: [] as Array<{
+      threadId: string;
+      rootChannelId: string;
+      firstMessageId: string;
+      workflow: "clear_explanation" | "forum_research";
+      selectedBy: "starter_gateway" | "command";
+      selectedByActorId: string | null;
+      reason: string | null;
+    }>,
+    threadWorkflowRoutes: {
+      get: (threadId: string) =>
+        state.route?.thread_id === threadId ? state.route : null,
+      mark: (mark: {
+        threadId: string;
+        rootChannelId: string;
+        firstMessageId: string;
+        workflow: "clear_explanation" | "forum_research";
+        selectedBy: "starter_gateway" | "command";
+        selectedByActorId: string | null;
+        reason: string | null;
+      }) => {
+        state.marks.push(mark);
+        const now = "2026-05-21T00:00:00.000Z";
+        state.route = {
+          thread_id: mark.threadId,
+          root_channel_id: mark.rootChannelId,
+          first_message_id: mark.firstMessageId,
+          workflow: mark.workflow,
+          selected_by: mark.selectedBy,
+          selected_by_actor_id: mark.selectedByActorId,
+          reason: mark.reason,
+          created_at: state.route?.created_at ?? now,
+          updated_at: now
+        };
+      }
+    },
+    overrideSessions: {
+      start: () => undefined,
+      getActive: () => null,
+      endActive: () => false
+    }
+  };
+  return state;
+}
+
+function createWorkflowGatewayDouble(
+  store: ReturnType<typeof createWorkflowRouteStore>
+) {
+  const gateway = {
+    calls: [] as Array<{
+      threadId: string;
+      rootChannelId: string;
+      firstMessageId: string;
+      workflow: string;
+      actorId: string;
+      reason: string | null;
+    }>,
+    switchWorkflow: (input: {
+      threadId: string;
+      rootChannelId: string;
+      firstMessageId: string;
+      workflow: string;
+      actorId: string;
+      reason: string | null;
+    }) => {
+      gateway.calls.push(input);
+      if (
+        input.workflow !== "clear_explanation" &&
+        input.workflow !== "forum_research"
+      ) {
+        return {
+          ok: false as const,
+          reason: "forbidden_workflow" as const
+        };
+      }
+
+      store.threadWorkflowRoutes.mark({
+        threadId: input.threadId,
+        rootChannelId: input.rootChannelId,
+        firstMessageId: input.firstMessageId,
+        workflow: input.workflow,
+        selectedBy: "command",
+        selectedByActorId: input.actorId,
+        reason: input.reason
+      });
+      return {
+        ok: true as const,
+        workflow: input.workflow
+      };
+    }
+  };
+  return gateway;
+}
+
+function createWorkflowSwitchInteraction(input: {
+  userId: string;
+  isAdmin: boolean;
+  workflow: string;
+  channel: ReturnType<typeof createThreadChannel>;
+}) {
+  const replies: string[] = [];
+  return {
+    replies,
+    interaction: {
+      commandName: "workflow-switch",
+      inCachedGuild: () => true,
+      guildId: "guild",
+      channelId: input.channel.id,
+      channel: input.channel,
+      id: "interaction-workflow-switch",
+      user: {
+        id: input.userId,
+        username: input.userId
+      },
+      memberPermissions: {
+        has: () => input.isAdmin
+      },
+      options: {
+        getString: (name: string) => {
+          if (name === "workflow") {
+            return input.workflow;
+          }
+          if (name === "reason") {
+            return "manual switch";
+          }
+          return null;
+        },
+        getBoolean: () => null
+      },
+      replied: false,
+      deferred: false,
+      reply: async (replyInput: { content: string }) => {
+        replies.push(replyInput.content);
+      },
+      followUp: async (replyInput: { content: string }) => {
+        replies.push(replyInput.content);
+      }
+    }
+  };
+}
+
+function createThreadChannel(input: {
+  threadId?: string;
+  parentId?: string;
+  starterMessageId?: string;
+  starterAuthorId: string;
+}) {
+  return {
+    id: input.threadId ?? "question-thread",
+    type: ChannelType.PublicThread,
+    parentId: input.parentId ?? "question-root",
+    isThread: () => true,
+    fetchStarterMessage: async () => ({
+      id: input.starterMessageId ?? "starter-message",
+      author: {
+        id: input.starterAuthorId
+      }
+    })
+  };
+}
+
+function createWorkflowRoute(
+  overrides: Partial<ThreadWorkflowRouteRow> = {}
+): ThreadWorkflowRouteRow {
+  return {
+    thread_id: "question-thread",
+    root_channel_id: "question-root",
+    first_message_id: "starter-message",
+    workflow: "clear_explanation",
+    selected_by: "starter_gateway",
+    selected_by_actor_id: null,
+    reason: "starter selected route",
+    created_at: "2026-05-21T00:00:00.000Z",
+    updated_at: "2026-05-21T00:00:00.000Z",
+    ...overrides
+  };
+}
+
+function questionGatewayWatchLocation(): WatchLocationConfig {
+  return {
+    guildId: "guild",
+    channelId: "question-root",
+    mode: "chat",
+    defaultScope: "conversation_only",
+    features: ["question_gateway", "conversation"]
   };
 }

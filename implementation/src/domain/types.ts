@@ -21,7 +21,8 @@ export const PLACE_FEATURE_VALUES = [
   "knowledge_ingest",
   "admin_override",
   "forum_research",
-  "clear_explanation"
+  "clear_explanation",
+  "question_gateway"
 ] as const;
 export type PlaceFeature = (typeof PLACE_FEATURE_VALUES)[number];
 

@@ -24,7 +24,8 @@ import {
   ForumResearchStateRepository,
   MessageProcessingRepository,
   RetryJobRepository,
-  ScheduledDeliveryRepository
+  ScheduledDeliveryRepository,
+  ThreadWorkflowRouteRepository
 } from "./repositories/runtime-repositories.js";
 
 export class SqliteStore {
@@ -48,6 +49,7 @@ export class SqliteStore {
   readonly chatChannelCounters: ChatChannelCounterRepository;
   readonly scheduledDeliveries: ScheduledDeliveryRepository;
   readonly clearExplanationGateStates: ClearExplanationGateStateRepository;
+  readonly threadWorkflowRoutes: ThreadWorkflowRouteRepository;
 
   constructor(dbPath: string, private readonly projectRoot = process.cwd()) {
     mkdirSync(dirname(dbPath), { recursive: true });
@@ -75,6 +77,7 @@ export class SqliteStore {
     this.chatChannelCounters = new ChatChannelCounterRepository(this.db);
     this.scheduledDeliveries = new ScheduledDeliveryRepository(this.db);
     this.clearExplanationGateStates = new ClearExplanationGateStateRepository(this.db);
+    this.threadWorkflowRoutes = new ThreadWorkflowRouteRepository(this.db);
   }
 
   migrate(): void {

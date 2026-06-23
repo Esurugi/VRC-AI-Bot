@@ -13,6 +13,10 @@
       "features": ["forum_research", "conversation"],
       "defaultScope": "conversation_only"
     },
+    "question-gateway": {
+      "features": ["question_gateway", "conversation"],
+      "defaultScope": "conversation_only"
+    },
     "clear-explanation": {
       "features": ["clear_explanation", "conversation"],
       "defaultScope": "server_public"
@@ -37,6 +41,11 @@
       "guildId": "123456789012345678",
       "channelId": "373456789012345678",
       "featureProfile": "research-forum"
+    },
+    {
+      "guildId": "123456789012345678",
+      "channelId": "383456789012345678",
+      "featureProfile": "question-gateway"
     },
     {
       "guildId": "123456789012345678",

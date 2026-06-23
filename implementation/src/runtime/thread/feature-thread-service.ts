@@ -75,7 +75,8 @@ function usesDedicatedThreadEngagement(
 ): boolean {
   return (
     hasPlaceFeature(watchLocation, "forum_research") ||
-    hasPlaceFeature(watchLocation, "clear_explanation")
+    hasPlaceFeature(watchLocation, "clear_explanation") ||
+    hasPlaceFeature(watchLocation, "question_gateway")
   );
 }
 

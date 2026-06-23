@@ -16,7 +16,8 @@ import {
   isClearExplanationPlace,
   isConversationPlace,
   isForumResearchPlace,
-  isKnowledgeIngestPlace
+  isKnowledgeIngestPlace,
+  isQuestionGatewayPlace
 } from "../domain/place-features.js";
 
 const URL_PATTERN = /https?:\/\/[^\s<>()]+/giu;
@@ -157,6 +158,7 @@ function isConversationChannelPlace(
     !isKnowledgeIngestPlace(watchLocation) &&
     !isForumResearchPlace(watchLocation) &&
     !isClearExplanationPlace(watchLocation) &&
+    !isQuestionGatewayPlace(watchLocation) &&
     !hasPlaceFeature(watchLocation, "admin_override")
   );
 }

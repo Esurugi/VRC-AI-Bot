@@ -145,6 +145,22 @@ test("AE-DB-02 storage repositories round-trip public contract rows after reopen
         updated_at: "<timestamp>"
       }
     );
+    assert.deepEqual(
+      normalizeThreadWorkflowRoute(
+        reopened.threadWorkflowRoutes.get("question-thread-1")
+      ),
+      {
+        thread_id: "question-thread-1",
+        root_channel_id: "question-root-1",
+        first_message_id: "question-message-1",
+        workflow: "forum_research",
+        selected_by: "starter_gateway",
+        selected_by_actor_id: null,
+        reason: "test route",
+        created_at: "<timestamp>",
+        updated_at: "<timestamp>"
+      }
+    );
     assert.equal(
       reopened.messageProcessing.get("message-terminal")?.state,
       "terminal_failure_notified"
@@ -310,6 +326,15 @@ function seedPublicContractRows(store: SqliteStore): void {
     decision: "redirect_to_general_question",
     reason: "test redirect"
   });
+  store.threadWorkflowRoutes.mark({
+    threadId: "question-thread-1",
+    rootChannelId: "question-root-1",
+    firstMessageId: "question-message-1",
+    workflow: "forum_research",
+    selectedBy: "starter_gateway",
+    selectedByActorId: null,
+    reason: "test route"
+  });
 
   store.forumResearchStates.upsert({
     sessionIdentity: "forum-session-1",
@@ -348,6 +373,19 @@ function seedPublicContractRows(store: SqliteStore): void {
 
 function normalizeClearExplanationGateState(
   row: ReturnType<SqliteStore["clearExplanationGateStates"]["get"]>
+) {
+  assert.ok(row);
+  assert.equal(typeof row.created_at, "string");
+  assert.equal(typeof row.updated_at, "string");
+  return {
+    ...row,
+    created_at: "<timestamp>",
+    updated_at: "<timestamp>"
+  };
+}
+
+function normalizeThreadWorkflowRoute(
+  row: ReturnType<SqliteStore["threadWorkflowRoutes"]["get"]>
 ) {
   assert.ok(row);
   assert.equal(typeof row.created_at, "string");

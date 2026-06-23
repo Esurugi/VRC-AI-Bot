@@ -197,6 +197,68 @@ test("clear explanation handles bot reply follow-up messages as bot-directed", a
   });
 });
 
+test("question gateway handles the starter message without a mention", async () => {
+  const service = new FeatureThreadService();
+
+  const result = await service.evaluateMessage(
+    createForumMessage({
+      id: "starter",
+      threadId: "thread",
+      starterMessageId: "starter"
+    }),
+    createQuestionGatewayWatchLocation()
+  );
+
+  assert.deepEqual(result, {
+    decision: "handle",
+    engagement: {
+      decision: "always",
+      triggerKind: null,
+      isDirectedToBot: false
+    }
+  });
+});
+
+test("question gateway ignores natural-language follow-up without command or directed engagement", async () => {
+  const service = new FeatureThreadService();
+
+  const result = await service.evaluateMessage(
+    createForumMessage({
+      id: "follow-up",
+      threadId: "thread",
+      starterMessageId: "starter"
+    }),
+    createQuestionGatewayWatchLocation()
+  );
+
+  assert.deepEqual(result, {
+    decision: "ignore"
+  });
+});
+
+test("question gateway handles direct mention follow-up as directed engagement", async () => {
+  const service = new FeatureThreadService();
+
+  const result = await service.evaluateMessage(
+    createForumMessage({
+      id: "follow-up",
+      threadId: "thread",
+      starterMessageId: "starter",
+      mentionsBot: true
+    }),
+    createQuestionGatewayWatchLocation()
+  );
+
+  assert.deepEqual(result, {
+    decision: "handle",
+    engagement: {
+      decision: "always",
+      triggerKind: "direct_mention",
+      isDirectedToBot: true
+    }
+  });
+});
+
 function createForumWatchLocation(): WatchLocationConfig {
   return {
     guildId: "guild",
@@ -214,6 +276,19 @@ function createClearExplanationWatchLocation(): WatchLocationConfig {
     mode: "chat",
     defaultScope: "server_public",
     features: ["clear_explanation", "conversation"],
+    chatBehavior: null
+  };
+}
+
+function createQuestionGatewayWatchLocation(): WatchLocationConfig {
+  return {
+    guildId: "guild",
+    channelId: "question-gateway-root",
+    mode: "chat",
+    defaultScope: "server_public",
+    features: ["question_gateway", "conversation"] as unknown as NonNullable<
+      WatchLocationConfig["features"]
+    >,
     chatBehavior: null
   };
 }

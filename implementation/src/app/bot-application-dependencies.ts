@@ -22,6 +22,7 @@ import { ForumFirstTurnPreprocessor } from "../runtime/forum/forum-first-turn-pr
 import { ForumResearchPromptRefiner } from "../runtime/forum/forum-research-prompt-refiner.js";
 import { ForumResearchSupervisor } from "../runtime/forum/forum-research-supervisor.js";
 import { FeatureThreadService } from "../runtime/thread/feature-thread-service.js";
+import { ThreadWorkflowGateway } from "../runtime/thread/thread-workflow-gateway.js";
 import { MessageIntakeService } from "../runtime/message/message-intake-service.js";
 import { MessageProcessingService } from "../runtime/message/message-processing-service.js";
 import { PlainTextAttachmentService } from "../runtime/message/plain-text-attachment-service.js";
@@ -60,6 +61,7 @@ export type BotApplicationDependencies = {
   chatRuntimeControlService?: ChatRuntimeControlService;
   recentChatHistoryService?: RecentChatHistoryService;
   clearExplanationRoutingGate?: ClearExplanationRoutingGate;
+  threadWorkflowGateway?: ThreadWorkflowGateway;
   forumFirstTurnPreprocessor?: ForumFirstTurnPreprocessor;
   forumResearchPromptRefiner?: ForumResearchPromptRefiner;
   forumResearchSupervisor?: ForumResearchSupervisor;
@@ -157,6 +159,9 @@ export function createBotApplicationDependencies(
     dependencies.chatEngagementPolicy ?? new ChatEngagementPolicy();
   const featureThreadService =
     dependencies.featureThreadService ?? new FeatureThreadService();
+  const threadWorkflowGateway =
+    dependencies.threadWorkflowGateway ??
+    new ThreadWorkflowGateway(store, codexClient, logger);
   const clearExplanationRoutingGate =
     dependencies.clearExplanationRoutingGate ??
     new ClearExplanationRoutingGate(store, codexClient, logger);
@@ -176,7 +181,8 @@ export function createBotApplicationDependencies(
       moderationIntegration,
       moderationExecutor,
       replyDispatchService,
-      logger
+      logger,
+      threadWorkflowGateway
     );
   const queue =
     dependencies.queue ??
@@ -255,7 +261,8 @@ export function createBotApplicationDependencies(
       adminOverrideBootstrapService,
       overrideBootstrapPromptContextService,
       weeklyMeetupAnnouncementService,
-      logger
+      logger,
+      threadWorkflowGateway
     );
 
   return {
@@ -283,6 +290,7 @@ export function createBotApplicationDependencies(
     chatRuntimeControlService,
     recentChatHistoryService,
     clearExplanationRoutingGate,
+    threadWorkflowGateway,
     forumFirstTurnPreprocessor,
     forumResearchPromptRefiner,
     forumResearchSupervisor,

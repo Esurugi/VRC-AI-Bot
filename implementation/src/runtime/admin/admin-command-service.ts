@@ -25,6 +25,7 @@ import type { AppConfig, WatchLocationConfig } from "../../domain/types.js";
 import { DEFAULT_OVERRIDE_FLAGS, type OverrideFlags } from "../../override/types.js";
 import { SqliteStore } from "../../storage/database.js";
 import { WeeklyMeetupAnnouncementService } from "../scheduling/weekly-meetup-announcement-service.js";
+import { ThreadWorkflowGateway } from "../thread/thread-workflow-gateway.js";
 import { AdminOverrideBootstrapService } from "./admin-override-bootstrap-service.js";
 import { OverrideBootstrapPromptContextService } from "./override-bootstrap-prompt-context-service.js";
 
@@ -38,7 +39,8 @@ export class AdminCommandService {
     private readonly adminOverrideBootstrapService: AdminOverrideBootstrapService,
     private readonly overrideBootstrapPromptContextService: OverrideBootstrapPromptContextService,
     private readonly weeklyMeetupAnnouncementService: WeeklyMeetupAnnouncementService,
-    private readonly logger: Logger
+    private readonly logger: Logger,
+    private readonly threadWorkflowGateway: ThreadWorkflowGateway | null = null
   ) {}
 
   async registerCommands(): Promise<void> {
@@ -68,7 +70,8 @@ export class AdminCommandService {
     if (
       interaction.commandName !== "override-start" &&
       interaction.commandName !== "override-end" &&
-      interaction.commandName !== "weekly-meetup-test"
+      interaction.commandName !== "weekly-meetup-test" &&
+      interaction.commandName !== "workflow-switch"
     ) {
       return false;
     }
@@ -82,6 +85,12 @@ export class AdminCommandService {
       interaction,
       this.config.discordOwnerUserIds
     );
+
+    if (interaction.commandName === "workflow-switch") {
+      await this.handleWorkflowSwitch(interaction, actorRole);
+      return true;
+    }
+
     if (actorRole === "user") {
       await replyToInteraction(
         interaction,
@@ -271,6 +280,95 @@ export class AdminCommandService {
     await interaction.channel.setArchived(true, `override-end by ${interaction.user.id}`);
     return true;
   }
+
+  private async handleWorkflowSwitch(
+    interaction: ChatInputCommandInteraction<"cached">,
+    actorRole: "owner" | "admin" | "user"
+  ): Promise<void> {
+    if (!this.threadWorkflowGateway) {
+      await replyToInteraction(
+        interaction,
+        "workflow 切り替え機能が初期化されていません。",
+        { ephemeral: true }
+      );
+      return;
+    }
+
+    if (!interaction.channel?.isThread()) {
+      await replyToInteraction(
+        interaction,
+        "この command は question gateway thread 内でのみ使えます。",
+        { ephemeral: true }
+      );
+      return;
+    }
+
+    const watchLocation = resolveThreadParentWatchLocation(
+      interaction.channel,
+      this.config.watchLocations,
+      interaction.guildId
+    );
+    if (
+      !watchLocation ||
+      watchLocation.guildId !== interaction.guildId ||
+      !hasPlaceFeature(watchLocation, "question_gateway")
+    ) {
+      await replyToInteraction(
+        interaction,
+        "この command は configured `question_gateway` thread 内でのみ使えます。",
+        { ephemeral: true }
+      );
+      return;
+    }
+
+    const route = this.store.threadWorkflowRoutes.get(interaction.channelId);
+    if (!route) {
+      await replyToInteraction(
+        interaction,
+        "この thread の workflow route が保存されていないため、切り替えできません。",
+        { ephemeral: true }
+      );
+      return;
+    }
+
+    if (actorRole === "user") {
+      const starterActorId = await fetchThreadStarterActorId(interaction.channel);
+      if (starterActorId !== interaction.user.id) {
+        await replyToInteraction(
+          interaction,
+          "この command は thread starter または owner/admin だけが使えます。",
+          { ephemeral: true }
+        );
+        return;
+      }
+    }
+
+    const workflow = interaction.options.getString("workflow", true);
+    const reason = interaction.options.getString("reason")?.trim() || null;
+    const result = this.threadWorkflowGateway.switchWorkflow({
+      threadId: interaction.channelId,
+      rootChannelId: route.root_channel_id,
+      firstMessageId: route.first_message_id,
+      workflow,
+      actorId: interaction.user.id,
+      reason
+    });
+
+    if (!result.ok) {
+      await replyToInteraction(
+        interaction,
+        "指定された workflow は許可されていません。",
+        { ephemeral: true }
+      );
+      return;
+    }
+
+    await replyToInteraction(
+      interaction,
+      `この thread の workflow を \`${result.workflow}\` に切り替えました。`,
+      { ephemeral: true }
+    );
+  }
 }
 
 export function mergeOverrideCommandDefinitions(
@@ -350,6 +448,32 @@ export function buildOverrideCommandDefinitions(): ApplicationCommandDataResolva
       .setName("weekly-meetup-test")
       .setDescription("Send the configured weekly meetup announcement embed once as a TEST")
       .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+      .toJSON(),
+    new SlashCommandBuilder()
+      .setName("workflow-switch")
+      .setDescription("Switch the workflow for an initialized question gateway thread")
+      .addStringOption((option) =>
+        option
+          .setName("workflow")
+          .setDescription("Workflow to use for this thread")
+          .setRequired(true)
+          .addChoices(
+            {
+              name: "clear_explanation",
+              value: "clear_explanation"
+            },
+            {
+              name: "forum_research",
+              value: "forum_research"
+            }
+          )
+      )
+      .addStringOption((option) =>
+        option
+          .setName("reason")
+          .setDescription("Optional reason for the workflow switch")
+          .setRequired(false)
+      )
       .toJSON()
   ];
 }
@@ -401,6 +525,23 @@ function resolveCommandWatchLocation(
   }
 
   return null;
+}
+
+function resolveThreadParentWatchLocation(
+  thread: AnyThreadChannel,
+  watchLocations: WatchLocationConfig[],
+  guildId: string
+): WatchLocationConfig | null {
+  if (!thread.parentId) {
+    return null;
+  }
+
+  return (
+    watchLocations.find(
+      (location) =>
+        location.guildId === guildId && location.channelId === thread.parentId
+    ) ?? null
+  );
 }
 
 function isAdminControlRootPlace(
@@ -506,20 +647,36 @@ function summarizeOverrideFlags(flags: OverrideFlags): string {
 
 async function replyToInteraction(
   interaction: ChatInputCommandInteraction,
-  content: string
+  content: string,
+  options: { ephemeral?: boolean } = {}
 ): Promise<void> {
+  const payload =
+    options.ephemeral === undefined
+      ? {
+          content,
+          allowedMentions: { parse: [] }
+        }
+      : {
+          content,
+          ephemeral: options.ephemeral,
+          allowedMentions: { parse: [] }
+        };
+
   if (interaction.replied || interaction.deferred) {
-    await interaction.followUp({
-      content,
-      allowedMentions: { parse: [] }
-    });
+    await interaction.followUp(payload);
     return;
   }
 
-  await interaction.reply({
-    content,
-    allowedMentions: { parse: [] }
-  });
+  await interaction.reply(payload);
+}
+
+async function fetchThreadStarterActorId(thread: AnyThreadChannel): Promise<string | null> {
+  if (typeof thread.fetchStarterMessage !== "function") {
+    return null;
+  }
+
+  const starter = await thread.fetchStarterMessage().catch(() => null);
+  return starter?.author.id ?? null;
 }
 
 async function sendVisiblePromptCopyToThread(

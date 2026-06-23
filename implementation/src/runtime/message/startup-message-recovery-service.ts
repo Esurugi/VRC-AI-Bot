@@ -277,6 +277,7 @@ function isPlainChatRecoveryPlace(watchLocation: WatchLocationConfig): boolean {
     !isForumResearchPlace(watchLocation) &&
     !hasPlaceFeature(watchLocation, "admin_override") &&
     !hasPlaceFeature(watchLocation, "clear_explanation") &&
+    !hasPlaceFeature(watchLocation, "question_gateway") &&
     resolvePlaceChatBehavior(watchLocation) !== null
   );
 }

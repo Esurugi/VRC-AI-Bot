@@ -10,7 +10,9 @@ import type {
   ForumResearchStateRow,
   MessageProcessingRow,
   RetryJobRow,
-  ScheduledDeliveryRow
+  ScheduledDeliveryRow,
+  ThreadWorkflow,
+  ThreadWorkflowRouteRow
 } from "../types.js";
 import { isProcessAlive } from "./shared.js";
 
@@ -167,6 +169,71 @@ export class ClearExplanationGateStateRepository {
         input.rootChannelId,
         input.firstMessageId,
         input.decision,
+        input.reason
+      );
+  }
+}
+
+export class ThreadWorkflowRouteRepository {
+  constructor(private readonly db: Database.Database) {}
+
+  get(threadId: string): ThreadWorkflowRouteRow | null {
+    return (
+      (this.db
+        .prepare(`
+          SELECT
+            thread_id,
+            root_channel_id,
+            first_message_id,
+            workflow,
+            selected_by,
+            selected_by_actor_id,
+            reason,
+            created_at,
+            updated_at
+          FROM thread_workflow_route
+          WHERE thread_id = ?
+        `)
+        .get(threadId) as ThreadWorkflowRouteRow | undefined) ?? null
+    );
+  }
+
+  mark(input: {
+    threadId: string;
+    rootChannelId: string;
+    firstMessageId: string;
+    workflow: ThreadWorkflow;
+    selectedBy: ThreadWorkflowRouteRow["selected_by"];
+    selectedByActorId: string | null;
+    reason: string | null;
+  }): void {
+    this.db
+      .prepare(`
+        INSERT INTO thread_workflow_route (
+          thread_id,
+          root_channel_id,
+          first_message_id,
+          workflow,
+          selected_by,
+          selected_by_actor_id,
+          reason
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(thread_id) DO UPDATE SET
+          root_channel_id = excluded.root_channel_id,
+          first_message_id = thread_workflow_route.first_message_id,
+          workflow = excluded.workflow,
+          selected_by = excluded.selected_by,
+          selected_by_actor_id = excluded.selected_by_actor_id,
+          reason = excluded.reason,
+          updated_at = CURRENT_TIMESTAMP
+      `)
+      .run(
+        input.threadId,
+        input.rootChannelId,
+        input.firstMessageId,
+        input.workflow,
+        input.selectedBy,
+        input.selectedByActorId,
         input.reason
       );
   }
