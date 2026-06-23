@@ -105,6 +105,24 @@ function findBackupScript(): { path: string; content: string } {
   };
 }
 
+function findDataDirPreparationScript(): { path: string; content: string } {
+  const scripts = listFilesRecursively("scripts/ops")
+    .filter((absolutePath) => /prepare|data[-_]?dir|preflight|provision|init/i.test(absolutePath))
+    .filter((absolutePath) => /\.(ps1|sh|mjs|js|ts)$/i.test(absolutePath));
+
+  assert.ok(
+    scripts.length > 0,
+    "OPS.01 requires a data-dir preparation script under scripts/ops/ so production volume ownership can be checked before container start."
+  );
+
+  const scriptPath = scripts[0];
+  assert.ok(scriptPath !== undefined);
+  return {
+    path: scriptPath,
+    content: readFileSync(scriptPath, "utf8")
+  };
+}
+
 function dockerignoreExcludesAgents(content: string): boolean {
   return content
     .split(/\r?\n/)
@@ -149,10 +167,38 @@ test("OPS.01 and PER.01 production compose mount /data as the durable runtime un
     "HOME: /data/codex-home",
     "CODEX_HOME: /data/codex-home/.codex",
     "BOT_DB_PATH: /data/vrc-ai-bot/bot.sqlite",
-    "BOT_WATCH_LOCATIONS_PATH: /data/vrc-ai-bot/config/watch-locations.json",
-    "BOT_CHAT_RUNTIME_CONTROLS_PATH: /data/vrc-ai-bot/config/chat-runtime-controls.json",
-    "BOT_WEEKLY_MEETUP_ANNOUNCEMENT_PATH: /data/vrc-ai-bot/config/weekly-meetup-announcement.json"
+    "BOT_WATCH_LOCATIONS_PATH: /data/vrc-ai-bot/config/watch-locations.json"
   ]);
+});
+
+test("OPS.01 production compose does not force optional config path overrides", () => {
+  const compose = readRequiredRootFile("compose.prod.yaml");
+
+  assert.doesNotMatch(
+    compose,
+    /^\s+BOT_CHAT_RUNTIME_CONTROLS_PATH:/m,
+    "BOT_CHAT_RUNTIME_CONTROLS_PATH is optional and must not be forced by compose service environment."
+  );
+  assert.doesNotMatch(
+    compose,
+    /^\s+BOT_WEEKLY_MEETUP_ANNOUNCEMENT_PATH:/m,
+    "BOT_WEEKLY_MEETUP_ANNOUNCEMENT_PATH is optional and must not be forced by compose service environment."
+  );
+});
+
+test("OPS.01 production env example does not enable optional config paths as required defaults", () => {
+  const envExample = readRequiredRootFile("production.env.example");
+
+  assert.doesNotMatch(
+    envExample,
+    /^BOT_CHAT_RUNTIME_CONTROLS_PATH=/m,
+    "production.env.example may comment optional chat runtime controls path, but must not enable it as a required default."
+  );
+  assert.doesNotMatch(
+    envExample,
+    /^BOT_WEEKLY_MEETUP_ANNOUNCEMENT_PATH=/m,
+    "production.env.example may comment optional weekly meetup path, but must not enable it as a required default."
+  );
 });
 
 test("OPS.01 production Dockerfile builds dist and defaults to pnpm start", () => {
@@ -191,6 +237,10 @@ test("OPS.01 public-source-fetch command allowlist is executable in the producti
     /RUN\s+cat\s+>\s+\.\/\.agents\/skills\/public-source-fetch\/scripts\/fetch-public-source\.ts\s+<<['"]?EOF['"]?[\s\S]*from\s+["']\.\.\/\.\.\/\.\.\/\.\.\/dist\/src\/knowledge\/public-source-fetch\.js["'][\s\S]*fetchPublicSource\(rawUrl\)/.test(
       dockerfile.content
     );
+  const generatesSkillMetadata =
+    /RUN\s+cat\s+>\s+\.\/\.agents\/skills\/public-source-fetch\/SKILL\.md\s+<<['"]?EOF['"]?[\s\S]*name:\s*public-source-fetch[\s\S]*public URL/i.test(
+      dockerfile.content
+    );
 
   assert.ok(
     allowsRepoSkillScript || allowsBuiltArtifact,
@@ -205,6 +255,11 @@ test("OPS.01 public-source-fetch command allowlist is executable in the producti
     dockerfile.content,
     /^COPY\s+(?!.*--from=)[^\n]*\.agents\b/m,
     "production image must not copy host .agents from the Docker build context."
+  );
+  assert.equal(
+    generatesSkillMetadata,
+    true,
+    "production image must generate public-source-fetch SKILL.md metadata without copying host .agents."
   );
 
   if (allowsRepoSkillScript) {
@@ -239,6 +294,26 @@ test("OPS.01 public-source-fetch command allowlist is executable in the producti
       "built artifact mode must not require node --import tsx in the production whitelist."
     );
   }
+});
+
+test("OPS.01 data-dir preparation script creates and owns the durable production directories", () => {
+  const dataDirScript = findDataDirPreparationScript();
+
+  assertContainsAll(dataDirScript.content, [
+    "/data/vrc-ai-bot",
+    "/data/codex-home",
+    "/data/backups"
+  ]);
+  assert.match(
+    dataDirScript.content,
+    /mkdir(?:\s+-p)?[\s\S]*\/data\/vrc-ai-bot[\s\S]*\/data\/codex-home[\s\S]*\/data\/backups|New-Item[\s\S]*\/data\/vrc-ai-bot[\s\S]*\/data\/codex-home[\s\S]*\/data\/backups/i,
+    `${dataDirScript.path} must statically create all durable production directories.`
+  );
+  assert.match(
+    dataDirScript.content,
+    /chown[\s\S]*\/data\/vrc-ai-bot[\s\S]*\/data\/codex-home[\s\S]*\/data\/backups/i,
+    `${dataDirScript.path} must statically chown all durable production directories.`
+  );
 });
 
 test("PER.01 backup script records DB, config, and CODEX_HOME as one recovery unit", () => {

@@ -6,6 +6,7 @@ const args = parseArgs(process.argv.slice(2));
 const spawnLogPath = args.get("spawn-log");
 const exitAfter = args.get("exit-after");
 const exitBeforeResponse = args.get("exit-before-response");
+const noResponseOnce = args.get("no-response-once");
 const plannedFailure = buildPlannedFailure();
 const DEFERRED_FAILURE_EXIT_MS = 30;
 
@@ -38,6 +39,11 @@ readline.on("line", (line) => {
   if (shouldFailOnce("exit-before-response", exitBeforeResponse, request.method)) {
     logDeferredSpawn();
     process.exit(0);
+    return;
+  }
+
+  if (shouldFailOnce("no-response-once", noResponseOnce, request.method)) {
+    logDeferredSpawn();
     return;
   }
 
@@ -107,18 +113,24 @@ function buildPlannedFailure() {
     ? "exit-before-response"
     : exitAfter
       ? "exit-after"
-      : null;
-  const method = exitBeforeResponse ?? exitAfter;
+      : noResponseOnce
+        ? "no-response-once"
+        : null;
+  const method = exitBeforeResponse ?? exitAfter ?? noResponseOnce;
   if (!kind || !method || !spawnLogPath) {
     return null;
   }
 
   const markerPath = buildFailureMarkerPath(kind, method);
+  const reservedByThisProcess =
+    kind === "no-response-once" && reserveOneShotFailure(markerPath);
   return {
     kind,
     method,
     markerPath,
-    deferSpawnLog: !existsSync(markerPath)
+    reservedByThisProcess,
+    consumedByThisProcess: false,
+    deferSpawnLog: kind === "no-response-once" ? false : !existsSync(markerPath)
   };
 }
 
@@ -130,11 +142,31 @@ function shouldFailOnce(kind, configuredMethod, requestMethod) {
   ) {
     return false;
   }
+  if (
+    plannedFailure.kind === "no-response-once" &&
+    plannedFailure.reservedByThisProcess
+  ) {
+    if (plannedFailure.consumedByThisProcess) {
+      return false;
+    }
+    plannedFailure.consumedByThisProcess = true;
+    return true;
+  }
+
   if (existsSync(plannedFailure.markerPath)) {
     return false;
   }
 
   writeFileSync(plannedFailure.markerPath, `${process.pid}\n`, "utf8");
+  return true;
+}
+
+function reserveOneShotFailure(markerPath) {
+  if (existsSync(markerPath)) {
+    return false;
+  }
+
+  writeFileSync(markerPath, `${process.pid}\n`, "utf8");
   return true;
 }
 

@@ -13,8 +13,6 @@ services:
       NODE_ENV: production
       BOT_DB_PATH: /data/vrc-ai-bot/bot.sqlite
       BOT_WATCH_LOCATIONS_PATH: /data/vrc-ai-bot/config/watch-locations.json
-      BOT_CHAT_RUNTIME_CONTROLS_PATH: /data/vrc-ai-bot/config/chat-runtime-controls.json
-      BOT_WEEKLY_MEETUP_ANNOUNCEMENT_PATH: /data/vrc-ai-bot/config/weekly-meetup-announcement.json
       BOT_MAX_CONCURRENT_KEYS: "1"
       BOT_RETRY_POLL_INTERVAL_MS: "15000"
       BOT_CODEX_IDLE_CLOSE_MS: "1800000"

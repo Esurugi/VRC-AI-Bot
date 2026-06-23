@@ -7,6 +7,9 @@ import test from "node:test";
 
 import { CodexAppServerClient } from "../../src/codex/app-server-client.js";
 
+const TEST_INITIALIZE_TIMEOUT_MS = 1_000;
+const TEST_PROMISE_SETTLE_TIMEOUT_MS = 5_000;
+
 test("COD.01 public thread requests lazy-start the app-server before RPC", async () => {
   const harness = createFakeCodexHarness();
   try {
@@ -130,6 +133,60 @@ test("COD.01 spawn failure rejects lazy start without crashing the caller proces
   assert.match(result.stdout, /lazy-start-rejected/);
 });
 
+test("COD.01 initialize without a response rejects the first lazy start within the configured initialize timeout", async () => {
+  const harness = createFakeCodexHarness({
+    initializeTimeoutMs: TEST_INITIALIZE_TIMEOUT_MS,
+    noResponseOnce: "initialize"
+  });
+  const firstStart = harness.client.startThread("read-only");
+  try {
+    await assert.rejects(
+      () => rejectOrTimeout(firstStart, TEST_PROMISE_SETTLE_TIMEOUT_MS),
+      /initialize.*timed out|timed out.*initialize/i
+    );
+  } finally {
+    firstStart.catch(() => undefined);
+    await harness.close();
+  }
+});
+
+test("COD.01 initialize timeout clears startingPromise so the next lazy start respawns and succeeds", async () => {
+  const harness = createFakeCodexHarness({
+    initializeTimeoutMs: TEST_INITIALIZE_TIMEOUT_MS,
+    noResponseOnce: "initialize"
+  });
+  const firstStart = harness.client.startThread("read-only");
+  try {
+    await assert.rejects(
+      () => rejectOrTimeout(firstStart, TEST_PROMISE_SETTLE_TIMEOUT_MS),
+      /initialize.*timed out|timed out.*initialize/i
+    );
+
+    const threadId = await harness.client.startThread("read-only");
+
+    assert.match(threadId, /^fake-thread-/);
+    assert.equal(harness.countLogLines("spawn"), 2);
+  } finally {
+    firstStart.catch(() => undefined);
+    await harness.close();
+  }
+});
+
+test("COD.01 child close during initialize rejects the pending lazy start", async () => {
+  const harness = createFakeCodexHarness({
+    exitBeforeResponse: "initialize"
+  });
+  try {
+    await assert.rejects(
+      () => rejectOrTimeout(harness.client.startThread("read-only"), 750),
+      /codex app-server exited unexpectedly/
+    );
+    assert.equal(harness.countLogLines("spawn"), 1);
+  } finally {
+    await harness.close();
+  }
+});
+
 test("COD.01 idle close stops the app-server and the next request restarts it", async () => {
   const harness = createFakeCodexHarness({
     idleCloseMs: 50
@@ -151,6 +208,8 @@ type HarnessOptions = {
   exitAfter?: string;
   exitBeforeResponse?: string;
   idleCloseMs?: number;
+  initializeTimeoutMs?: number;
+  noResponseOnce?: string;
 };
 
 function createFakeCodexHarness(options: HarnessOptions = {}): {
@@ -180,6 +239,9 @@ function createFakeCodexHarness(options: HarnessOptions = {}): {
       JSON.stringify(options.exitBeforeResponse)
     );
   }
+  if (options.noResponseOnce) {
+    commandParts.push("--no-response-once", JSON.stringify(options.noResponseOnce));
+  }
 
   const client = newCodexClientWithOptions(
     commandParts.join(" "),
@@ -189,7 +251,10 @@ function createFakeCodexHarness(options: HarnessOptions = {}): {
     {
       ...(options.idleCloseMs === undefined
         ? {}
-        : { idleCloseMs: options.idleCloseMs })
+        : { idleCloseMs: options.idleCloseMs }),
+      ...(options.initializeTimeoutMs === undefined
+        ? {}
+        : { initializeTimeoutMs: options.initializeTimeoutMs })
     }
   );
 
@@ -236,6 +301,18 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 
 async function sleep(ms: number): Promise<void> {
   await new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
+}
+
+async function rejectOrTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number
+): Promise<T> {
+  return await Promise.race([
+    promise,
+    sleep(timeoutMs).then(() => {
+      throw new Error(`timed out waiting ${timeoutMs}ms for promise to settle`);
+    })
+  ]);
 }
 
 function blockEventLoop(ms: number): void {

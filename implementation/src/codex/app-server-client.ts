@@ -146,6 +146,7 @@ type TurnStreamState = StreamingTextTurnCallbacks & {
 };
 
 const BEST_EFFORT_CONTROL_REQUEST_TIMEOUT_MS = 5_000;
+const DEFAULT_INITIALIZE_TIMEOUT_MS = 60_000;
 const NAMESPACE_SANDBOX_PROBE_TIMEOUT_MS = 5_000;
 const ROOT_AGENTS_SYSTEM_PROMPT_HEADING = "## System Prompt Injection";
 const BWRAP_NAMESPACE_FAILURE_PATTERN =
@@ -174,6 +175,7 @@ type NamespaceSandboxProbeResult = {
 
 type CodexAppServerClientOptions = {
   idleCloseMs?: number;
+  initializeTimeoutMs?: number;
 };
 
 export const HARNESS_DEVELOPER_INSTRUCTIONS = buildHarnessDeveloperInstructions();
@@ -398,6 +400,7 @@ export class CodexAppServerClient {
   private sessionInvalidationGeneration = 0;
   private namespaceSandboxUnsupported = false;
   private readonly idleCloseMs: number | null;
+  private readonly initializeTimeoutMs: number;
 
   constructor(
     private readonly command: string,
@@ -407,6 +410,8 @@ export class CodexAppServerClient {
     options: CodexAppServerClientOptions = {}
   ) {
     this.idleCloseMs = options.idleCloseMs ?? null;
+    this.initializeTimeoutMs =
+      options.initializeTimeoutMs ?? DEFAULT_INITIALIZE_TIMEOUT_MS;
     this.threadConfigOverride = readMcpDisabledConfigOverride(
       this.codexHomePath
         ? getDefaultCodexConfigPath(this.codexHomePath)
@@ -516,15 +521,26 @@ export class CodexAppServerClient {
       });
     });
 
-    await this.requestRaw("initialize", {
-      clientInfo: {
-        name: "vrc-ai-bot",
-        version: "0.1.0"
-      },
-      capabilities: {
-        experimentalApi: true
-      }
-    });
+    try {
+      await this.requestRawWithTimeout(
+        "initialize",
+        {
+          clientInfo: {
+            name: "vrc-ai-bot",
+            version: "0.1.0"
+          },
+          capabilities: {
+            experimentalApi: true
+          }
+        },
+        this.initializeTimeoutMs
+      );
+    } catch (error) {
+      const initializeError =
+        error instanceof Error ? error : new Error(String(error));
+      this.handleInitializeFailure(child, initializeError);
+      throw initializeError;
+    }
     this.notify("initialized");
     this.started = true;
     appendRuntimeTrace("codex-app-server", "process_started", {
@@ -1742,6 +1758,27 @@ export class CodexAppServerClient {
     this.rejectAll(error);
   }
 
+  private handleInitializeFailure(
+    child: ChildProcessWithoutNullStreams,
+    error: Error
+  ): void {
+    if (this.process === child) {
+      appendRuntimeTrace("codex-app-server", "initialize_failed", {
+        error: error.message,
+        timeoutMs: this.initializeTimeoutMs
+      });
+      this.started = false;
+      this.process = null;
+      this.stdoutBuffer = "";
+      this.cancelIdleClose();
+      this.rejectAll(error);
+    }
+
+    if (!child.killed) {
+      child.kill();
+    }
+  }
+
   private rejectAll(error: Error): void {
     for (const [id, pending] of this.pending) {
       this.pending.delete(id);
@@ -2940,6 +2977,7 @@ function trackPromise<T>(promise: Promise<T>): {
 
 export const __testOnly = {
   BEST_EFFORT_CONTROL_REQUEST_TIMEOUT_MS,
+  DEFAULT_INITIALIZE_TIMEOUT_MS,
   NAMESPACE_SANDBOX_PROBE_TIMEOUT_MS,
   buildThreadStartParams,
   buildTurnStartParams,

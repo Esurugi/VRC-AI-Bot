@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
 import { z } from "zod";
@@ -135,9 +135,6 @@ const chatRuntimeControlsSchema = z.object({
   enabled: z.boolean(),
   enabledChannelIds: z.array(z.string().min(1))
 });
-
-const DEFAULT_WEEKLY_MEETUP_ANNOUNCEMENT_PATH =
-  "./config/weekly-meetup-announcement.json";
 
 type OracleRuntimeConfig = {
   maxConcurrentKeys: number;
@@ -340,14 +337,11 @@ function readWeeklyMeetupAnnouncement(
   cwd: string,
   configPath: string | undefined
 ): WeeklyMeetupAnnouncementConfig | null {
-  const resolvedPath = resolve(
-    cwd,
-    configPath ?? DEFAULT_WEEKLY_MEETUP_ANNOUNCEMENT_PATH
-  );
-  if (!configPath && !existsSync(resolvedPath)) {
+  if (!configPath) {
     return null;
   }
 
+  const resolvedPath = resolve(cwd, configPath);
   const parsed = weeklyMeetupAnnouncementSchema.parse(
     JSON.parse(readFileSync(resolvedPath, "utf8"))
   );

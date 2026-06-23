@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  appendFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -164,6 +165,114 @@ test("runtime trace retention days removes trace entries older than the configur
   }
 });
 
+test("runtime trace retention prunes on the first append for a trace path", () => {
+  const workspace = createWorkspace();
+  const traceDir = join(workspace, "traces");
+  try {
+    withTraceEnv(
+      {
+        BOT_RUNTIME_TRACE_DIR: traceDir,
+        BOT_RUNTIME_TRACE_RETENTION_DAYS: "7"
+      },
+      () => {
+        mkdirSync(traceDir, { recursive: true });
+        const path = getRuntimeTracePath("codex-app-server", workspace);
+        writeTraceLines(path, [
+          {
+            timestamp: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString(),
+            event: "too_old",
+            payload: { marker: "drop-on-first-append" }
+          }
+        ]);
+
+        appendRuntimeTrace("codex-app-server", "first_retention_append", {}, workspace);
+
+        const contents = readFileSync(path, "utf8");
+        assert.doesNotMatch(contents, /drop-on-first-append/);
+        assert.match(contents, /first_retention_append/);
+        assertTraceFileIsParseableNdjson(contents);
+      }
+    );
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("runtime trace retention does not full-scan again inside the prune interval", () => {
+  const workspace = createWorkspace();
+  const traceDir = join(workspace, "traces");
+  try {
+    withTraceEnv(
+      {
+        BOT_RUNTIME_TRACE_DIR: traceDir,
+        BOT_RUNTIME_TRACE_RETENTION_DAYS: "7"
+      },
+      () => {
+        mkdirSync(traceDir, { recursive: true });
+        const path = getRuntimeTracePath("codex-app-server", workspace);
+        writeTraceLines(path, [
+          {
+            timestamp: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString(),
+            event: "too_old",
+            payload: { marker: "drop-on-first-append" }
+          }
+        ]);
+
+        appendRuntimeTrace("codex-app-server", "first_retention_append", {}, workspace);
+        appendFileWithOldTraceLine(path, "temporarily-kept-inside-prune-interval");
+        appendRuntimeTrace("codex-app-server", "second_retention_append", {}, workspace);
+
+        const contents = readFileSync(path, "utf8");
+        assert.match(
+          contents,
+          /temporarily-kept-inside-prune-interval/,
+          "retention pruning should be interval-gated instead of full-scanning on every append"
+        );
+        assert.match(contents, /second_retention_append/);
+        assertTraceFileIsParseableNdjson(contents);
+      }
+    );
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("runtime trace max-byte trim still bounds files while retention pruning is interval-gated", () => {
+  const workspace = createWorkspace();
+  const traceDir = join(workspace, "traces");
+  try {
+    withTraceEnv(
+      {
+        BOT_RUNTIME_TRACE_DIR: traceDir,
+        BOT_RUNTIME_TRACE_RETENTION_DAYS: "7",
+        BOT_RUNTIME_TRACE_MAX_BYTES: "360"
+      },
+      () => {
+        mkdirSync(traceDir, { recursive: true });
+        const path = getRuntimeTracePath("codex-app-server", workspace);
+
+        appendRuntimeTrace("codex-app-server", "first_retention_append", {}, workspace);
+        appendFileWithOldTraceLine(path, "old-line-may-wait-for-retention");
+        for (let index = 0; index < 6; index += 1) {
+          appendRuntimeTrace(
+            "codex-app-server",
+            "trim_after_retention_skip",
+            { index, text: "x".repeat(80) },
+            workspace
+          );
+        }
+
+        const contents = readFileSync(path, "utf8");
+        assert.ok(statSync(path).size <= 360);
+        assert.match(contents, /trim_after_retention_skip/);
+        assertTraceFileIsParseableNdjson(contents);
+      }
+    );
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
 function createWorkspace(): string {
   const workspace = join(
     tmpdir(),
@@ -190,6 +299,26 @@ function withTraceEnv(
   } finally {
     process.env = previous;
   }
+}
+
+function writeTraceLines(path: string, entries: unknown[]): void {
+  writeFileSync(
+    path,
+    entries.map((entry) => JSON.stringify(entry)).join("\n") + "\n",
+    "utf8"
+  );
+}
+
+function appendFileWithOldTraceLine(path: string, marker: string): void {
+  appendFileSync(
+    path,
+    `${JSON.stringify({
+      timestamp: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString(),
+      event: "too_old",
+      payload: { marker }
+    })}\n`,
+    "utf8"
+  );
 }
 
 function assertTraceFileIsParseableNdjson(contents: string): void {

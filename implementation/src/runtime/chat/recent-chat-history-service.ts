@@ -65,7 +65,7 @@ export class RecentChatHistoryService {
       };
     }
 
-    const observed = this.readObservedEvents(input.message.channelId);
+    const observed = this.readObservedEventsUpToMessage(input.message);
     if (observed.length >= HISTORY_CONTEXT_LIMIT) {
       return {
         recentRoomEvents: observed.map((entry) => entry.fact)
@@ -83,10 +83,12 @@ export class RecentChatHistoryService {
         history,
         input.message.client.user?.id ?? null
       );
+      const observedFacts = observed.map((entry) => entry.fact);
       return {
         recentRoomEvents: mergeRecentRoomEvents(
           fetchedEvents,
-          observed.map((entry) => entry.fact)
+          observedFacts,
+          input.message
         )
       };
     } catch (error) {
@@ -107,6 +109,14 @@ export class RecentChatHistoryService {
   private readObservedEvents(channelId: string): ObservedRoomEvent[] {
     return [...(this.observedByChannel.get(channelId) ?? [])].sort(
       compareObservedRoomEvents
+    );
+  }
+
+  private readObservedEventsUpToMessage(
+    message: Message<true>
+  ): ObservedRoomEvent[] {
+    return this.readObservedEvents(message.channelId).filter(
+      (event) => compareObservedRoomEventToMessage(event, message) <= 0
     );
   }
 }
@@ -190,10 +200,14 @@ function buildRecentRoomEventFact(
 
 function mergeRecentRoomEvents(
   fetchedEvents: RecentRoomEventFact[],
-  observedEvents: RecentRoomEventFact[]
+  observedEvents: RecentRoomEventFact[],
+  currentMessage: Message<true>
 ): RecentRoomEventFact[] {
   const byId = new Map<string, RecentRoomEventFact>();
   for (const event of [...fetchedEvents, ...observedEvents]) {
+    if (compareMessageIdToMessage(event.message_id, currentMessage) > 0) {
+      continue;
+    }
     byId.set(event.message_id, event);
   }
   return [...byId.values()].slice(-HISTORY_CONTEXT_LIMIT);
@@ -203,10 +217,44 @@ function compareObservedRoomEvents(
   left: ObservedRoomEvent,
   right: ObservedRoomEvent
 ): number {
+  const snowflakeOrder = compareSnowflakeIds(left.messageId, right.messageId);
+  if (snowflakeOrder !== null && snowflakeOrder !== 0) {
+    return snowflakeOrder;
+  }
+
   return (
     left.createdAtMs - right.createdAtMs ||
     left.messageId.localeCompare(right.messageId)
   );
+}
+
+function compareObservedRoomEventToMessage(
+  event: ObservedRoomEvent,
+  message: Message<true>
+): number {
+  const snowflakeOrder = compareSnowflakeIds(event.messageId, message.id);
+  if (snowflakeOrder !== null && snowflakeOrder !== 0) {
+    return snowflakeOrder;
+  }
+
+  return event.createdAtMs - message.createdAt.getTime();
+}
+
+function compareMessageIdToMessage(
+  messageId: string,
+  message: Message<true>
+): number {
+  return compareSnowflakeIds(messageId, message.id) ?? 0;
+}
+
+function compareSnowflakeIds(left: string, right: string): number | null {
+  if (!/^\d+$/.test(left) || !/^\d+$/.test(right)) {
+    return null;
+  }
+
+  const leftValue = BigInt(left);
+  const rightValue = BigInt(right);
+  return leftValue < rightValue ? -1 : leftValue > rightValue ? 1 : 0;
 }
 
 function normalizeHistoryContent(raw: string): string | null {

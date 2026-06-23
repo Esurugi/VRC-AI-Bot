@@ -10,6 +10,9 @@ import { dirname, resolve } from "node:path";
 
 export type RuntimeTraceStream = "codex-app-server" | "knowledge-persistence";
 
+const RETENTION_PRUNE_INTERVAL_MS = 60 * 60 * 1000;
+const nextRetentionPruneByPath = new Map<string, number>();
+
 export function getRuntimeTracePath(
   stream: RuntimeTraceStream,
   projectRoot = process.cwd()
@@ -35,22 +38,20 @@ export function appendRuntimeTrace(
   const path = getRuntimeTracePath(stream, projectRoot);
   mkdirSync(dirname(path), { recursive: true });
   const maxBytes = readRuntimeTraceMaxBytes();
-  pruneRuntimeTraceByRetention(path, readRuntimeTraceRetentionMs(), Date.now());
-  trimRuntimeTrace(path, maxBytes);
+  pruneRuntimeTraceByRetentionIfDue(
+    path,
+    readRuntimeTraceRetentionMs(),
+    Date.now()
+  );
   const entry = {
     timestamp: new Date().toISOString(),
     event,
     payload: normalizeTraceValue(payload)
   };
   const line = `${JSON.stringify(entry)}\n`;
-  if (maxBytes !== null && Buffer.byteLength(line, "utf8") > maxBytes) {
-    trimRuntimeTrace(path, maxBytes);
-    return;
-  }
 
   appendFileSync(path, line, "utf8");
-  pruneRuntimeTraceByRetention(path, readRuntimeTraceRetentionMs(), Date.now());
-  trimRuntimeTrace(path, maxBytes);
+  trimRuntimeTraceIfOversize(path, maxBytes);
 }
 
 function isRuntimeTraceDisabled(): boolean {
@@ -107,6 +108,25 @@ function pruneRuntimeTraceByRetention(
   }
 }
 
+function pruneRuntimeTraceByRetentionIfDue(
+  path: string,
+  retentionMs: number | null,
+  nowMs: number
+): void {
+  if (!retentionMs) {
+    nextRetentionPruneByPath.delete(path);
+    return;
+  }
+
+  const nextPruneAt = nextRetentionPruneByPath.get(path) ?? 0;
+  if (nowMs < nextPruneAt) {
+    return;
+  }
+
+  nextRetentionPruneByPath.set(path, nowMs + RETENTION_PRUNE_INTERVAL_MS);
+  pruneRuntimeTraceByRetention(path, retentionMs, nowMs);
+}
+
 function readTraceLineTimestampMs(line: string): number | null {
   try {
     const parsed = JSON.parse(line) as unknown;
@@ -152,6 +172,14 @@ function trimRuntimeTrace(path: string, maxBytes: number | null): void {
   }
 
   writeFileSync(path, kept.join(""), "utf8");
+}
+
+function trimRuntimeTraceIfOversize(path: string, maxBytes: number | null): void {
+  if (!maxBytes || !existsSync(path) || statSync(path).size <= maxBytes) {
+    return;
+  }
+
+  trimRuntimeTrace(path, maxBytes);
 }
 
 function normalizeTraceValue(value: unknown): unknown {

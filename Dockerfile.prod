@@ -68,6 +68,25 @@ const result = await fetchPublicSource(rawUrl);
 process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 EOF
 
+RUN cat > ./.agents/skills/public-source-fetch/SKILL.md <<'EOF'
+---
+name: public-source-fetch
+description: Establish same-turn public reconfirmation for an approved public HTTP(S) URL by running the packaged fetch script and returning structured source evidence.
+---
+
+# public-source-fetch
+
+Use this repo-local skill when a turn needs same-turn public reconfirmation for a public HTTP(S) URL that is inside the System-approved public URL boundary.
+
+Run this command from the repository root:
+
+```bash
+node --import tsx .agents/skills/public-source-fetch/scripts/fetch-public-source.ts --url "$URL"
+```
+
+Treat only structured JSON output with `public: true`, a successful `status`, and non-empty `title` or `text` as observed public source evidence. Do not pass private, local, file, data, javascript, or blocked URLs to the command.
+EOF
+
 RUN mkdir -p /data/vrc-ai-bot /data/codex-home/.codex /data/backups \
   && chown -R node:node /app /data/vrc-ai-bot /data/codex-home /data/backups
 
