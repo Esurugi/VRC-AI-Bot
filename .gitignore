@@ -25,11 +25,9 @@ config/weekly-meetup-announcement.json
 
 # Private agent assets and prompt materials
 .agents/*
-implementation/src/runtime/forum/forum-research-prompt-refiner-contract.md
+implementation/references/
 
 # Internal working docs
-docs/*
-!docs/
-!docs/discord-llm-bot-requirements.md
+docs/
 specs/
 implementation/docs/

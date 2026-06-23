@@ -14,7 +14,7 @@ import type { ThreadContextKind } from "../../harness/contracts.js";
 
 const PROMPT_REFINER_REFERENCE_PATH = fileURLToPath(
   new URL(
-    "./forum-research-prompt-refiner-contract.md",
+    "../../../references/forum-research-prompt-refiner-contract.md",
     import.meta.url
   )
 );

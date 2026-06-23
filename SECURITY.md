@@ -11,10 +11,10 @@ local operational data, or internal prompt and working materials.
   `config/chat-runtime-controls.json`, and
   `config/weekly-meetup-announcement.json`
 - Private agent assets under `.agents/`
-- Internal prompt material in
-  `implementation/src/runtime/forum/forum-research-prompt-refiner-contract.md`
-- Internal working documents under `docs/`, except
-  `docs/discord-llm-bot-requirements.md`
+- Internal implementation context under `docs/`, `specs/`,
+  `implementation/docs/`, and `implementation/references/`
+- Local Skills, prompt references, and agent-only context that are used to steer
+  development or runtime behavior but are not required as public source
 - Temporary and trace artifacts under `.tmp/`
 
 ## Public Templates
