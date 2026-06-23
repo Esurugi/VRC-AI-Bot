@@ -40,6 +40,7 @@ import {
 import {
   ThreadWorkflowGateway
 } from "../thread/thread-workflow-gateway.js";
+import { WorkflowSwitchRerunService } from "../thread/workflow-switch-rerun-service.js";
 import { SqliteStore, type RetryJobRow } from "../../storage/database.js";
 import type { ThreadWorkflow } from "../../storage/types.js";
 import {
@@ -91,7 +92,8 @@ export class MessageProcessingService {
     private readonly moderationExecutor: ModerationExecutor,
     private readonly replyDispatchService: ReplyDispatchService,
     private readonly logger: Logger,
-    private readonly threadWorkflowGateway?: ThreadWorkflowGateway
+    private readonly threadWorkflowGateway?: ThreadWorkflowGateway,
+    private readonly workflowSwitchRerunService?: WorkflowSwitchRerunService
   ) {}
 
   async process(item: QueuedMessage): Promise<void> {
@@ -128,6 +130,10 @@ export class MessageProcessingService {
       return;
     }
 
+    if (item.source === "workflow_switch_rerun") {
+      this.workflowSwitchRerunService?.clearRerunRequest(item.envelope.messageId);
+    }
+
     const admission = await this.resolveProcessingAdmission(item);
     if (admission.decision === "ignore") {
       this.markMessageCompleted(item);
@@ -153,6 +159,8 @@ export class MessageProcessingService {
       return;
     }
 
+    const releaseWorkflowSwitchActive =
+      this.workflowSwitchRerunService?.trackActive(routedItem) ?? (() => undefined);
     const typingIndicator = shouldShowTypingIndicator({
       watchLocation: routedItem.watchLocation,
       chatEngagement: routedItem.chatEngagement
@@ -177,6 +185,9 @@ export class MessageProcessingService {
         const redirected = await this.redirectClearExplanationIfNeeded(routedItem, {
           runRouteGate: !isQuestionGatewayPlace(admittedItem.watchLocation)
         });
+        if (this.shouldStopForWorkflowSwitchRerun(routedItem)) {
+          return;
+        }
         if (redirected) {
           this.markMessageCompleted(routedItem);
           return;
@@ -189,14 +200,20 @@ export class MessageProcessingService {
             watchLocation: routedItem.watchLocation,
             actorRole: routedItem.actorRole,
             scope: routedItem.scope
-          });
+        });
         routed = await this.resolveHarnessMessage(
           routedItem,
           forumBootstrap,
           typingIndicator,
           admission
         );
+        if (this.shouldStopForWorkflowSwitchRerun(routedItem)) {
+          return;
+        }
       } catch (error) {
+        if (this.shouldStopForWorkflowSwitchRerun(routedItem)) {
+          return;
+        }
         await this.handleRuntimeFailure(routedItem, {
           stage: "fetch_or_resolve",
           error,
@@ -207,7 +224,13 @@ export class MessageProcessingService {
 
       try {
         replyTarget = await this.replyDispatchService.dispatchResolvedMessage(routedItem, routed);
+        if (this.shouldStopForWorkflowSwitchRerun(routedItem)) {
+          return;
+        }
       } catch (error) {
+        if (this.shouldStopForWorkflowSwitchRerun(routedItem)) {
+          return;
+        }
         await this.handleRuntimeFailure(routedItem, extractStageFailure(error, routedItem, "dispatch"));
         return;
       }
@@ -215,6 +238,9 @@ export class MessageProcessingService {
       try {
         await this.runPostResponseModeration(routedItem, routed);
       } catch (error) {
+        if (this.shouldStopForWorkflowSwitchRerun(routedItem)) {
+          return;
+        }
         await this.handleRuntimeFailure(routedItem, {
           stage: "post_response",
           error,
@@ -225,6 +251,9 @@ export class MessageProcessingService {
 
       this.markMessageCompleted(routedItem);
     } catch (error) {
+      if (this.shouldStopForWorkflowSwitchRerun(routedItem)) {
+        return;
+      }
       this.logger.error({ error, messageId: routedItem.envelope.messageId }, "queue item failed");
       await this.handleRuntimeFailure(routedItem, {
         stage: "fetch_or_resolve",
@@ -233,6 +262,7 @@ export class MessageProcessingService {
       });
     } finally {
       typingIndicator.stop();
+      releaseWorkflowSwitchActive();
     }
   }
 
@@ -315,6 +345,13 @@ export class MessageProcessingService {
     }
 
     return this.deriveChatEngagement(item);
+  }
+
+  private shouldStopForWorkflowSwitchRerun(item: QueuedMessage): boolean {
+    return Boolean(
+      item.source !== "workflow_switch_rerun" &&
+        this.workflowSwitchRerunService?.isRerunRequested(item.envelope.messageId)
+    );
   }
 
   private async resolveThreadWorkflowRouteIfNeeded(

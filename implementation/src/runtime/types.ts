@@ -14,7 +14,7 @@ import type { AppConfig } from "../domain/types.js";
 export type QueuedMessage = {
   messageId: string;
   orderingKey: string;
-  source: "live" | "retry";
+  source: "live" | "retry" | "workflow_switch_rerun";
   message: Message<true>;
   envelope: MessageEnvelope;
   watchLocation: WatchLocationConfig;

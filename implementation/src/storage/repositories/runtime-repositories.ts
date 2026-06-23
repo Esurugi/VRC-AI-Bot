@@ -255,6 +255,7 @@ export class MessageProcessingRepository {
       | "already_completed"
       | "already_terminal_failure_notified"
       | "in_flight"
+      | "rerun_requested"
       | "pending_retry";
   } {
     const now = new Date();
@@ -302,6 +303,7 @@ export class MessageProcessingRepository {
         | "already_completed"
         | "already_terminal_failure_notified"
         | "in_flight"
+        | "rerun_requested"
         | "pending_retry";
     } => {
       const existing = find.get(messageId) as MessageProcessingRow | undefined;
@@ -327,6 +329,11 @@ export class MessageProcessingRepository {
         return { status: "acquired" } as const;
       }
 
+      if (existing.state === "rerun_requested") {
+        updateLease.run(channelId, leaseExpiresAt, nowIso, messageId);
+        return { status: "acquired" } as const;
+      }
+
       if (!existing.lease_expires_at || existing.lease_expires_at > nowIso) {
         return { status: "in_flight" } as const;
       }
@@ -336,6 +343,22 @@ export class MessageProcessingRepository {
     });
 
     return transaction();
+  }
+
+  markRerunRequested(messageId: string): boolean {
+    const result = this.db
+      .prepare(`
+        UPDATE message_processing
+        SET
+          state = 'rerun_requested',
+          lease_expires_at = NULL,
+          updated_at = CURRENT_TIMESTAMP,
+          completed_at = NULL
+        WHERE message_id = ?
+          AND state = 'processing'
+      `)
+      .run(messageId);
+    return result.changes > 0;
   }
 
   markPendingRetry(messageId: string): void {

@@ -13,7 +13,8 @@ local operational data, or internal prompt and working materials.
 - Private agent assets under `.agents/`
 - Internal prompt material in
   `implementation/src/runtime/forum/forum-research-prompt-refiner-contract.md`
-- Internal working documents under `docs/` and `implementation/docs/`
+- Internal working documents under `docs/`, except
+  `docs/discord-llm-bot-requirements.md`
 - Temporary and trace artifacts under `.tmp/`
 
 ## Public Templates

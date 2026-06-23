@@ -18,7 +18,10 @@ import type { Logger } from "pino";
 
 import { splitPlainTextReplies } from "../message/replies.js";
 import { SessionManager } from "../../codex/session-manager.js";
-import { SessionPolicyResolver } from "../../codex/session-policy.js";
+import {
+  SessionPolicyResolver,
+  type QuestionGatewayWorkflow
+} from "../../codex/session-policy.js";
 import { resolvePlaceType } from "../../discord/message-utils.js";
 import { hasPlaceFeature } from "../../domain/place-features.js";
 import type { AppConfig, WatchLocationConfig } from "../../domain/types.js";
@@ -26,6 +29,7 @@ import { DEFAULT_OVERRIDE_FLAGS, type OverrideFlags } from "../../override/types
 import { SqliteStore } from "../../storage/database.js";
 import { WeeklyMeetupAnnouncementService } from "../scheduling/weekly-meetup-announcement-service.js";
 import { ThreadWorkflowGateway } from "../thread/thread-workflow-gateway.js";
+import { WorkflowSwitchRerunService } from "../thread/workflow-switch-rerun-service.js";
 import { AdminOverrideBootstrapService } from "./admin-override-bootstrap-service.js";
 import { OverrideBootstrapPromptContextService } from "./override-bootstrap-prompt-context-service.js";
 
@@ -40,7 +44,8 @@ export class AdminCommandService {
     private readonly overrideBootstrapPromptContextService: OverrideBootstrapPromptContextService,
     private readonly weeklyMeetupAnnouncementService: WeeklyMeetupAnnouncementService,
     private readonly logger: Logger,
-    private readonly threadWorkflowGateway: ThreadWorkflowGateway | null = null
+    private readonly threadWorkflowGateway: ThreadWorkflowGateway | null = null,
+    private readonly workflowSwitchRerunService: WorkflowSwitchRerunService | null = null
   ) {}
 
   async registerCommands(): Promise<void> {
@@ -363,11 +368,60 @@ export class AdminCommandService {
       return;
     }
 
+    const rerun = this.workflowSwitchRerunService?.requestRerun(interaction.channelId) ?? {
+      requested: false,
+      enqueued: false,
+      messageId: null
+    };
+    const interruptedActiveTurn = await this.interruptQuestionGatewayWorkflowSessions({
+      threadId: interaction.channelId,
+      previousWorkflow: route.workflow,
+      nextWorkflow: result.workflow
+    });
+
     await replyToInteraction(
       interaction,
-      `この thread の workflow を \`${result.workflow}\` に切り替えました。`,
+      rerun.enqueued
+        ? `この thread の workflow を \`${result.workflow}\` に切り替え、処理中の応答を中断して再実行します。`
+        : interruptedActiveTurn
+          ? `この thread の workflow を \`${result.workflow}\` に切り替え、処理中の応答を中断しました。`
+          : `この thread の workflow を \`${result.workflow}\` に切り替えました。`,
       { ephemeral: true }
     );
+  }
+
+  private async interruptQuestionGatewayWorkflowSessions(input: {
+    threadId: string;
+    previousWorkflow: QuestionGatewayWorkflow;
+    nextWorkflow: QuestionGatewayWorkflow;
+  }): Promise<boolean> {
+    let interrupted = false;
+    const workflows = new Set<QuestionGatewayWorkflow>([
+      input.previousWorkflow,
+      input.nextWorkflow
+    ]);
+
+    for (const workflow of workflows) {
+      const identity = this.sessionPolicyResolver.resolveQuestionGatewayWorkflowThread({
+        threadId: input.threadId,
+        workflow
+      });
+      try {
+        const result = await this.sessionManager.interruptActiveSession(identity);
+        interrupted ||= result.interrupted;
+      } catch (error) {
+        this.logger.warn(
+          {
+            error: error instanceof Error ? error.message : String(error),
+            threadId: input.threadId,
+            workflow
+          },
+          "failed to interrupt active workflow turn after workflow switch"
+        );
+      }
+    }
+
+    return interrupted;
   }
 }
 

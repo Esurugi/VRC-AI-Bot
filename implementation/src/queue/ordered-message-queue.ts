@@ -4,7 +4,7 @@ export class OrderedMessageQueue<
     orderingKey: string;
   }
 > {
-  private readonly seen = new Set<string>();
+  private readonly seen = new Map<string, number>();
   private readonly lanes = new Map<string, T[]>();
   private readonly activeKeys = new Set<string>();
   private drainScheduled = false;
@@ -14,12 +14,17 @@ export class OrderedMessageQueue<
     private readonly maxConcurrentKeys = 4
   ) {}
 
-  enqueue(item: T): boolean {
-    if (this.seen.has(item.messageId)) {
+  enqueue(
+    item: T,
+    options: {
+      allowDuplicateMessageId?: boolean;
+    } = {}
+  ): boolean {
+    if ((this.seen.get(item.messageId) ?? 0) > 0 && !options.allowDuplicateMessageId) {
       return false;
     }
 
-    this.seen.add(item.messageId);
+    this.seen.set(item.messageId, (this.seen.get(item.messageId) ?? 0) + 1);
     const lane = this.lanes.get(item.orderingKey) ?? [];
     lane.push(item);
     lane.sort((left, right) =>
@@ -98,7 +103,7 @@ export class OrderedMessageQueue<
         } catch {
           // The worker is responsible for logging and failure handling.
         } finally {
-          this.seen.delete(item.messageId);
+          this.releaseSeen(item.messageId);
         }
       }
     } finally {
@@ -110,6 +115,16 @@ export class OrderedMessageQueue<
         this.scheduleDrain();
       }
     }
+  }
+
+  private releaseSeen(messageId: string): void {
+    const count = this.seen.get(messageId) ?? 0;
+    if (count <= 1) {
+      this.seen.delete(messageId);
+      return;
+    }
+
+    this.seen.set(messageId, count - 1);
   }
 }
 

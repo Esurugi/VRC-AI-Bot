@@ -24,8 +24,8 @@ import { FeatureThreadService } from "../../src/runtime/thread/feature-thread-se
 import { ChatEngagementPolicy } from "../../src/runtime/chat/chat-engagement-policy.js";
 import { RecentChatHistoryService } from "../../src/runtime/chat/recent-chat-history-service.js";
 import {
+  buildClearExplanationQuestionGatewayRedirectNotice,
   CLEAR_EXPLANATION_DECLINE_NOTICE,
-  CLEAR_EXPLANATION_FORUM_REDIRECT_NOTICE,
   ClearExplanationRoutingGate
 } from "../../src/runtime/clear-explanation/clear-explanation-routing-gate.js";
 import { MessageProcessingService } from "../../src/runtime/message/message-processing-service.js";
@@ -1012,8 +1012,13 @@ test("clear_explanation first-turn gate redirects broad analysis to forum resear
     workflow.codex.events.some((event) => event.type === "answer"),
     false
   );
+  const expectedRedirectNotice =
+    buildClearExplanationQuestionGatewayRedirectNotice(
+      [forumLocation()],
+      clearExplanationLocation()
+    );
   assert.deepEqual(workflow.eventsOf("send").map((event) => event.content), [
-    CLEAR_EXPLANATION_FORUM_REDIRECT_NOTICE
+    expectedRedirectNotice
   ]);
   assert.equal(
     workflow.store.clearExplanationGateStates.get("clear-explanation-redirect-thread")
@@ -1036,8 +1041,8 @@ test("clear_explanation first-turn gate redirects broad analysis to forum resear
     1
   );
   assert.deepEqual(workflow.eventsOf("send").map((event) => event.content), [
-    CLEAR_EXPLANATION_FORUM_REDIRECT_NOTICE,
-    CLEAR_EXPLANATION_FORUM_REDIRECT_NOTICE
+    expectedRedirectNotice,
+    expectedRedirectNotice
   ]);
 });
 

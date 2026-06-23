@@ -91,6 +91,7 @@ export type MessageProcessingRow = {
   channel_id: string;
   state:
     | "processing"
+    | "rerun_requested"
     | "pending_retry"
     | "completed"
     | "terminal_failure_notified";

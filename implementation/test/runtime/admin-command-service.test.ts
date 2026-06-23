@@ -289,8 +289,9 @@ test("override-start with initial prompt copies only visible prompt and bootstra
 });
 
 test("workflow-switch lets the question thread starter switch an existing route", async () => {
-  const { service, gateway, store } = createWorkflowSwitchService({
-    route: createWorkflowRoute()
+  const { service, gateway, store, sessionInterrupts, rerunRequests } = createWorkflowSwitchService({
+    route: createWorkflowRoute(),
+    interruptedWorkloads: ["clear_explanation"]
   });
   const { interaction, replies } = createWorkflowSwitchInteraction({
     userId: "starter-user",
@@ -316,7 +317,13 @@ test("workflow-switch lets the question thread starter switch an existing route"
   assert.equal(store.route?.workflow, "forum_research");
   assert.equal(store.route?.selected_by, "command");
   assert.equal(store.route?.selected_by_actor_id, "starter-user");
+  assert.deepEqual(
+    sessionInterrupts.map((call) => call.workloadKind),
+    ["clear_explanation", "forum_longform"]
+  );
+  assert.deepEqual(rerunRequests, ["question-thread"]);
   assert.match(replies[0] ?? "", /forum_research/);
+  assert.match(replies[0] ?? "", /再実行/);
 });
 
 test("workflow-switch lets an owner or admin switch even when not the starter", async () => {
@@ -343,7 +350,7 @@ test("workflow-switch lets an owner or admin switch even when not the starter", 
 });
 
 test("workflow-switch rejects a user who is neither starter nor owner/admin", async () => {
-  const { service, gateway, store } = createWorkflowSwitchService({
+  const { service, gateway, store, sessionInterrupts, rerunRequests } = createWorkflowSwitchService({
     route: createWorkflowRoute()
   });
   const { interaction, replies } = createWorkflowSwitchInteraction({
@@ -359,13 +366,15 @@ test("workflow-switch rejects a user who is neither starter nor owner/admin", as
 
   assert.equal(handled, true);
   assert.equal(gateway.calls.length, 0);
+  assert.equal(sessionInterrupts.length, 0);
+  assert.equal(rerunRequests.length, 0);
   assert.equal(store.route?.workflow, "clear_explanation");
   assert.equal(store.route?.selected_by, "starter_gateway");
   assert.match(replies[0] ?? "", /thread starter|owner\/admin/);
 });
 
 test("workflow-switch rejects commands outside a question-gateway thread", async () => {
-  const { service, gateway, store } = createWorkflowSwitchService({
+  const { service, gateway, store, sessionInterrupts, rerunRequests } = createWorkflowSwitchService({
     route: createWorkflowRoute({
       root_channel_id: "plain-root"
     }),
@@ -393,12 +402,14 @@ test("workflow-switch rejects commands outside a question-gateway thread", async
 
   assert.equal(handled, true);
   assert.equal(gateway.calls.length, 0);
+  assert.equal(sessionInterrupts.length, 0);
+  assert.equal(rerunRequests.length, 0);
   assert.equal(store.route?.workflow, "clear_explanation");
   assert.match(replies[0] ?? "", /question_gateway|question-gateway/);
 });
 
 test("workflow-switch rejects when the thread has no existing route row", async () => {
-  const { service, gateway, store } = createWorkflowSwitchService({
+  const { service, gateway, store, sessionInterrupts, rerunRequests } = createWorkflowSwitchService({
     route: null
   });
   const { interaction, replies } = createWorkflowSwitchInteraction({
@@ -414,8 +425,33 @@ test("workflow-switch rejects when the thread has no existing route row", async 
 
   assert.equal(handled, true);
   assert.equal(gateway.calls.length, 0);
+  assert.equal(sessionInterrupts.length, 0);
+  assert.equal(rerunRequests.length, 0);
   assert.equal(store.route, null);
   assert.match(replies[0] ?? "", /保存されていない|existing route|初期化/);
+});
+
+test("workflow-switch does not interrupt when the requested workflow is rejected", async () => {
+  const { service, gateway, store, sessionInterrupts, rerunRequests } = createWorkflowSwitchService({
+    route: createWorkflowRoute()
+  });
+  const { interaction, replies } = createWorkflowSwitchInteraction({
+    userId: "starter-user",
+    isAdmin: false,
+    workflow: "unsupported",
+    channel: createThreadChannel({
+      starterAuthorId: "starter-user"
+    })
+  });
+
+  const handled = await service.handle(interaction as never);
+
+  assert.equal(handled, true);
+  assert.equal(gateway.calls.length, 1);
+  assert.equal(sessionInterrupts.length, 0);
+  assert.equal(rerunRequests.length, 0);
+  assert.equal(store.route?.workflow, "clear_explanation");
+  assert.match(replies[0] ?? "", /許可されていません|forbidden/);
 });
 
 function createConfig(watchLocations: WatchLocationConfig[]): AppConfig {
@@ -442,9 +478,58 @@ function createConfig(watchLocations: WatchLocationConfig[]): AppConfig {
 function createWorkflowSwitchService(input: {
   route: ThreadWorkflowRouteRow | null;
   watchLocations?: WatchLocationConfig[];
+  interruptedWorkloads?: string[];
 }) {
   const store = createWorkflowRouteStore(input.route);
   const gateway = createWorkflowGatewayDouble(store);
+  const sessionInterrupts: Array<{ sessionIdentity: string; workloadKind: string }> = [];
+  const interruptedWorkloads = new Set(input.interruptedWorkloads ?? []);
+  const sessionManager = {
+    interruptActiveSession: async (identity: {
+      sessionIdentity: string;
+      workloadKind: string;
+    }) => {
+      sessionInterrupts.push(identity);
+      return {
+        interrupted: interruptedWorkloads.has(identity.workloadKind),
+        threadId: `codex-${identity.sessionIdentity}`,
+        turnId: interruptedWorkloads.has(identity.workloadKind) ? "turn-1" : null
+      };
+    }
+  };
+  const sessionPolicyResolver = {
+    resolveQuestionGatewayWorkflowThread: (identityInput: {
+      threadId: string;
+      workflow: "clear_explanation" | "forum_research";
+    }) => {
+      const workloadKind =
+        identityInput.workflow === "forum_research"
+          ? "forum_longform"
+          : "clear_explanation";
+      return {
+        sessionIdentity: `${workloadKind}:${identityInput.threadId}`,
+        workloadKind,
+        bindingKind: "thread",
+        bindingId: identityInput.threadId,
+        actorId: null,
+        sandboxMode: "read-only",
+        modelProfile: "test-profile",
+        runtimeContractVersion: "test-contract",
+        lifecyclePolicy: "thread_lifetime"
+      };
+    }
+  };
+  const rerunRequests: string[] = [];
+  const workflowSwitchRerunService = {
+    requestRerun: (threadId: string) => {
+      rerunRequests.push(threadId);
+      return {
+        requested: true,
+        enqueued: true,
+        messageId: "starter-message"
+      };
+    }
+  };
   const logger = { warn: () => undefined, debug: () => undefined } as never;
   const ServiceCtor = AdminCommandService as unknown as {
     new (...args: unknown[]): AdminCommandService;
@@ -457,19 +542,22 @@ function createWorkflowSwitchService(input: {
     },
     createConfig(input.watchLocations ?? [questionGatewayWatchLocation()]),
     store,
-    {} as never,
-    {} as never,
+    sessionManager,
+    sessionPolicyResolver,
     {} as never,
     {} as never,
     {} as never,
     logger,
-    gateway
+    gateway,
+    workflowSwitchRerunService
   );
 
   return {
     service,
     gateway,
-    store
+    store,
+    sessionInterrupts,
+    rerunRequests
   };
 }
 

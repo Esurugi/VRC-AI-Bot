@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { ChannelType } from "discord.js";
 
 import { MessageProcessingService } from "../../../src/runtime/message/message-processing-service.js";
+import { WorkflowSwitchRerunService } from "../../../src/runtime/thread/workflow-switch-rerun-service.js";
 import { SqliteStore } from "../../../src/storage/database.js";
 import type { AppConfig, MessageEnvelope, WatchLocationConfig } from "../../../src/domain/types.js";
 import type { QueuedMessage } from "../../../src/runtime/types.js";
@@ -66,6 +67,186 @@ test("bare question-gateway processing is not treated as forum_research without 
       assert.equal(routedInputs[0]?.hasForumCallbacks, false);
     }
   );
+});
+
+test("workflow switch rerun suppresses the active result and reprocesses the same message with the new route", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "vrc-ai-bot-thread-workflow-rerun-"));
+  let store: SqliteStore | null = null;
+  try {
+    store = new SqliteStore(join(workspace, "bot.sqlite"));
+    store.migrate();
+    store.threadWorkflowRoutes.mark({
+      threadId: "question-thread-1",
+      rootChannelId: "question-root",
+      firstMessageId: "1000",
+      workflow: "clear_explanation",
+      selectedBy: "starter_gateway",
+      selectedByActorId: null,
+      reason: "initial route"
+    });
+
+    const enqueuedReruns: QueuedMessage[] = [];
+    const rerunService = new WorkflowSwitchRerunService(store, createLogger() as never);
+    rerunService.setEnqueueRerun((item) => {
+      enqueuedReruns.push(item);
+      return true;
+    });
+
+    let releaseFirstRouteMessage!: () => void;
+    let callCount = 0;
+    const routedInputs: Array<{
+      watchLocation: WatchLocationConfig;
+      envelope: MessageEnvelope;
+      hasForumCallbacks: boolean;
+    }> = [];
+    let resolveFirstRouteMessageStarted!: () => void;
+    const firstRouteMessageStarted = new Promise<void>((resolve) => {
+      resolveFirstRouteMessageStarted = resolve;
+    });
+    const harnessRunner = {
+      routeMessage: async (input: {
+        watchLocation: WatchLocationConfig;
+        envelope: MessageEnvelope;
+        forumRetryCallbacks?: unknown;
+      }) => {
+        routedInputs.push({
+          watchLocation: input.watchLocation,
+          envelope: input.envelope,
+          hasForumCallbacks: input.forumRetryCallbacks !== undefined
+        });
+        callCount += 1;
+        if (callCount === 1) {
+          resolveFirstRouteMessageStarted();
+          await new Promise<void>((release) => {
+            releaseFirstRouteMessage = release;
+          });
+        }
+        return null;
+      }
+    } as never;
+    let dispatchCount = 0;
+    const service = new MessageProcessingService(
+      createConfig(),
+      store,
+      harnessRunner,
+      {
+        resolveEffectiveContentOverride: async () => ({
+          preparedPrompt: null,
+          progressNotice: null,
+          wasPreprocessed: false,
+          starterMessage: null
+        })
+      } as never,
+      {
+        collect: async () => ({ recentRoomEvents: [] })
+      } as never,
+      {
+        evaluate: async () => ({
+          decision: "always",
+          triggerKind: null,
+          isDirectedToBot: false
+        })
+      } as never,
+      {
+        evaluateMessage: async () => ({
+          decision: "handle",
+          engagement: {
+            decision: "always",
+            triggerKind: null,
+            isDirectedToBot: false
+          }
+        })
+      } as never,
+      {
+        decide: async () => "allow_clear_explanation"
+      } as never,
+      {} as never,
+      {
+        clear: () => {},
+        schedule: () => {}
+      } as never,
+      {
+        checkSoftBlock: async () => ({ blocked: false })
+      } as never,
+      {} as never,
+      {
+        dispatchResolvedMessage: async () => {
+          dispatchCount += 1;
+          return {
+            channelId: "question-thread-1",
+            threadId: "question-thread-1"
+          };
+        },
+        notifyFailureInTarget: async () => {},
+        notifyPermanentFailure: async () => {},
+        sendFollowupInSamePlace: async () => {}
+      } as never,
+      createLogger() as never,
+      {
+        resolve: async () => ({
+          decision: "route",
+          workflow:
+            store?.threadWorkflowRoutes.get("question-thread-1")?.workflow ??
+            "clear_explanation"
+        })
+      } as never,
+      rerunService
+    );
+
+    const original = createQueuedMessage({
+      messageId: "1000",
+      threadId: "question-thread-1",
+      content: "この質問を処理してください"
+    });
+    const processing = service.process(original);
+    await firstRouteMessageStarted;
+
+    store.threadWorkflowRoutes.mark({
+      threadId: "question-thread-1",
+      rootChannelId: "question-root",
+      firstMessageId: "1000",
+      workflow: "forum_research",
+      selectedBy: "command",
+      selectedByActorId: "starter-user",
+      reason: "manual switch"
+    });
+    const rerun = rerunService.requestRerun("question-thread-1");
+    assert.deepEqual(
+      {
+        requested: rerun.requested,
+        enqueued: rerun.enqueued,
+        messageId: rerun.messageId
+      },
+      {
+        requested: true,
+        enqueued: true,
+        messageId: "1000"
+      }
+    );
+    assert.equal(store.messageProcessing.get("1000")?.state, "rerun_requested");
+    releaseFirstRouteMessage();
+    await processing;
+
+    assert.equal(dispatchCount, 0);
+    assert.equal(store.messageProcessing.get("1000")?.state, "rerun_requested");
+    assert.equal(enqueuedReruns.length, 1);
+    assert.equal(enqueuedReruns[0]?.source, "workflow_switch_rerun");
+
+    await service.process(enqueuedReruns[0] as QueuedMessage);
+
+    assert.equal(dispatchCount, 1);
+    assert.equal(store.messageProcessing.get("1000")?.state, "completed");
+    assert.equal(rerunService.isRerunRequested("1000"), false);
+    assert.equal(routedInputs.length, 2);
+    assert.deepEqual(routedInputs[1]?.watchLocation.features, [
+      "forum_research",
+      "conversation"
+    ]);
+    assert.equal(routedInputs[1]?.watchLocation.mode, "forum_longform");
+  } finally {
+    store?.close();
+    rmSync(workspace, { recursive: true, force: true });
+  }
 });
 
 async function withHarness(

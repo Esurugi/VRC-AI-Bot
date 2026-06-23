@@ -23,6 +23,7 @@ import { ForumResearchPromptRefiner } from "../runtime/forum/forum-research-prom
 import { ForumResearchSupervisor } from "../runtime/forum/forum-research-supervisor.js";
 import { FeatureThreadService } from "../runtime/thread/feature-thread-service.js";
 import { ThreadWorkflowGateway } from "../runtime/thread/thread-workflow-gateway.js";
+import { WorkflowSwitchRerunService } from "../runtime/thread/workflow-switch-rerun-service.js";
 import { MessageIntakeService } from "../runtime/message/message-intake-service.js";
 import { MessageProcessingService } from "../runtime/message/message-processing-service.js";
 import { PlainTextAttachmentService } from "../runtime/message/plain-text-attachment-service.js";
@@ -62,6 +63,7 @@ export type BotApplicationDependencies = {
   recentChatHistoryService?: RecentChatHistoryService;
   clearExplanationRoutingGate?: ClearExplanationRoutingGate;
   threadWorkflowGateway?: ThreadWorkflowGateway;
+  workflowSwitchRerunService?: WorkflowSwitchRerunService;
   forumFirstTurnPreprocessor?: ForumFirstTurnPreprocessor;
   forumResearchPromptRefiner?: ForumResearchPromptRefiner;
   forumResearchSupervisor?: ForumResearchSupervisor;
@@ -162,6 +164,9 @@ export function createBotApplicationDependencies(
   const threadWorkflowGateway =
     dependencies.threadWorkflowGateway ??
     new ThreadWorkflowGateway(store, codexClient, logger);
+  const workflowSwitchRerunService =
+    dependencies.workflowSwitchRerunService ??
+    new WorkflowSwitchRerunService(store, logger);
   const clearExplanationRoutingGate =
     dependencies.clearExplanationRoutingGate ??
     new ClearExplanationRoutingGate(store, codexClient, logger);
@@ -182,7 +187,8 @@ export function createBotApplicationDependencies(
       moderationExecutor,
       replyDispatchService,
       logger,
-      threadWorkflowGateway
+      threadWorkflowGateway,
+      workflowSwitchRerunService
     );
   const queue =
     dependencies.queue ??
@@ -190,6 +196,9 @@ export function createBotApplicationDependencies(
       (item) => messageProcessingService.process(item),
       config.runtime.maxConcurrentKeys
     );
+  workflowSwitchRerunService.setEnqueueRerun((item) =>
+    queue.enqueue(item, { allowDuplicateMessageId: true })
+  );
   const chatChannelCounterService =
     dependencies.chatChannelCounterService ?? new ChatChannelCounterService(store);
   const chatRuntimeControlService =
@@ -262,7 +271,8 @@ export function createBotApplicationDependencies(
       overrideBootstrapPromptContextService,
       weeklyMeetupAnnouncementService,
       logger,
-      threadWorkflowGateway
+      threadWorkflowGateway,
+      workflowSwitchRerunService
     );
 
   return {
@@ -291,6 +301,7 @@ export function createBotApplicationDependencies(
     recentChatHistoryService,
     clearExplanationRoutingGate,
     threadWorkflowGateway,
+    workflowSwitchRerunService,
     forumFirstTurnPreprocessor,
     forumResearchPromptRefiner,
     forumResearchSupervisor,

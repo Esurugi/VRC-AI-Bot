@@ -117,6 +117,43 @@ export class SessionManager {
     };
   }
 
+  async interruptActiveSession(identity: ResolvedSessionIdentity): Promise<{
+    interrupted: boolean;
+    threadId: string | null;
+    turnId: string | null;
+  }> {
+    this.syncInvalidationGeneration();
+    const live = this.liveSessions.get(identity.sessionIdentity);
+    const threadId =
+      live?.threadId ??
+      this.store.codexSessions.get(identity.sessionIdentity)?.codex_thread_id ??
+      null;
+    if (!threadId) {
+      return {
+        interrupted: false,
+        threadId: null,
+        turnId: null
+      };
+    }
+
+    const result = await this.codexClient.interruptActiveTurnForThread(threadId);
+    if (result.interrupted) {
+      appendRuntimeTrace("codex-app-server", "session_turn_interrupted", {
+        session_identity: identity.sessionIdentity,
+        workload_kind: identity.workloadKind,
+        codex_thread_id: threadId,
+        turn_id: result.turnId,
+        runtime_contract_version: identity.runtimeContractVersion
+      });
+    }
+
+    return {
+      interrupted: result.interrupted,
+      threadId,
+      turnId: result.turnId
+    };
+  }
+
   invalidateReusableSessions(reason: string): void {
     this.liveSessions.clear();
     appendRuntimeTrace("codex-app-server", "session_cache_invalidated", {

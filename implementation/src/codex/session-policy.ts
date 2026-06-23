@@ -69,6 +69,8 @@ export type ResolvedSessionIdentity = SessionIdentityParts & {
   sessionIdentity: string;
 };
 
+export type QuestionGatewayWorkflow = "clear_explanation" | "forum_research";
+
 type ResolveMessageSessionInput = {
   envelope: MessageEnvelope;
   watchLocation: WatchLocationConfig;
@@ -187,6 +189,33 @@ export class SessionPolicyResolver {
       sandboxMode: "read-only",
       lifecyclePolicy: "reusable",
       modelProfile: CHAT_CONVERSATION_LOW_CODEX_MODEL_PROFILE
+    });
+  }
+
+  resolveQuestionGatewayWorkflowThread(input: {
+    threadId: string;
+    workflow: QuestionGatewayWorkflow;
+  }): ResolvedSessionIdentity {
+    if (input.workflow === "forum_research") {
+      return this.buildIdentity({
+        workloadKind: "forum_longform",
+        bindingKind: "thread",
+        bindingId: input.threadId,
+        actorId: null,
+        sandboxMode: "read-only",
+        lifecyclePolicy: "thread_lifetime",
+        modelProfile: FORUM_LONGFORM_CODEX_MODEL_PROFILE
+      });
+    }
+
+    return this.buildIdentity({
+      workloadKind: "clear_explanation",
+      bindingKind: "thread",
+      bindingId: input.threadId,
+      actorId: null,
+      sandboxMode: "read-only",
+      lifecyclePolicy: "thread_lifetime",
+      modelProfile: CLEAR_EXPLANATION_CODEX_MODEL_PROFILE
     });
   }
 

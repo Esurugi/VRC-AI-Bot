@@ -690,6 +690,25 @@ export class CodexAppServerClient {
     );
   }
 
+  async interruptActiveTurnForThread(threadId: string): Promise<{
+    interrupted: boolean;
+    turnId: string | null;
+  }> {
+    const completion = this.findActiveTurnCompletionByThreadId(threadId);
+    if (!completion?.turnId) {
+      return {
+        interrupted: false,
+        turnId: completion?.turnId ?? null
+      };
+    }
+
+    await this.interruptTurn(threadId, completion.turnId);
+    return {
+      interrupted: true,
+      turnId: completion.turnId
+    };
+  }
+
   async steerTurn(
     threadId: string,
     turnId: string,
@@ -1874,6 +1893,17 @@ export class CodexAppServerClient {
 
     const queue = this.pendingTurnCompletions.get(threadId);
     return queue?.[0] ?? null;
+  }
+
+  private findActiveTurnCompletionByThreadId(threadId: string): TurnCompletion | null {
+    for (const completion of this.activeTurnCompletions.values()) {
+      if (completion.threadId === threadId) {
+        return completion;
+      }
+    }
+
+    const queue = this.pendingTurnCompletions.get(threadId);
+    return queue?.find((completion) => completion.turnId !== null) ?? null;
   }
 
   private takeTurnCompletion(params: unknown): TurnCompletion | null {

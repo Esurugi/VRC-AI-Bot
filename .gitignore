@@ -28,6 +28,8 @@ config/weekly-meetup-announcement.json
 implementation/src/runtime/forum/forum-research-prompt-refiner-contract.md
 
 # Internal working docs
-docs/
+docs/*
+!docs/
+!docs/discord-llm-bot-requirements.md
 specs/
 implementation/docs/
