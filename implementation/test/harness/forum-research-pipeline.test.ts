@@ -6,6 +6,7 @@ import {
   shouldRefreshForumPromptArtifact,
   type ForumResearchPipelineState
 } from "../../src/harness/forum-research-pipeline.js";
+import { ResearchRunEvidence } from "../../src/forum-research/research-evidence.js";
 import type { HarnessRequest } from "../../src/harness/contracts.js";
 
 test("forum prompt artifacts refresh only for bot-directed thread follow-ups", () => {
@@ -62,7 +63,13 @@ test("forum final payload preserves worker packets as synthesis coverage", () =>
     threadId: "thread",
     isBotDirected: true
   });
+  const evidence = new ResearchRunEvidence([{
+    fact_id: "fact-1", resource_id: "resource", candidate_id: "candidate", provider: "generic_web",
+    original_url: "https://example.com/a", canonical_item_url: "https://example.com/a", retrieval_url: "https://example.com/a", observed_url: "https://example.com/a",
+    status: 200, content_type: "text/plain", title: "Source", text: "worker claim"
+  }]);
   const state: ForumResearchPipelineState = {
+    evidence,
     finalBrief: "final coverage",
     promptArtifact: {
       sessionIdentity: "session",
@@ -74,17 +81,22 @@ test("forum final payload preserves worker packets as synthesis coverage", () =>
     },
     persistedState: null,
     bundle: {
+      publicSourceFacts: evidence.facts,
+      publicSourceFailures: [],
       distinctSourceTarget: 8,
       distinctSources: ["https://example.com/a"],
       evidenceItems: [
         {
           claim: "flat claim",
+          evidence_fact_ids: ["fact-1"],
           source_urls: ["https://example.com/a"]
         }
       ],
       sourceCatalog: [
         {
           index: 1,
+          source_id: "fact-1",
+          evidence_fact_ids: ["fact-1"],
           url: "https://example.com/a",
           claims: ["worker claim"]
         }
@@ -92,10 +104,12 @@ test("forum final payload preserves worker packets as synthesis coverage", () =>
       currentWorkerPackets: [
         {
           worker_id: "w1",
+          applicability: ["conditions"], limitations: ["limitations"], unresolved_questions: [],
           subquestion: "worker coverage question",
           evidence_items: [
             {
               claim: "worker claim",
+              evidence_fact_ids: ["fact-1"],
               source_urls: ["https://example.com/a"]
             }
           ],
@@ -118,24 +132,7 @@ test("forum final payload preserves worker packets as synthesis coverage", () =>
     );
   const context = payload.forum_research_context as Record<string, unknown>;
 
-  assert.deepEqual(context.current_worker_packets, [
-    {
-      worker_id: "w1",
-      subquestion: "worker coverage question",
-      evidence_items: [
-        {
-          claim: "worker claim",
-          source_urls: ["https://example.com/a"]
-        }
-      ],
-        citations: [
-          {
-            url: "https://example.com/a",
-            claim: "worker claim"
-          }
-        ]
-    }
-  ]);
+  assert.deepEqual(context.current_worker_packets, state.bundle.currentWorkerPackets);
   assert.deepEqual(context.synthesis_contract, {
     use_worker_packets_as_coverage_map: true,
     preserve_cross_worker_findings: true,

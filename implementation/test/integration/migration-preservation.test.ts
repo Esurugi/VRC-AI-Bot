@@ -128,6 +128,8 @@ test("AE-MIG-01 migration 012 preserves forum research state v1 progress", () =>
     assert.deepEqual(sourceCatalog, [
       {
         index: 1,
+        source_id: "history:1",
+        evidence_fact_ids: [],
         url: "https://legacy.example.com/source",
         claims: ["Legacy planner brief"]
       }
@@ -135,6 +137,7 @@ test("AE-MIG-01 migration 012 preserves forum research state v1 progress", () =>
     assert.deepEqual(evidenceItems, [
       {
         claim: "Legacy planner brief",
+        evidence_fact_ids: [],
         source_urls: ["https://legacy.example.com/source"]
       }
     ]);

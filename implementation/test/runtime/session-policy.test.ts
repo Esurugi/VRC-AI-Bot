@@ -6,7 +6,7 @@ import {
   CHAT_CONVERSATION_LOW_CODEX_MODEL_PROFILE,
   CLEAR_EXPLANATION_CODEX_MODEL_PROFILE,
   DEFAULT_CODEX_MODEL_PROFILE,
-  FORUM_LONGFORM_CODEX_MODEL_PROFILE,
+  FORUM_RESEARCH_SUPERVISOR_CODEX_MODEL_PROFILE,
   SessionPolicyResolver,
   resolveScopedPlaceId
 } from "../../src/codex/session-policy.js";
@@ -105,7 +105,12 @@ test("forum research feature resolves to forum thread session even when legacy m
   assert.equal(session.workloadKind, "forum_longform");
   assert.equal(session.bindingKind, "thread");
   assert.equal(session.bindingId, "forum-thread");
-  assert.equal(session.modelProfile, FORUM_LONGFORM_CODEX_MODEL_PROFILE);
+  assert.equal(session.modelProfile, FORUM_RESEARCH_SUPERVISOR_CODEX_MODEL_PROFILE);
+  assert.equal(
+    resolver.resolveQuestionGatewayWorkflowThread({ threadId: "forum-thread", workflow: "forum_research" }).sessionIdentity,
+    session.sessionIdentity,
+    "workflow interruption must address the same forum session used by messages"
+  );
 });
 
 test("clear explanation feature resolves to thread-lifetime high reasoning session", () => {

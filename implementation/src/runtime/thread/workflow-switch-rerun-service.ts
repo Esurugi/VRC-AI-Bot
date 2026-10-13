@@ -8,10 +8,12 @@ type EnqueueWorkflowSwitchRerun = (item: QueuedMessage) => boolean;
 
 type ActiveWorkflowMessage = {
   item: QueuedMessage;
+  controller: AbortController;
 };
 
 export class WorkflowSwitchRerunService {
   private readonly activeByThreadId = new Map<string, ActiveWorkflowMessage>();
+  private readonly signals = new WeakMap<QueuedMessage, AbortSignal>();
   private readonly requestedMessageIds = new Set<string>();
   private enqueueRerun: EnqueueWorkflowSwitchRerun | null = null;
 
@@ -26,13 +28,20 @@ export class WorkflowSwitchRerunService {
 
   trackActive(item: QueuedMessage): () => void {
     const threadId = item.envelope.channelId;
-    const active: ActiveWorkflowMessage = { item };
+    this.activeByThreadId.get(threadId)?.controller.abort(new Error("Workflow execution replaced"));
+    const active: ActiveWorkflowMessage = { item, controller: new AbortController() };
     this.activeByThreadId.set(threadId, active);
+    this.signals.set(item, active.controller.signal);
     return () => {
       if (this.activeByThreadId.get(threadId) === active) {
         this.activeByThreadId.delete(threadId);
       }
+      active.controller.abort(new Error("Workflow execution ended"));
     };
+  }
+
+  activeSignal(item: QueuedMessage): AbortSignal | undefined {
+    return this.signals.get(item);
   }
 
   requestRerun(threadId: string): {
@@ -81,6 +90,7 @@ export class WorkflowSwitchRerunService {
     }
 
     this.requestedMessageIds.add(messageId);
+    active.controller.abort(new Error("Workflow switched"));
     const rerunItem: QueuedMessage = {
       ...active.item,
       source: "workflow_switch_rerun"

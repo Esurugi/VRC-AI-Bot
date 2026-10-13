@@ -1,13 +1,15 @@
 import type { Logger } from "pino";
+import type { HarnessRequest, PublicSourceFailure } from "../../harness/contracts.js";
+import type { ForumResearchWorkerPacket, ForumResearchProgress } from "../../forum-research/types.js";
 
 import type { CodexAppServerClient } from "../../codex/app-server-client.js";
-import { FORUM_LONGFORM_CODEX_MODEL_PROFILE } from "../../codex/session-policy.js";
+import type { TurnExecutionContext } from "../../codex/turn-execution-context.js";
+import { FORUM_RESEARCH_SUPERVISOR_CODEX_MODEL_PROFILE } from "../../codex/session-policy.js";
 import {
   FORUM_RESEARCH_DISTINCT_SOURCE_TARGET,
   FORUM_RESEARCH_MAX_WORKERS,
   forumResearchSupervisorDecisionJsonSchema,
   forumResearchSupervisorDecisionSchema,
-  type ForumResearchEvidenceItem,
   type ForumResearchSourceCatalogEntry,
   type ForumResearchSupervisorDecision,
   type PersistedForumResearchState
@@ -19,29 +21,36 @@ export class ForumResearchSupervisor {
     private readonly logger: Pick<Logger, "warn">
   ) {}
 
-  async decide(input: {
+  async startSession() {
+    const threadId = await this.codexClient.startEphemeralThread(
+      "read-only", FORUM_RESEARCH_SUPERVISOR_CODEX_MODEL_PROFILE
+    );
+    return {
+      decide: (input: Parameters<ForumResearchSupervisor["decide"]>[1]) => this.decide(threadId, input),
+      close: () => this.codexClient.closeEphemeralThread(threadId)
+    };
+  }
+
+  private async decide(threadId: string, input: {
     messageId: string;
     threadId: string;
     refinedPrompt: string;
+    originalRequest: HarnessRequest;
+    publicSourceFailures: PublicSourceFailure[];
+    workerProgress: Array<ForumResearchProgress & { worker_id: string }>;
+    recentProgressNotices: string[];
+    executionContext: TurnExecutionContext;
+    previousDecisionApplied: boolean | null;
     activeWorkers: Array<{
       worker_id: string;
       question: string;
       search_focus: string;
       state: "running" | "failed" | "interrupted";
     }>;
-    completedWorkers: Array<{
-      worker_id: string;
-      subquestion: string;
-    }>;
-    currentEvidenceItems: ForumResearchEvidenceItem[];
+    completedWorkers: ForumResearchWorkerPacket[];
     currentSourceCatalog: ForumResearchSourceCatalogEntry[];
     previousResearchState?: PersistedForumResearchState | null;
   }): Promise<ForumResearchSupervisorDecision> {
-    const threadId = await this.codexClient.startEphemeralThread(
-      "read-only",
-      FORUM_LONGFORM_CODEX_MODEL_PROFILE
-    );
-
     try {
       const result = await this.codexClient.runJsonTurn({
         threadId,
@@ -50,19 +59,26 @@ export class ForumResearchSupervisor {
           place_mode: "forum_longform",
           message_id: input.messageId,
           reply_thread_id: input.threadId,
+          original_request: {
+            ...input.originalRequest,
+            available_context: { ...input.originalRequest.available_context, public_source_failures: input.publicSourceFailures }
+          },
           refined_prompt: input.refinedPrompt,
+          previous_decision_applied: input.previousDecisionApplied,
+          worker_progress: input.workerProgress,
+          recent_progress_notices: input.recentProgressNotices,
           active_workers: input.activeWorkers,
           completed_workers: input.completedWorkers,
-          current_evidence_items: input.currentEvidenceItems,
           current_source_catalog: input.currentSourceCatalog,
           previous_research_state: input.previousResearchState ?? null,
           max_workers: FORUM_RESEARCH_MAX_WORKERS,
           distinct_source_target: FORUM_RESEARCH_DISTINCT_SOURCE_TARGET
         },
-        allowExternalFetch: false,
+        allowExternalFetch: input.originalRequest.capabilities.allow_external_fetch,
+        executionContext: input.executionContext,
         outputSchema: forumResearchSupervisorDecisionJsonSchema,
         parser: (value) => forumResearchSupervisorDecisionSchema.parse(value),
-        modelProfile: FORUM_LONGFORM_CODEX_MODEL_PROFILE
+        modelProfile: FORUM_RESEARCH_SUPERVISOR_CODEX_MODEL_PROFILE
       });
 
       return result.response;
@@ -76,8 +92,6 @@ export class ForumResearchSupervisor {
         "forum research supervisor failed"
       );
       throw error;
-    } finally {
-      await this.codexClient.closeEphemeralThread(threadId).catch(() => undefined);
     }
   }
 }

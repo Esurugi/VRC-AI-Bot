@@ -260,7 +260,7 @@ export class ScriptedCodexClient {
     if (input.inputPayload.kind === "forum_research_supervisor") {
       return {
         response: {
-          progress_notice: "調査計画を確認しています。",
+          progress_notice: { message: "調査計画を確認しています。", evidence_fact_ids: [] },
           worker_tasks: [],
           interrupts: [],
           next_action: "finalize",
@@ -293,7 +293,8 @@ export class ScriptedCodexClient {
           worker_id: "worker-1",
           subquestion: "test",
           evidence_items: [],
-          citations: []
+          citations: [],
+          applicability: [], limitations: [], unresolved_questions: []
         },
         observations: {
           observed_public_urls: [],

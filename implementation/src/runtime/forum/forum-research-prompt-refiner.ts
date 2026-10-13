@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import type { Logger } from "pino";
 
 import type { CodexAppServerClient } from "../../codex/app-server-client.js";
-import { FORUM_LONGFORM_LOW_CODEX_MODEL_PROFILE } from "../../codex/session-policy.js";
+import { FORUM_RESEARCH_SUPERVISOR_CODEX_MODEL_PROFILE } from "../../codex/session-policy.js";
 import {
   promptRefinementArtifactJsonSchema,
   promptRefinementArtifactSchema,
@@ -27,6 +27,7 @@ export class ForumResearchPromptRefiner {
 
   async refine(input: {
     messageId: string;
+    signal?: AbortSignal;
     currentMessage: string;
     starterMessage: string | null;
     threadId: string;
@@ -40,7 +41,7 @@ export class ForumResearchPromptRefiner {
   }): Promise<PromptRefinementArtifact> {
     const ephemeralThreadId = await this.codexClient.startEphemeralThread(
       "read-only",
-      FORUM_LONGFORM_LOW_CODEX_MODEL_PROFILE
+      FORUM_RESEARCH_SUPERVISOR_CODEX_MODEL_PROFILE
     );
 
     try {
@@ -61,9 +62,10 @@ export class ForumResearchPromptRefiner {
           design_skill_reference: loadPromptRefinerReference()
         },
         allowExternalFetch: false,
+        executionContext: input.signal ? { signal: input.signal } : {},
         outputSchema: promptRefinementArtifactJsonSchema,
         parser: (value) => promptRefinementArtifactSchema.parse(value),
-        modelProfile: FORUM_LONGFORM_LOW_CODEX_MODEL_PROFILE
+        modelProfile: FORUM_RESEARCH_SUPERVISOR_CODEX_MODEL_PROFILE
       });
 
       return result.response;

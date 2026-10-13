@@ -1,4 +1,9 @@
 import type { Logger } from "pino";
+import { ResearchRunEvidence } from "../forum-research/research-evidence.js";
+import { compileForumCitations } from "../forum-research/citations.js";
+import { executionContextForHarnessRequest, type TurnExecutionContext } from "../codex/turn-execution-context.js";
+import { OutputSafetyGuard } from "./output-safety-guard.js";
+import { extractUrls } from "../discord/message-utils.js";
 
 import type {
   CodexAppServerClient,
@@ -7,8 +12,8 @@ import type {
   TurnObservations
 } from "../codex/app-server-client.js";
 import {
-  FORUM_LONGFORM_CODEX_MODEL_PROFILE,
-  FORUM_LONGFORM_LOW_CODEX_MODEL_PROFILE
+  FORUM_RESEARCH_SUPERVISOR_CODEX_MODEL_PROFILE,
+  FORUM_RESEARCH_WORKER_CODEX_MODEL_PROFILE
 } from "../codex/session-policy.js";
 import {
   canonicalizeUrl,
@@ -25,7 +30,7 @@ import {
   type ForumResearchEvidenceItem,
   type ForumResearchSourceCatalogEntry,
   type ForumResearchSupervisorDecision,
-  type ForumResearchWorkerCitation,
+  type ForumResearchProgress,
   type ForumResearchWorkerPacket,
   type ForumResearchWorkerTask,
   type PersistedPromptRefinementArtifact,
@@ -40,13 +45,18 @@ import type { ForumResearchSupervisor } from "../runtime/forum/forum-research-su
 import type { SqliteStore } from "../storage/database.js";
 
 export type ForumResearchPipelineState = {
+  mode?: "single";
+  starterMessage?: string | null;
   bundle: ForumResearchBundle;
   persistedState: PersistedForumResearchState | null;
-  promptArtifact: PersistedPromptRefinementArtifact;
+  promptArtifact: PersistedPromptRefinementArtifact | null;
   finalBrief: string | null;
+  evidence: ResearchRunEvidence;
 };
 
 export type ForumResearchRetryCallbacks = {
+  signal?: AbortSignal;
+  recentProgressNotices?: () => string[];
   onProgressNotice?: (content: string) => Promise<void> | void;
   onRetryStatus?: (content: string) => Promise<void> | void;
   onRetryStream?: StreamingTextTurnCallbacks;
@@ -60,6 +70,7 @@ type WorkerOutcome =
       type: "completed";
       task: ForumResearchWorkerTask;
       packet: ForumResearchWorkerPacket;
+      observations: TurnObservations;
     }
   | {
       type: "failed" | "interrupted";
@@ -73,6 +84,7 @@ type ActiveWorker = {
   interruptRequested: boolean;
   interrupt: () => Promise<void>;
   completion: Promise<WorkerOutcome>;
+  controller: AbortController;
 };
 
 type WorkerHistory = {
@@ -86,6 +98,8 @@ type ForumVisibleRecoveryReason =
   | "final_turn_protocol_error"
   | "output_safety_regeneration";
 
+type ResearchEvent = { kind: "outcome"; outcome: WorkerOutcome } | { kind: "progress"; workerId: string; notice: ForumResearchProgress };
+
 export class ForumResearchPipeline {
   constructor(
     private readonly store: SqliteStore,
@@ -95,7 +109,20 @@ export class ForumResearchPipeline {
     private readonly logger: Pick<Logger, "warn" | "debug">
   ) {}
 
-  async run(input: {
+  async run(input: Parameters<ForumResearchPipeline["runParallel"]>[0]) {
+    input.callbacks?.signal?.throwIfAborted();
+    const evidence = new ResearchRunEvidence(input.request.available_context.public_source_facts, input.request.available_context.public_source_failures);
+    const state: ForumResearchPipelineState = {
+      mode: "single", starterMessage: input.starterMessage ?? null,
+      evidence, bundle: buildForumResearchBundle({ evidence, currentPackets: [] }),
+      persistedState: this.loadPersistedState(input.sessionMetadata.sessionIdentity, input.request.place.thread_id ?? input.request.place.channel_id),
+      promptArtifact: null, finalBrief: null
+    };
+    return this.answer(input, state);
+  }
+
+  // Retained for explicit experiments; the normal runner uses run().
+  async runParallel(input: {
     request: HarnessRequest;
     threadId: string;
     sessionMetadata: HarnessTurnSessionMetadata;
@@ -107,9 +134,6 @@ export class ForumResearchPipeline {
     state: ForumResearchPipelineState;
     primaryReplyAlreadySent: boolean;
   }> {
-    await input.callbacks?.onProgressNotice?.(
-      buildForumPhaseProgressNotice("prompt_refinement")
-    );
     const promptArtifact = await this.loadOrCreatePromptArtifact({
       request: input.request,
       threadId: input.threadId,
@@ -118,12 +142,10 @@ export class ForumResearchPipeline {
       refreshExisting: shouldRefreshForumPromptArtifact(input.request),
       ...(input.callbacks ? { callbacks: input.callbacks } : {})
     });
-    await input.callbacks?.onProgressNotice?.(
-      buildForumPhaseProgressNotice("supervisor_planning")
-    );
-    const persistedState = this.loadPersistedState(input.sessionMetadata.sessionIdentity);
+    input.callbacks?.signal?.throwIfAborted();
+    const persistedState = this.loadPersistedState(input.sessionMetadata.sessionIdentity, input.request.place.thread_id ?? input.request.place.channel_id);
     const researchState = await this.collectResearchState({
-      request: applyRefinedPrompt(input.request, promptArtifact.refinedPrompt),
+      request: input.request,
       threadId: input.threadId,
       sessionMetadata: input.sessionMetadata,
       persistedState,
@@ -131,9 +153,18 @@ export class ForumResearchPipeline {
       ...(input.callbacks ? { callbacks: input.callbacks } : {})
     });
 
+    return this.answer(input, researchState);
+  }
+
+  private async answer(input: Parameters<ForumResearchPipeline["runParallel"]>[0], researchState: ForumResearchPipelineState): Promise<{
+    response: HarnessResponse;
+    observations: TurnObservations;
+    state: ForumResearchPipelineState;
+    primaryReplyAlreadySent: boolean;
+  }> {
     try {
       const result = await this.runFinalStreamingTurn({
-        request: applyRefinedPrompt(input.request, researchState.promptArtifact.refinedPrompt),
+        request: input.request,
         threadId: input.threadId,
         sessionMetadata: input.sessionMetadata,
         state: researchState,
@@ -152,7 +183,7 @@ export class ForumResearchPipeline {
       }
 
       const retried = await this.runVisibleStreamingRecovery({
-        request: applyRefinedPrompt(input.request, researchState.promptArtifact.refinedPrompt),
+        request: input.request,
         threadId: input.threadId,
         sessionMetadata: input.sessionMetadata,
         state: researchState,
@@ -187,7 +218,7 @@ export class ForumResearchPipeline {
 
     try {
       return await this.runFinalStreamingTurn({
-        request: applyRefinedPrompt(input.request, input.state.promptArtifact.refinedPrompt),
+        request: input.request,
         threadId: input.threadId,
         sessionMetadata: input.sessionMetadata,
         state: input.state,
@@ -226,301 +257,225 @@ export class ForumResearchPipeline {
     promptArtifact: PersistedPromptRefinementArtifact;
     callbacks?: ForumResearchRetryCallbacks;
   }): Promise<ForumResearchPipelineState> {
+    const evidence = new ResearchRunEvidence(input.request.available_context.public_source_facts, input.request.available_context.public_source_failures);
     const activeWorkers = new Map<string, ActiveWorker>();
     const launchedWorkerIds = new Set<string>();
-    const progressNotices = new Set<string>();
-    const workerHistory: WorkerHistory = {
-      completed: [],
-      failed: [],
-      interrupted: []
-    };
+    const history: WorkerHistory = { completed: [], failed: [], interrupted: [] };
+    const events: ResearchEvent[] = [];
+    const reports = new Map<string, ForumResearchProgress>();
+    const signal = input.callbacks?.signal;
+    let wake: (() => void) | null = null;
+    let closed = false;
     let finalBrief: string | null = null;
-    let persistedState = input.persistedState;
-    let decision = await this.requestSupervisorDecision({
-      request: input.request,
-      threadId: input.threadId,
-      promptArtifact: input.promptArtifact,
-      activeWorkers,
-      workerHistory,
-      persistedState
-    });
-
-    while (true) {
-      const appliedDecision = await this.applySupervisorDecision({
-        request: input.request,
-        decision,
-        activeWorkers,
-        launchedWorkerIds,
-        workerHistory,
-        finalBrief,
-        ...(input.callbacks ? { callbacks: input.callbacks } : {}),
-        progressNotices
-      });
-      finalBrief = appliedDecision.finalBrief;
-
-      if (decision.next_action === "finalize" && activeWorkers.size === 0) {
-        break;
-      }
-
-      if (activeWorkers.size === 0) {
-        throw new Error("forum research supervisor did not provide runnable worker tasks");
-      }
-
-      while (activeWorkers.size > 0) {
-        const outcome = await waitForNextWorker(activeWorkers);
+    let researchSession: Awaited<ReturnType<ForumResearchSupervisor["startSession"]>> | undefined;
+    let previousDecisionApplied: boolean | null = null;
+    const enqueue = (event: ResearchEvent) => {
+      if (closed || signal?.aborted) return;
+      events.push(event);
+      wake?.();
+      wake = null;
+    };
+    const abort = () => {
+      for (const worker of activeWorkers.values()) worker.controller.abort(signal?.reason);
+      wake?.();
+      wake = null;
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+    const drain = () => {
+      for (const event of events.splice(0)) {
+        if (event.kind === "progress") {
+          reports.set(event.workerId, event.notice);
+          continue;
+        }
+        const outcome = event.outcome;
+        activeWorkers.delete(outcome.task.worker_id);
         if (outcome.type === "completed") {
-          workerHistory.completed.push(outcome.packet);
-          persistedState = persistCurrentResearchState({
-            store: this.store,
-            sessionIdentity: input.sessionMetadata.sessionIdentity,
-            threadId: input.threadId,
-            lastMessageId: input.request.message.id,
-            previousState: persistedState,
-            completedPackets: workerHistory.completed
-          });
+          history.completed.push(outcome.packet);
           appendRuntimeTrace("codex-app-server", "forum_research_worker_completed", {
-            messageId: input.request.message.id,
-            workerId: outcome.task.worker_id,
-            citationCount: outcome.packet.citations.length
+            messageId: input.request.message.id, workerId: outcome.task.worker_id,
+            evidenceCount: outcome.packet.evidence_items.length
           });
         } else if (outcome.type === "interrupted") {
-          workerHistory.interrupted.push(outcome.task);
+          history.interrupted.push(outcome.task);
         } else {
-          workerHistory.failed.push(outcome.task);
-          this.logger.warn(
-            {
-              error:
-                outcome.error instanceof Error ? outcome.error.message : String(outcome.error),
-              messageId: input.request.message.id,
-              workerId: outcome.task.worker_id
-            },
-            "forum research worker failed"
-          );
+          history.failed.push(outcome.task);
+          this.logger.warn({ messageId: input.request.message.id, workerId: outcome.task.worker_id, error: outcome.error }, "forum research worker failed");
         }
       }
-
-      decision = await this.requestSupervisorDecision({
-        request: input.request,
-        threadId: input.threadId,
-        promptArtifact: input.promptArtifact,
-        activeWorkers,
-        workerHistory,
-        persistedState
-      });
-    }
-
-    const bundle = buildForumResearchBundle({
-      previousState: persistedState,
-      currentPackets: workerHistory.completed
-    });
-
-    return {
-      bundle,
-      persistedState,
-      promptArtifact: input.promptArtifact,
-      finalBrief
     };
-  }
-
-  private async requestSupervisorDecision(input: {
-    request: HarnessRequest;
-    threadId: string;
-    promptArtifact: PersistedPromptRefinementArtifact;
-    activeWorkers: Map<string, ActiveWorker>;
-    workerHistory: WorkerHistory;
-    persistedState: PersistedForumResearchState | null;
-  }): Promise<ForumResearchSupervisorDecision> {
-    const bundle = buildForumResearchBundle({
-      previousState: input.persistedState,
-      currentPackets: input.workerHistory.completed
-    });
-    const decision = await this.supervisor.decide({
-      messageId: input.request.message.id,
-      threadId: input.threadId,
-      refinedPrompt: input.promptArtifact.refinedPrompt,
-      activeWorkers: [
-        ...[...input.activeWorkers.values()].map((worker) => ({
-          worker_id: worker.task.worker_id,
-          question: worker.task.question,
-          search_focus: worker.task.search_focus,
-          state: "running" as const
-        })),
-        ...input.workerHistory.failed.map((task) => ({
-          worker_id: task.worker_id,
-          question: task.question,
-          search_focus: task.search_focus,
-          state: "failed" as const
-        })),
-        ...input.workerHistory.interrupted.map((task) => ({
-          worker_id: task.worker_id,
-          question: task.question,
-          search_focus: task.search_focus,
-          state: "interrupted" as const
-        }))
-      ],
-      completedWorkers: input.workerHistory.completed.map((packet) => ({
-        worker_id: packet.worker_id,
-        subquestion: packet.subquestion
-      })),
-      currentEvidenceItems: bundle.evidenceItems,
-      currentSourceCatalog: bundle.sourceCatalog,
-      previousResearchState: input.persistedState
-    });
-
-    appendRuntimeTrace("codex-app-server", "forum_research_supervisor_decided", {
-      messageId: input.request.message.id,
-      nextAction: decision.next_action,
-      workerCount: decision.worker_tasks.length,
-      interruptCount: decision.interrupts.length
-    });
-    return decision;
-  }
-
-  private async applySupervisorDecision(input: {
-    request: HarnessRequest;
-    decision: ForumResearchSupervisorDecision;
-    activeWorkers: Map<string, ActiveWorker>;
-    launchedWorkerIds: Set<string>;
-    workerHistory: WorkerHistory;
-    finalBrief: string | null;
-    callbacks?: ForumResearchRetryCallbacks;
-    progressNotices: Set<string>;
-  }): Promise<{
-    finalBrief: string | null;
-  }> {
-    const progressNotice = input.decision.progress_notice?.trim() ?? null;
-    if (progressNotice && !input.progressNotices.has(progressNotice)) {
-      input.progressNotices.add(progressNotice);
-      await input.callbacks?.onProgressNotice?.(progressNotice);
-    }
-
-    const finalBrief = input.decision.final_brief?.trim() || input.finalBrief;
-
-    if (
-      input.activeWorkers.size + input.decision.worker_tasks.length >
-      FORUM_RESEARCH_MAX_WORKERS
-    ) {
-      throw new Error("forum research supervisor exceeded the worker concurrency limit");
-    }
-
-    for (const workerId of input.decision.interrupts) {
-      const active = input.activeWorkers.get(workerId);
-      if (!active) {
-        throw new Error(`forum research supervisor requested interrupt for inactive worker: ${workerId}`);
-      }
-      if (active.interruptRequested) {
-        continue;
-      }
-      active.interruptRequested = true;
-      await active.interrupt();
-      appendRuntimeTrace("codex-app-server", "forum_research_worker_interrupted", {
-        messageId: input.request.message.id,
-        workerId
-      });
-    }
-
-    if (input.decision.next_action === "finalize" && input.decision.worker_tasks.length > 0) {
-      throw new Error("forum research supervisor returned worker tasks while finalizing");
-    }
-    if (
-      input.decision.next_action === "launch_workers" &&
-      input.decision.worker_tasks.length === 0
-    ) {
-      throw new Error("forum research supervisor requested launch_workers without worker tasks");
-    }
-
-    if (input.decision.next_action === "launch_workers") {
-      const newWorkers = await Promise.all(
-        input.decision.worker_tasks.map(async (task) => {
-          if (
-            input.launchedWorkerIds.has(task.worker_id) ||
-            input.activeWorkers.has(task.worker_id) ||
-            input.workerHistory.completed.some((packet) => packet.worker_id === task.worker_id) ||
-            input.workerHistory.failed.some((failed) => failed.worker_id === task.worker_id) ||
-            input.workerHistory.interrupted.some(
-              (interrupted) => interrupted.worker_id === task.worker_id
-            )
-          ) {
-            throw new Error(`forum research supervisor reused worker_id: ${task.worker_id}`);
+    try {
+      researchSession = await this.supervisor.startSession();
+      while (true) {
+        signal?.throwIfAborted();
+        drain();
+        const bundle = buildForumResearchBundle({ evidence, currentPackets: history.completed });
+        const decision = await researchSession.decide({
+          messageId: input.request.message.id,
+          threadId: input.threadId,
+          originalRequest: input.request,
+          refinedPrompt: input.promptArtifact.refinedPrompt,
+          activeWorkers: [
+            ...[...activeWorkers.values()].map(worker => ({ ...worker.task, state: "running" as const })),
+            ...history.failed.map(task => ({ ...task, state: "failed" as const })),
+            ...history.interrupted.map(task => ({ ...task, state: "interrupted" as const }))
+          ],
+          completedWorkers: history.completed,
+          currentSourceCatalog: bundle.sourceCatalog,
+          publicSourceFailures: evidence.failures,
+          workerProgress: [...reports].map(([worker_id, notice]) => ({ worker_id, ...notice })),
+          recentProgressNotices: input.callbacks?.recentProgressNotices?.() ?? [],
+          previousResearchState: input.persistedState,
+          executionContext: this.executionContext(input.request, evidence, signal),
+          previousDecisionApplied
+        });
+        signal?.throwIfAborted();
+        // A decision is based on a snapshot. Incorporate events received during it
+        // before accepting a final brief or commands for that snapshot.
+        if (events.length > 0) { previousDecisionApplied = false; continue; }
+        previousDecisionApplied = true;
+        if (decision.progress_notice) {
+          await this.publishProgress(input.request, evidence, decision.progress_notice, input.callbacks);
+        }
+        finalBrief = decision.final_brief?.trim() || finalBrief;
+        if (decision.next_action !== "launch_workers" && decision.worker_tasks.length > 0) {
+          throw new Error("forum supervisor returned tasks without a launch instruction");
+        }
+        if (decision.next_action === "launch_workers" && decision.worker_tasks.length === 0) {
+          throw new Error("forum supervisor requested launch_workers without tasks");
+        }
+        for (const id of decision.interrupts) {
+          const worker = activeWorkers.get(id);
+          if (!worker) throw new Error(`forum supervisor requested interrupt for inactive worker: ${id}`);
+          if (!worker.interruptRequested) {
+            worker.interruptRequested = true;
+            worker.controller.abort(new Error("Worker interrupted by research supervisor"));
           }
-
-          const worker = await this.startWorker({
-            request: input.request,
-            task
-          });
-          return {
-            task,
-            worker
-          };
-        })
-      );
-
-      for (const entry of newWorkers) {
-        input.launchedWorkerIds.add(entry.task.worker_id);
-        input.activeWorkers.set(entry.task.worker_id, entry.worker);
+        }
+        if (activeWorkers.size + decision.worker_tasks.length > FORUM_RESEARCH_MAX_WORKERS) {
+          throw new Error("forum research supervisor exceeded the worker concurrency limit");
+        }
+        for (const task of decision.worker_tasks) {
+          if (launchedWorkerIds.has(task.worker_id)) throw new Error(`forum supervisor reused worker_id: ${task.worker_id}`);
+          launchedWorkerIds.add(task.worker_id);
+        }
+        await Promise.all(decision.worker_tasks.map(async task => {
+          try {
+            const worker = await this.startWorker({ request: input.request, task, evidence, enqueue, ...(signal ? { signal } : {}) });
+            activeWorkers.set(task.worker_id, worker);
+          } catch (error) {
+            enqueue({ kind: "outcome", outcome: { type: "failed", task, error } });
+          }
+        }));
+        signal?.throwIfAborted();
+        if (decision.next_action === "finalize" && activeWorkers.size === 0) break;
+        // The lead can research while the newly launched workers run. Subsequent
+        // wait decisions sleep until an actual worker event, without polling.
+        if (decision.next_action === "launch_workers") continue;
+        if (activeWorkers.size === 0 && events.length === 0) {
+          throw new Error("forum supervisor requested waiting without active workers");
+        }
+        if (events.length === 0) await new Promise<void>(resolve => { wake = resolve; });
       }
+      const bundle = buildForumResearchBundle({ evidence, currentPackets: history.completed });
+      persistCurrentResearchState({
+        store: this.store, sessionIdentity: input.sessionMetadata.sessionIdentity,
+        threadId: input.request.place.thread_id ?? input.request.place.channel_id,
+        lastMessageId: input.request.message.id, previousState: input.persistedState,
+        bundle
+      });
+      return { bundle, persistedState: input.persistedState, promptArtifact: input.promptArtifact, finalBrief, evidence };
+    } finally {
+      closed = true;
+      signal?.removeEventListener("abort", abort);
+      for (const worker of activeWorkers.values()) worker.controller.abort(new Error("Research run ended"));
+      await Promise.allSettled([...activeWorkers.values()].map(worker => worker.completion));
+      await researchSession?.close().catch(() => undefined);
     }
+  }
 
+  private async publishProgress(request: HarnessRequest, evidence: ResearchRunEvidence, notice: ForumResearchProgress, callbacks?: ForumResearchRetryCallbacks): Promise<void> {
+    callbacks?.signal?.throwIfAborted();
+    const facts = evidence.resolve(notice.evidence_fact_ids);
+    const response: HarnessResponse = {
+      ...buildForumTerminalFailureResponse(notice.message, "research progress"),
+      outcome: "chat_reply", sources_used: dedupeStrings([...facts.map(fact => fact.canonical_item_url), ...extractUrls(notice.message)])
+    };
+    const guard = new OutputSafetyGuard(this.store);
+    const decision = guard.evaluate({
+      request: { ...request, available_context: { ...request.available_context, public_source_facts: evidence.facts } },
+      response, linkedKnowledgeSources: []
+    });
+    if (decision.decision !== "allow") {
+      this.logger.debug({ reason: decision.reason }, "research progress withheld at public boundary");
+      return;
+    }
+    await callbacks?.onProgressNotice?.(notice.message);
+  }
+
+  private executionContext(request: HarnessRequest, evidence: ResearchRunEvidence, signal?: AbortSignal): TurnExecutionContext {
     return {
-      finalBrief
+      ...executionContextForHarnessRequest(request),
+      ...(signal ? { signal } : {}),
+      readResearchEvidence: factId => evidence.resolve([factId])[0]!,
+      onPublicSourceEvidence: result => {
+        signal?.throwIfAborted();
+        evidence.record(result);
+      }
     };
   }
 
   private async startWorker(input: {
     request: HarnessRequest;
     task: ForumResearchWorkerTask;
+    evidence: ResearchRunEvidence;
+    enqueue: (event: ResearchEvent) => void;
+    signal?: AbortSignal;
   }): Promise<ActiveWorker> {
-    const threadId = await this.codexClient.startEphemeralThread(
-      "read-only",
-      FORUM_LONGFORM_LOW_CODEX_MODEL_PROFILE
-    );
-    appendRuntimeTrace("codex-app-server", "forum_research_worker_started", {
-      messageId: input.request.message.id,
-      workerId: input.task.worker_id
-    });
-
-    const startedTurn = await this.codexClient.startJsonTurn({
-      threadId,
-      inputPayload: {
-        kind: "forum_research_worker",
-        place_mode: "forum_longform",
-        request: {
-          message_id: input.request.message.id,
-          message_content: input.request.message.content,
-          urls: input.request.message.urls,
-          thread_id: input.request.place.thread_id,
-          root_channel_id: input.request.place.root_channel_id
+    const controller = new AbortController();
+    const signal = input.signal ? AbortSignal.any([input.signal, controller.signal]) : controller.signal;
+    signal.throwIfAborted();
+    const threadId = await this.codexClient.startEphemeralThread("read-only", FORUM_RESEARCH_WORKER_CODEX_MODEL_PROFILE);
+    let startedTurn;
+    try {
+      signal.throwIfAborted();
+      startedTurn = await this.codexClient.startJsonTurn({
+        threadId,
+        inputPayload: {
+          kind: "forum_research_worker", place_mode: "forum_longform",
+          request: { ...input.request, available_context: { ...input.request.available_context, public_source_failures: input.evidence.failures } },
+          task: input.task,
+          source_catalog: input.evidence.catalog()
         },
-        task: input.task
-      },
-      allowExternalFetch: true,
-      outputSchema: forumResearchWorkerPacketJsonSchema,
-      parser: (value) => forumResearchWorkerPacketSchema.parse(value),
-      modelProfile: FORUM_LONGFORM_LOW_CODEX_MODEL_PROFILE
-    });
-
-    const activeWorker: ActiveWorker = {
-      task: input.task,
-      threadId,
-      interruptRequested: false,
-      interrupt: startedTurn.interrupt,
-      completion: startedTurn.completion
-        .then((result) => ({
-          type: "completed" as const,
-          task: input.task,
-          packet: result.response
-        }))
-        .catch((error) => ({
-          type: classifyWorkerFailure(error, activeWorker.interruptRequested),
-          task: input.task,
-          error
-        }))
-        .finally(async () => {
-          await this.codexClient.closeEphemeralThread(threadId).catch(() => undefined);
-        })
-    };
-
-    return activeWorker;
+        allowExternalFetch: input.request.capabilities.allow_external_fetch,
+        executionContext: {
+          ...this.executionContext(input.request, input.evidence, signal),
+          onResearchProgress: notice => {
+            signal.throwIfAborted();
+            input.evidence.resolve(notice.evidence_fact_ids);
+            input.enqueue({ kind: "progress", workerId: input.task.worker_id, notice });
+          }
+        },
+        outputSchema: forumResearchWorkerPacketJsonSchema,
+        parser: value => input.evidence.groundPacket(forumResearchWorkerPacketSchema.parse(value)),
+        modelProfile: FORUM_RESEARCH_WORKER_CODEX_MODEL_PROFILE
+      });
+    } catch (error) {
+      await this.codexClient.closeEphemeralThread(threadId).catch(() => undefined);
+      throw error;
+    }
+    const completion: Promise<WorkerOutcome> = startedTurn.completion
+      .then(result => {
+        signal.throwIfAborted();
+        return { type: "completed" as const, task: input.task, packet: result.response, observations: result.observations };
+      })
+      .catch(error => ({ type: controller.signal.aborted || input.signal?.aborted ? "interrupted" as const : "failed" as const, task: input.task, error }))
+      .then(outcome => {
+        input.enqueue({ kind: "outcome", outcome });
+        return outcome;
+      });
+    // Closing subscriptions is cleanup; deliver completion before the close RPC.
+    void completion.then(() => this.codexClient.closeEphemeralThread(threadId)).catch(() => undefined);
+    return { task: input.task, threadId, controller, interruptRequested: false, interrupt: startedTurn.interrupt, completion };
   }
 
   private async runFinalStreamingTurn(input: {
@@ -534,9 +489,6 @@ export class ForumResearchPipeline {
     response: HarnessResponse;
     observations: TurnObservations;
   }> {
-    await input.callbacks?.onProgressNotice?.(
-      buildForumPhaseProgressNotice("final_synthesis")
-    );
     appendRuntimeTrace("codex-app-server", "forum_high_synthesis_started", {
       messageId: input.request.message.id,
       retryKind: input.retryKind,
@@ -556,7 +508,8 @@ export class ForumResearchPipeline {
       ),
       allowExternalFetch: input.request.capabilities.allow_external_fetch,
       sessionMetadata: input.sessionMetadata,
-      modelProfile: FORUM_LONGFORM_CODEX_MODEL_PROFILE,
+      modelProfile: FORUM_RESEARCH_SUPERVISOR_CODEX_MODEL_PROFILE,
+      executionContext: this.answerExecutionContext(input.request, input.state, input.callbacks),
       callbacks: {}
     });
 
@@ -573,20 +526,19 @@ export class ForumResearchPipeline {
     if (!result.response?.trim()) {
       throw new Error("codex streaming final produced no visible text");
     }
+    input.callbacks?.signal?.throwIfAborted();
+    const observations = mergeSourceCatalogObservations(result.observations, input.state.evidence);
+    this.saveSingleResearchState(input, input.state);
 
     return {
       response: synthesizeStreamingResponse(
         result.response,
-        input.state.bundle.sourceCatalog,
-        result.observations.observed_public_urls,
+        input.state.evidence.catalog(input.state.bundle.currentWorkerPackets),
         input.retryKind === "initial"
           ? "forum streaming final"
           : "forum output safety streaming final"
       ),
-      observations: mergeSourceCatalogObservations(
-        result.observations,
-        input.state.bundle.sourceCatalog
-      )
+      observations
     };
   }
 
@@ -616,7 +568,8 @@ export class ForumResearchPipeline {
         inputPayload: buildStreamingRetryPayload(input.request, input.state, input.reason),
         allowExternalFetch: input.request.capabilities.allow_external_fetch,
         sessionMetadata: input.sessionMetadata,
-        modelProfile: FORUM_LONGFORM_CODEX_MODEL_PROFILE,
+        modelProfile: FORUM_RESEARCH_SUPERVISOR_CODEX_MODEL_PROFILE,
+        executionContext: this.answerExecutionContext(input.request, input.state, input.callbacks),
         callbacks: {
           onAgentMessageDelta: async (delta) => {
             appendRuntimeTrace("codex-app-server", "forum_retry_stream_chunk_sent", {
@@ -632,20 +585,19 @@ export class ForumResearchPipeline {
         messageId: input.request.message.id
       });
       await input.callbacks?.onRetryCompleted?.();
+      input.callbacks?.signal?.throwIfAborted();
+      const observations = mergeSourceCatalogObservations(result.observations, input.state.evidence);
+      this.saveSingleResearchState(input, input.state);
 
       const response = synthesizeStreamingResponse(
         result.response,
-        input.state.bundle.sourceCatalog,
-        result.observations.observed_public_urls,
+        input.state.evidence.catalog(input.state.bundle.currentWorkerPackets),
         "forum visible recovery streaming final"
       );
 
       return {
         response,
-        observations: mergeSourceCatalogObservations(
-          result.observations,
-          input.state.bundle.sourceCatalog
-        ),
+        observations,
         primaryReplyAlreadySent: false
       };
     } catch (error) {
@@ -670,8 +622,27 @@ export class ForumResearchPipeline {
     }
   }
 
-  private loadPersistedState(sessionIdentity: string): PersistedForumResearchState | null {
-    const row = this.store.forumResearchStates.get(sessionIdentity);
+  private answerExecutionContext(request: HarnessRequest, state: ForumResearchPipelineState, callbacks?: ForumResearchRetryCallbacks): TurnExecutionContext {
+    return {
+      ...this.executionContext(request, state.evidence, callbacks?.signal),
+      ...(state.mode === "single" ? {
+        onResearchProgress: (notice: ForumResearchProgress) => this.publishProgress(request, state.evidence, notice, callbacks)
+      } : {})
+    };
+  }
+
+  private saveSingleResearchState(input: Parameters<ForumResearchPipeline["runParallel"]>[0], state: ForumResearchPipelineState): void {
+    if (state.mode !== "single") return;
+    state.bundle = buildForumResearchBundle({ evidence: state.evidence, currentPackets: [] });
+    persistCurrentResearchState({
+      store: this.store, sessionIdentity: input.sessionMetadata.sessionIdentity,
+      threadId: input.request.place.thread_id ?? input.request.place.channel_id,
+      lastMessageId: input.request.message.id, previousState: state.persistedState, bundle: state.bundle
+    });
+  }
+
+  private loadPersistedState(sessionIdentity: string, threadId: string): PersistedForumResearchState | null {
+    const row = this.store.forumResearchStates.get(sessionIdentity) ?? this.store.forumResearchStates.getLatestForThread(threadId);
     if (!row) {
       return null;
     }
@@ -706,6 +677,7 @@ export class ForumResearchPipeline {
 
     const artifact = await this.promptRefiner.refine({
       messageId: input.request.message.id,
+      ...(input.callbacks?.signal ? { signal: input.callbacks.signal } : {}),
       currentMessage: input.request.message.content,
       starterMessage: input.starterMessage,
       threadId: input.threadId,
@@ -729,7 +701,7 @@ export class ForumResearchPipeline {
     });
     const progressNotice = persistedArtifact.progressNotice?.trim();
     if (progressNotice) {
-      await input.callbacks?.onProgressNotice?.(progressNotice);
+      await this.publishProgress(input.request, new ResearchRunEvidence(input.request.available_context.public_source_facts), { message: progressNotice, evidence_fact_ids: [] }, input.callbacks);
     }
     return persistedArtifact;
   }
@@ -765,117 +737,20 @@ export function shouldRefreshForumPromptArtifact(request: HarnessRequest): boole
   );
 }
 
-async function waitForNextWorker(
-  activeWorkers: Map<string, ActiveWorker>
-): Promise<WorkerOutcome> {
-  const pending = [...activeWorkers.values()].map((worker) =>
-    worker.completion.then((outcome) => ({
-      workerId: worker.task.worker_id,
-      outcome
-    }))
-  );
-  const settled = await Promise.race(pending);
-  activeWorkers.delete(settled.workerId);
-  return settled.outcome;
-}
-
-function applyRefinedPrompt(
-  request: HarnessRequest,
-  refinedPrompt: string | null
-): HarnessRequest {
-  const override = refinedPrompt?.trim();
-  if (!override) {
-    return request;
-  }
-
-  return {
-    ...request,
-    message: {
-      ...request.message,
-      content: override
-    }
-  };
-}
-
 function buildForumResearchBundle(input: {
-  previousState: PersistedForumResearchState | null;
+  evidence: ResearchRunEvidence;
   currentPackets: ForumResearchWorkerPacket[];
 }): ForumResearchBundle {
-  const evidenceItems = dedupeEvidenceItems([
-    ...(input.previousState?.evidenceItems ?? []),
-    ...input.currentPackets.flatMap((packet) => packet.evidence_items)
-  ]);
-  const sourceCatalog = buildSourceCatalog(
-    input.previousState?.sourceCatalog ?? [],
-    input.currentPackets
-  );
+  const sourceCatalog = input.evidence.catalog(input.currentPackets);
   return {
-    evidenceItems,
+    evidenceItems: dedupeEvidenceItems(input.currentPackets.flatMap(packet => packet.evidence_items)),
     currentWorkerPackets: input.currentPackets,
     distinctSourceTarget: FORUM_RESEARCH_DISTINCT_SOURCE_TARGET,
-    distinctSources: sourceCatalog.map((entry) => entry.url),
-    sourceCatalog
+    distinctSources: sourceCatalog.map(entry => entry.url),
+    sourceCatalog,
+    publicSourceFacts: input.evidence.facts,
+    publicSourceFailures: input.evidence.failures
   };
-}
-
-function buildSourceCatalog(
-  priorCatalog: ForumResearchSourceCatalogEntry[],
-  workerPackets: ForumResearchWorkerPacket[]
-): ForumResearchSourceCatalogEntry[] {
-  const byUrl = new Map<string, ForumResearchSourceCatalogEntry>();
-  for (const prior of priorCatalog) {
-    const canonicalUrl = normalizePublicUrl(prior.url);
-    if (!canonicalUrl) {
-      continue;
-    }
-    byUrl.set(canonicalUrl, {
-      index: 0,
-      url: canonicalUrl,
-      claims: dedupeStrings(prior.claims)
-    });
-  }
-
-  for (const packet of workerPackets) {
-    for (const citation of packet.citations) {
-      mergeCitation(byUrl, citation);
-    }
-    for (const evidenceItem of packet.evidence_items) {
-      for (const sourceUrl of evidenceItem.source_urls) {
-        mergeCitation(byUrl, {
-          url: sourceUrl,
-          claim: evidenceItem.claim
-        });
-      }
-    }
-  }
-
-  return [...byUrl.values()].map((entry, index) => ({
-    ...entry,
-    index: index + 1,
-    claims: dedupeStrings(entry.claims)
-  }));
-}
-
-function mergeCitation(
-  byUrl: Map<string, ForumResearchSourceCatalogEntry>,
-  citation: ForumResearchWorkerCitation
-): void {
-  const canonicalUrl = normalizePublicUrl(citation.url);
-  if (!canonicalUrl) {
-    return;
-  }
-
-  const existing = byUrl.get(canonicalUrl);
-  if (existing) {
-    existing.claims.push(citation.claim);
-    return;
-  }
-
-  byUrl.set(canonicalUrl, {
-    index: 0,
-    url: canonicalUrl,
-    claims: [citation.claim]
-  });
 }
 
 function persistCurrentResearchState(input: {
@@ -884,34 +759,17 @@ function persistCurrentResearchState(input: {
   threadId: string;
   lastMessageId: string;
   previousState: PersistedForumResearchState | null;
-  completedPackets: ForumResearchWorkerPacket[];
-}): PersistedForumResearchState {
-  const bundle = buildForumResearchBundle({
-    previousState: input.previousState,
-    currentPackets: input.completedPackets
-  });
-  const nextState: PersistedForumResearchState = {
-    sessionIdentity: input.sessionIdentity,
-    threadId: input.threadId,
-    lastMessageId: input.lastMessageId,
-    evidenceItems: bundle.evidenceItems,
-    sourceCatalog: bundle.sourceCatalog,
-    distinctSources: bundle.distinctSources
-  };
+  bundle: ForumResearchBundle;
+}): void {
+  const sources = new Map((input.previousState?.sourceCatalog ?? []).map(entry => [entry.url, entry]));
+  for (const source of input.bundle.sourceCatalog) sources.set(source.url, source);
   input.store.forumResearchStates.upsert({
-    sessionIdentity: nextState.sessionIdentity,
-    threadId: nextState.threadId,
-    lastMessageId: nextState.lastMessageId,
-    evidenceItemsJson: JSON.stringify(nextState.evidenceItems),
-    sourceCatalogJson: JSON.stringify(nextState.sourceCatalog),
-    distinctSourcesJson: JSON.stringify(nextState.distinctSources)
+    sessionIdentity: input.sessionIdentity, threadId: input.threadId,
+    lastMessageId: input.lastMessageId,
+    evidenceItemsJson: JSON.stringify(dedupeEvidenceItems([...(input.previousState?.evidenceItems ?? []), ...input.bundle.evidenceItems])),
+    sourceCatalogJson: JSON.stringify([...sources.values()]),
+    distinctSourcesJson: JSON.stringify([...sources.keys()])
   });
-  appendRuntimeTrace("codex-app-server", "forum_research_state_saved", {
-    sessionIdentity: nextState.sessionIdentity,
-    threadId: nextState.threadId,
-    distinctSourceCount: nextState.distinctSources.length
-  });
-  return nextState;
 }
 
 function persistPromptArtifact(input: {
@@ -956,28 +814,30 @@ function buildStreamingFinalPayload(
     | "output_safety_retry"
     | Exclude<ForumVisibleRecoveryReason, "output_safety_regeneration">
 ): Record<string, unknown> {
+  if (state.mode === "single") {
+    return {
+      kind: "forum_research_streaming_final",
+      request: { ...request, available_context: { ...request.available_context, public_source_failures: state.evidence.failures } },
+      forum_research_context: {
+        execution_mode: "single", retry_kind: retryKind,
+        starter_message: state.starterMessage ?? null,
+        previous_research_state: state.persistedState,
+        source_catalog: state.evidence.catalog([])
+      }
+    };
+  }
   return {
     kind: "forum_research_streaming_final",
-    request,
+    request: { ...request, available_context: { ...request.available_context, public_source_failures: state.evidence.failures } },
     forum_research_context: {
       retry_kind: retryKind,
       distinct_source_target: state.bundle.distinctSourceTarget,
-      refined_prompt: state.promptArtifact.refinedPrompt,
-      prompt_rationale_summary: state.promptArtifact.promptRationaleSummary,
+      refined_prompt: state.promptArtifact?.refinedPrompt,
+      prompt_rationale_summary: state.promptArtifact?.promptRationaleSummary,
       final_brief: state.finalBrief,
-      current_worker_packets: state.bundle.currentWorkerPackets.map(
-        (packet) => ({
-          worker_id: packet.worker_id,
-          subquestion: packet.subquestion,
-          evidence_items: packet.evidence_items,
-          citations: packet.citations
-        })
-      ),
-      current_evidence_items: state.bundle.currentWorkerPackets.flatMap(
-        (packet) => packet.evidence_items
-      ),
+      current_worker_packets: state.bundle.currentWorkerPackets,
       previous_research_state: state.persistedState,
-      source_catalog: state.bundle.sourceCatalog,
+      source_catalog: state.evidence.catalog(state.bundle.currentWorkerPackets),
       synthesis_contract: {
         use_worker_packets_as_coverage_map: true,
         preserve_cross_worker_findings: true,
@@ -998,54 +858,17 @@ function buildStreamingRetryPayload(
 function synthesizeStreamingResponse(
   text: string | null,
   sourceCatalog: ForumResearchSourceCatalogEntry[],
-  observedPublicUrls: string[],
   note: string
 ): HarnessResponse {
   const publicText = text?.trim() ?? "";
-  if (!publicText) {
-    return buildForumTerminalFailureResponse(
-      "調査回答の再試行は完了できませんでした。必要なら同じ thread で続けてください。",
-      "forum timeout recovery produced no visible text"
-    );
-  }
-  const citedNumbers = extractCitationNumbers(publicText);
-  const numberedSources = citedNumbers
-    .map((index) => sourceCatalog.find((entry) => entry.index === index)?.url ?? null)
-    .filter((url): url is string => Boolean(url));
-  const observedSources = observedPublicUrls
-    .map((url) => normalizePublicUrl(url))
-    .filter((url): url is string => Boolean(url));
-  const sourcesUsed = dedupeStrings([...numberedSources, ...observedSources]);
-
+  if (!publicText) throw new SyntaxError("forum synthesis produced no visible text");
+  const compiled = compileForumCitations(publicText, sourceCatalog);
   return {
-    outcome: "chat_reply",
-    repo_write_intent: false,
-    public_text: publicText,
-    reply_mode: "same_place",
-    target_thread_id: null,
-    selected_source_ids: [],
-    sources_used: sourcesUsed,
-    knowledge_writes: [],
-    diagnostics: {
-      notes: note
-    },
-    sensitivity_raise: "none"
+    outcome: "chat_reply", repo_write_intent: false,
+    public_text: compiled.text, reply_mode: "same_place", target_thread_id: null,
+    selected_source_ids: [], sources_used: compiled.sourcesUsed,
+    knowledge_writes: [], diagnostics: { notes: note }, sensitivity_raise: "none"
   };
-}
-
-function extractCitationNumbers(text: string): number[] {
-  const matches = [...text.matchAll(/\[(\d+)\]/g)];
-  const deduped: number[] = [];
-  const seen = new Set<number>();
-  for (const match of matches) {
-    const parsed = Number.parseInt(match[1] ?? "", 10);
-    if (!Number.isFinite(parsed) || seen.has(parsed)) {
-      continue;
-    }
-    seen.add(parsed);
-    deduped.push(parsed);
-  }
-  return deduped;
 }
 
 function dedupeEvidenceItems(
@@ -1066,6 +889,7 @@ function dedupeEvidenceItems(
       continue;
     }
     byKey.set(key, {
+      ...item,
       claim: item.claim,
       source_urls: normalizedUrls
     });
@@ -1087,17 +911,17 @@ function normalizePublicUrl(url: string): string | null {
 
 function mergeSourceCatalogObservations(
   observations: TurnObservations,
-  sourceCatalog: ForumResearchSourceCatalogEntry[]
+  evidence: ResearchRunEvidence
 ): TurnObservations {
-  const catalogUrls = sourceCatalog
-    .map((entry) => normalizePublicUrl(entry.url))
-    .filter((url): url is string => Boolean(url));
+  evidence.record({ facts: observations.public_source_facts ?? [], failures: observations.public_source_failures ?? [] });
   return {
     observed_public_urls: dedupeStrings([
       ...observations.observed_public_urls,
-      ...catalogUrls
+      ...evidence.facts.flatMap(fact => [fact.canonical_item_url, fact.observed_url])
     ]),
-    generated_images: observations.generated_images
+    generated_images: observations.generated_images,
+    public_source_facts: evidence.facts,
+    public_source_failures: evidence.failures
   };
 }
 
@@ -1127,7 +951,12 @@ export function parseEvidenceItems(
     }
 
     const parsedItems = parsed
-      .map((item) => forumResearchEvidenceItemSchema.safeParse(item))
+      .map((item) => {
+        if (item && typeof item === "object" && typeof item.claim === "string" && Array.isArray(item.source_urls)) {
+          return { success: true as const, data: { claim: item.claim, source_urls: item.source_urls.filter((url: unknown): url is string => typeof url === "string"), evidence_fact_ids: [] } };
+        }
+        return forumResearchEvidenceItemSchema.safeParse(item);
+      })
       .filter((item) => item.success)
       .map((item) => item.data);
     if (parsedItems.length > 0) {
@@ -1147,7 +976,7 @@ export function parseSourceCatalog(value: string): ForumResearchSourceCatalogEnt
       return [];
     }
     return parsed
-      .map((item) => {
+      .map((item): ForumResearchSourceCatalogEntry | null => {
         if (
           typeof item !== "object" ||
           item === null ||
@@ -1163,6 +992,8 @@ export function parseSourceCatalog(value: string): ForumResearchSourceCatalogEnt
           : ["Legacy forum research progress"];
         return {
           index,
+          source_id: "source_id" in item && typeof item.source_id === "string" ? item.source_id : `history:${index}`,
+          evidence_fact_ids: [],
           url: item.url,
           claims
         } satisfies ForumResearchSourceCatalogEntry;
@@ -1197,7 +1028,8 @@ function parseLegacyEvidenceItems(
           typeof plannerBrief === "string" && plannerBrief.trim().length > 0
             ? plannerBrief.trim()
             : "Legacy forum research progress",
-        source_urls: [firstSource.url]
+        source_urls: [firstSource.url],
+        evidence_fact_ids: []
       };
     })
     .filter((item): item is ForumResearchEvidenceItem => item !== null);
@@ -1243,19 +1075,6 @@ function buildVisibleRetryStatus(reason: ForumVisibleRecoveryReason): string {
       return "再試行しています。生成結果の受け取りで問題が起きたため、整理し直しています。";
     case "final_turn_timeout":
       return "再試行しています。集まっている根拠をもとに整理し直しています。";
-  }
-}
-
-function buildForumPhaseProgressNotice(
-  phase: "prompt_refinement" | "supervisor_planning" | "final_synthesis"
-): string {
-  switch (phase) {
-    case "prompt_refinement":
-      return "依頼の焦点を整理しています。少し待ってください。";
-    case "supervisor_planning":
-      return "論点を分解して調査項目を組み立てています。";
-    case "final_synthesis":
-      return "集まった根拠を統合して回答を書いています。";
   }
 }
 
