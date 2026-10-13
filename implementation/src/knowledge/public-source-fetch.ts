@@ -2,6 +2,8 @@ import {
   canonicalizeUrl,
   isAllowedPublicHttpUrl
 } from "../playwright/url-policy.js";
+import { publicHttpGet } from "./public-source/public-http.js";
+import { fetchYoutubeTranscript, youtubeVideoId } from "./public-source/youtube-transcript.js";
 
 export type PublicSourceFetchResult = {
   requestedUrl: string;
@@ -13,32 +15,28 @@ export type PublicSourceFetchResult = {
   title: string | null;
   text: string | null;
   fxTwitterCode?: number | null;
+  transcript?: { language: string; automatic: boolean };
+  retrievalUrl?: string;
 };
 
-const MAX_BODY_READ_CHARS = 64_000;
-const MAX_EXTRACTED_TEXT_CHARS = 8_000;
-
 export async function fetchPublicSource(
-  requestedUrl: string
+  requestedUrl: string,
+  transport = publicHttpGet
 ): Promise<PublicSourceFetchResult> {
   if (!isAllowedPublicHttpUrl(requestedUrl)) {
     throw new Error("requested URL is not a public HTTP(S) URL");
   }
 
-  const response = await fetch(requestedUrl, {
-    method: "GET",
-    redirect: "follow",
-    headers: {
-      "user-agent": "VRC-AI-Bot-public-source-fetch/1.0"
-    }
-  });
+  const videoId = youtubeVideoId(requestedUrl);
+  if (videoId) return fetchYoutubeTranscript(requestedUrl, videoId);
+  const response = await transport(requestedUrl);
 
-  const finalUrl = response.url || requestedUrl;
+  const finalUrl = response.finalUrl;
   if (!isAllowedPublicHttpUrl(finalUrl)) {
     throw new Error("final URL is not a public HTTP(S) URL");
   }
-  const contentType = response.headers.get("content-type");
-  const bodyText = await readResponseText(response, MAX_BODY_READ_CHARS);
+  const contentType = response.contentType;
+  const bodyText = response.body;
   const extracted = extractPublicSourceText(bodyText, contentType);
   const effectiveStatus =
     extractJinaReaderTargetStatus(bodyText, finalUrl) ?? response.status;
@@ -72,7 +70,7 @@ export function extractPublicSourceText(
   ) {
     return {
       title: extractHtmlTitle(bodyText),
-      text: limitText(normalizeWhitespace(stripHtml(bodyText)))
+      text: limitText(normalizedContentType.includes("html") ? normalizeWhitespace(stripHtml(bodyText)) : bodyText)
     };
   }
 
@@ -80,34 +78,6 @@ export function extractPublicSourceText(
     title: null,
     text: null
   };
-}
-
-async function readResponseText(
-  response: Response,
-  maxChars: number
-): Promise<string> {
-  if (!response.body) {
-    return "";
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let output = "";
-
-  try {
-    while (output.length < maxChars) {
-      const chunk = await reader.read();
-      if (chunk.done) {
-        break;
-      }
-      output += decoder.decode(chunk.value, { stream: true });
-    }
-    output += decoder.decode();
-  } finally {
-    await reader.cancel().catch(() => {});
-  }
-
-  return output.slice(0, maxChars);
 }
 
 function extractJsonPublicSourceText(bodyText: string): {
@@ -195,7 +165,7 @@ function collectGenericJsonText(parsed: unknown): {
   let title: string | null = null;
 
   function visit(value: unknown, key: string | null, depth: number): void {
-    if (depth > 4 || lines.join("\n").length >= MAX_EXTRACTED_TEXT_CHARS) {
+    if (depth > 16) {
       return;
     }
 
@@ -214,7 +184,7 @@ function collectGenericJsonText(parsed: unknown): {
     }
 
     if (Array.isArray(value)) {
-      for (const item of value.slice(0, 20)) {
+      for (const item of value) {
         visit(item, key, depth + 1);
       }
       return;
@@ -230,7 +200,7 @@ function collectGenericJsonText(parsed: unknown): {
   visit(parsed, null, 0);
   return {
     title,
-    lines: dedupeStrings(lines).slice(0, 20)
+    lines: dedupeStrings(lines)
   };
 }
 
@@ -298,8 +268,8 @@ function extractJinaReaderTargetStatus(
 
 function stripHtml(value: string): string {
   return value
-    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
+    .replace(/<script\b[^>]*>[\s\S]*?(?:<\/script\s*>|$)/gi, " ")
+    .replace(/<style\b[^>]*>[\s\S]*?(?:<\/style\s*>|$)/gi, " ")
     .replace(/<[^>]+>/g, " ");
 }
 
@@ -315,7 +285,7 @@ function limitText(value: string | null): string | null {
   if (!normalized) {
     return null;
   }
-  return normalized.slice(0, MAX_EXTRACTED_TEXT_CHARS);
+  return normalized;
 }
 
 function readString(value: unknown): string | null {

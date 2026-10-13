@@ -601,6 +601,13 @@ export class ForumResearchStateRepository {
     );
   }
 
+  getLatestForThread(threadId: string): ForumResearchStateRow | null {
+    return (this.db.prepare(`
+      SELECT * FROM forum_research_state WHERE thread_id = ?
+      ORDER BY updated_at DESC, last_message_id DESC LIMIT 1
+    `).get(threadId) as ForumResearchStateRow | undefined) ?? null;
+  }
+
   delete(sessionIdentity: string): void {
     this.db
       .prepare(`

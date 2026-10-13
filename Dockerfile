@@ -1,9 +1,13 @@
 FROM node:24-bookworm-slim
 
-ARG CODEX_CLI_VERSION=0.142.0
+ARG CODEX_CLI_VERSION=0.153.4
+ARG YT_DLP_VERSION=2026.8.19
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends bash ca-certificates git ripgrep util-linux \
+  && apt-get install -y --no-install-recommends bash ca-certificates git python3-venv ripgrep util-linux \
+  && python3 -m venv /opt/yt-dlp \
+  && /opt/yt-dlp/bin/pip install --no-cache-dir "yt-dlp[default]==${YT_DLP_VERSION}" \
+  && ln -s /opt/yt-dlp/bin/yt-dlp /usr/local/bin/yt-dlp \
   && rm -rf /var/lib/apt/lists/*
 
 ENV PNPM_HOME=/pnpm

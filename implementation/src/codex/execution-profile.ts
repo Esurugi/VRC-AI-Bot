@@ -6,8 +6,8 @@ import {
   CLEAR_EXPLANATION_GATE_CODEX_MODEL_PROFILE,
   DEFAULT_CODEX_MODEL,
   DEFAULT_CODEX_MODEL_PROFILE,
-  FORUM_LONGFORM_CODEX_MODEL_PROFILE,
-  FORUM_LONGFORM_LOW_CODEX_MODEL_PROFILE
+  FORUM_RESEARCH_SUPERVISOR_CODEX_MODEL_PROFILE,
+  FORUM_RESEARCH_WORKER_CODEX_MODEL_PROFILE
 } from "./session-policy.js";
 
 export type CodexExecutionProfile = {
@@ -32,16 +32,20 @@ export function resolveCodexExecutionProfile(
         model: DEFAULT_CODEX_MODEL,
         reasoningEffort: "low"
       };
-    case FORUM_LONGFORM_CODEX_MODEL_PROFILE:
     case CLEAR_EXPLANATION_CODEX_MODEL_PROFILE:
       return {
         model: DEFAULT_CODEX_MODEL,
         reasoningEffort: "high"
       };
-    case FORUM_LONGFORM_LOW_CODEX_MODEL_PROFILE:
+    case FORUM_RESEARCH_SUPERVISOR_CODEX_MODEL_PROFILE:
       return {
-        model: DEFAULT_CODEX_MODEL,
+        model: "gpt-6-astra",
         reasoningEffort: "low"
+      };
+    case FORUM_RESEARCH_WORKER_CODEX_MODEL_PROFILE:
+      return {
+        model: "gpt-5.6-luna",
+        reasoningEffort: "xhigh"
       };
     case CLEAR_EXPLANATION_GATE_CODEX_MODEL_PROFILE:
       return {

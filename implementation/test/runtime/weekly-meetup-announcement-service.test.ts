@@ -46,6 +46,34 @@ test("weekly meetup announcement sends @everyone on production delivery", async 
   assert.equal(delivery?.channel_id, "announcement-channel");
 });
 
+test("weekly meetup announcement sends on startup after the event time has passed", async (t) => {
+  const { store } = createStore(t);
+  const sentPayloads: Array<Record<string, unknown>> = [];
+  const service = new WeeklyMeetupAnnouncementService(
+    createConfig(),
+    store,
+    undefined,
+    {
+      fetchChannel: async () => ({
+        id: "announcement-channel",
+        type: ChannelType.GuildText,
+        send: async (payload: Record<string, unknown>) => {
+          sentPayloads.push(payload);
+          return { id: "message-after-event-time" };
+        }
+      }) as never,
+      readTemplateFile: () => JSON.stringify({ title: "AI meetup" })
+    }
+  );
+
+  await service.poll(new Date("2026-03-16T13:00:00.000Z"));
+
+  const delivery = store.scheduledDeliveries.get("weekly_meetup", "2026-03-16");
+
+  assert.equal(sentPayloads.length, 1);
+  assert.equal(delivery?.message_id, "message-after-event-time");
+});
+
 test("weekly meetup test announcement does not send @everyone", async (t) => {
   const { store } = createStore(t);
   const sentPayloads: Array<Record<string, unknown>> = [];

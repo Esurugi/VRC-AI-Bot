@@ -25,6 +25,7 @@ export async function acquirePublicSourceEvidence(input: {
   existingFailures: PublicSourceFailure[];
   logger: Pick<Logger, "debug">;
   fetcher: PublicSourceFetcher | undefined;
+  pageSize?: number;
 }): Promise<{
   facts: PublicSourceFact[];
   failures: PublicSourceFailure[];
@@ -48,7 +49,7 @@ export async function acquirePublicSourceEvidence(input: {
     }
 
     for (const candidate of candidates) {
-      const attempt = await fetchCandidate(candidate, fetcher, input.logger);
+      const attempt = await fetchCandidate(candidate, fetcher, input.logger, input.pageSize ?? 8_000);
       if (attempt.kind === "fact") {
         facts.push(attempt.fact);
         existingFactResourceIds.add(resourceId);
@@ -67,7 +68,8 @@ export async function acquirePublicSourceEvidence(input: {
 async function fetchCandidate(
   candidate: PublicFetchCandidate,
   fetcher: PublicSourceFetcher,
-  logger: Pick<Logger, "debug">
+  logger: Pick<Logger, "debug">,
+  pageSize: number
 ): Promise<
   | {
       kind: "fact";
@@ -84,7 +86,7 @@ async function fetchCandidate(
     if (failureReason) {
       return {
         kind: "failure",
-        failure: toFailure(candidate, result.status, failureReason)
+        failure: toFailure(candidate, result.status, failureReason, result.finalUrl)
       };
     }
 
@@ -95,15 +97,17 @@ async function fetchCandidate(
         fact_id: `fact:${candidate.candidate_id}`,
         resource_id: candidate.resource_id,
         candidate_id: candidate.candidate_id,
-        provider: candidate.provider,
+        provider: result.transcript ? "youtube_transcript" : candidate.provider,
         original_url: candidate.original_url,
-        canonical_item_url: candidate.canonical_item_url,
-        retrieval_url: canonicalizeUrl(candidate.retrieval_url),
+        canonical_item_url: result.transcript ? result.canonicalUrl : candidate.canonical_item_url,
+        retrieval_url: canonicalizeUrl(result.retrievalUrl ?? candidate.retrieval_url),
         observed_url: canonicalizeUrl(result.finalUrl),
         status: result.status,
         content_type: result.contentType,
         title: result.title?.trim() || null,
-        text
+        text: text.slice(0, pageSize),
+        ...(text.length > pageSize ? { text_range: { start: 0, end: pageSize, total: text.length } } : {}),
+        ...(result.transcript ? { transcript: result.transcript } : {})
       }
     };
   } catch (error) {
@@ -147,7 +151,9 @@ function getResultFailureReason(
   }
 
   if (!result.text?.trim()) {
-    return "empty public source text";
+    return result.contentType && !/text\/|json|xml/i.test(result.contentType)
+      ? `unsupported public source content type: ${result.contentType}`
+      : "empty public source text";
   }
 
   return null;
@@ -156,7 +162,8 @@ function getResultFailureReason(
 function toFailure(
   candidate: PublicFetchCandidate,
   status: number | null,
-  reason: string
+  reason: string,
+  observedUrl?: string
 ): PublicSourceFailure {
   return {
     failure_id: `failure:${candidate.candidate_id}:${status ?? "error"}:${reason}`,
@@ -167,7 +174,8 @@ function toFailure(
     canonical_item_url: candidate.canonical_item_url,
     retrieval_url: canonicalizeUrl(candidate.retrieval_url),
     status,
-    reason
+    reason,
+    ...(observedUrl && isAllowedPublicHttpUrl(observedUrl) ? { observed_url: canonicalizeUrl(observedUrl) } : {})
   };
 }
 

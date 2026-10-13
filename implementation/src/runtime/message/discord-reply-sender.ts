@@ -19,9 +19,11 @@ type StreamingMessage = {
 export class DiscordReplySender {
   async sendChunksToChannel(
     channel: AnyThreadChannel,
-    content: string
+    content: string,
+    signal?: AbortSignal
   ): Promise<void> {
     for (const chunk of splitPlainTextReplies(content)) {
+      signal?.throwIfAborted();
       await channel.send({
         content: chunk,
         allowedMentions: {
@@ -31,7 +33,8 @@ export class DiscordReplySender {
     }
   }
 
-  async replyInSamePlace(item: QueuedMessage, content: string): Promise<void> {
+  async replyInSamePlace(item: QueuedMessage, content: string, signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
     const chunks = splitPlainTextReplies(content);
     const [firstChunk, ...restChunks] = chunks;
     await item.message.reply({
@@ -41,6 +44,7 @@ export class DiscordReplySender {
       }
     });
     for (const chunk of restChunks) {
+      signal?.throwIfAborted();
       await item.message.channel.send({
         content: chunk,
         allowedMentions: {
@@ -59,10 +63,12 @@ export class DiscordReplySender {
 
   async sendFollowupInSamePlace(
     item: QueuedMessage,
-    content: string
+    content: string,
+    signal?: AbortSignal
   ): Promise<void> {
     const chunks = splitPlainTextReplies(content);
     for (const chunk of chunks) {
+      signal?.throwIfAborted();
       await item.message.channel.send({
         content: chunk,
         allowedMentions: {
@@ -80,14 +86,16 @@ export class DiscordReplySender {
 
   async sendGeneratedImagesInSamePlace(
     item: QueuedMessage,
-    images: GeneratedImageArtifact[]
+    images: GeneratedImageArtifact[],
+    signal?: AbortSignal
   ): Promise<void> {
-    await this.sendGeneratedImagesToChannel(item.message.channel, images);
+    await this.sendGeneratedImagesToChannel(item.message.channel, images, signal);
   }
 
   async sendGeneratedImagesToChannel(
     channel: GuildTextBasedChannel,
-    images: GeneratedImageArtifact[]
+    images: GeneratedImageArtifact[],
+    signal?: AbortSignal
   ): Promise<void> {
     if (images.length === 0) {
       return;
@@ -99,6 +107,7 @@ export class DiscordReplySender {
           name: image.filename
         })
     );
+    signal?.throwIfAborted();
     await channel.send({
       files,
       allowedMentions: {

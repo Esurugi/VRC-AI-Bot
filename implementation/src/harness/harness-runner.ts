@@ -8,7 +8,8 @@ import {
 } from "../codex/session-policy.js";
 import type {
   CodexAppServerClient,
-  GeneratedImageArtifact
+  GeneratedImageArtifact,
+  TurnObservations
 } from "../codex/app-server-client.js";
 import type {
   ActorRole,
@@ -98,6 +99,12 @@ type ApprovedKnowledgeEvidence = {
   urls: string[];
   publicSourceFacts: PublicSourceFact[];
 };
+
+function mergeTurnEvidence(request: HarnessRequest, observations: TurnObservations): void {
+  const context = request.available_context;
+  context.public_source_facts = [...new Map([...context.public_source_facts, ...(observations.public_source_facts ?? [])].map((fact) => [fact.fact_id, fact])).values()];
+  context.public_source_failures = [...new Map([...context.public_source_failures, ...(observations.public_source_failures ?? [])].map((failure) => [failure.failure_id, failure])).values()];
+}
 
 export class HarnessRunner {
   private readonly knowledgePersistence: KnowledgePersistenceService;
@@ -353,6 +360,7 @@ export class HarnessRunner {
       }
     );
     let observations = firstTurn.observations;
+    mergeTurnEvidence(input.request, observations);
 
     if (shouldRetryKnowledgeThreadFollowUp(input.input, input.threadContext, response)) {
       const knowledgeRetryRequest = buildHarnessRequest({
@@ -412,6 +420,7 @@ export class HarnessRunner {
         }
       );
       observations = knowledgeRetryTurn.observations;
+      mergeTurnEvidence(input.request, observations);
       if (shouldRetryKnowledgeThreadFollowUp(input.input, input.threadContext, response)) {
         return {
           response: buildKnowledgeThreadFailure(input.input),
@@ -515,6 +524,7 @@ export class HarnessRunner {
             retryRequest,
             toSessionMetadata(input.session)
           );
+    mergeTurnEvidence(retryRequest, secondTurn.observations);
     const secondPass = normalizeProductResponse(
       input.input,
       input.threadContext,

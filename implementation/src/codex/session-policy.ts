@@ -20,13 +20,14 @@ export const DEFAULT_CODEX_MODEL_PROFILE = "default:gpt-5.5";
 export const DEFAULT_CODEX_MODEL = "gpt-5.5";
 export const CHAT_CONVERSATION_LOW_CODEX_MODEL_PROFILE = "chat:gpt-5.5:low";
 export const AMBIENT_ROOM_CHAT_CODEX_MODEL_PROFILE = "ambient:gpt-5.5:low";
-export const FORUM_LONGFORM_CODEX_MODEL_PROFILE = "forum:gpt-5.5:high";
-export const FORUM_LONGFORM_LOW_CODEX_MODEL_PROFILE = "forum:gpt-5.5:low";
+export const FORUM_RESEARCH_SUPERVISOR_CODEX_MODEL_PROFILE = "forum-supervisor:gpt-6-astra:low";
+export const FORUM_RESEARCH_WORKER_CODEX_MODEL_PROFILE = "forum-worker:gpt-5.6-luna:xhigh";
 export const CLEAR_EXPLANATION_CODEX_MODEL_PROFILE =
   "clear_explanation:gpt-5.5:high";
 export const CLEAR_EXPLANATION_GATE_CODEX_MODEL_PROFILE =
   "clear_explanation_gate:gpt-5.3-codex-spark:low";
 export const RUNTIME_CONTRACT_VERSION = "2026-05-21.session-policy.v3";
+const FORUM_RESEARCH_RUNTIME_CONTRACT_VERSION = "2026-09-13.forum-single.v1";
 
 export const SESSION_WORKLOAD_KIND_VALUES = [
   "conversation",
@@ -99,7 +100,9 @@ export class SessionPolicyResolver {
         actorId: null,
         sandboxMode: "read-only",
         lifecyclePolicy: "thread_lifetime",
-        modelProfile: FORUM_LONGFORM_CODEX_MODEL_PROFILE
+        modelProfile: FORUM_RESEARCH_SUPERVISOR_CODEX_MODEL_PROFILE,
+        // Refresh old orchestration instructions while retaining Discord thread history.
+        runtimeContractVersion: FORUM_RESEARCH_RUNTIME_CONTRACT_VERSION
       });
     }
 
@@ -204,7 +207,8 @@ export class SessionPolicyResolver {
         actorId: null,
         sandboxMode: "read-only",
         lifecyclePolicy: "thread_lifetime",
-        modelProfile: FORUM_LONGFORM_CODEX_MODEL_PROFILE
+        modelProfile: FORUM_RESEARCH_SUPERVISOR_CODEX_MODEL_PROFILE,
+        runtimeContractVersion: FORUM_RESEARCH_RUNTIME_CONTRACT_VERSION
       });
     }
 

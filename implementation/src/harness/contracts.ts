@@ -195,7 +195,7 @@ export type PublicSourceResource = {
 export type PublicFetchCandidate = {
   candidate_id: string;
   resource_id: string;
-  provider: "generic_web" | "x_twitter_fxtwitter" | "x_twitter_jina";
+  provider: "generic_web" | "x_twitter_fxtwitter" | "x_twitter_jina" | "youtube_transcript";
   original_url: string;
   canonical_item_url: string;
   retrieval_url: string;
@@ -214,6 +214,8 @@ export type PublicSourceFact = {
   content_type: string | null;
   title: string | null;
   text: string;
+  text_range?: { start: number; end: number; total: number };
+  transcript?: { language: string; automatic: boolean };
 };
 
 export type PublicSourceFailure = {
@@ -226,6 +228,7 @@ export type PublicSourceFailure = {
   retrieval_url: string;
   status: number | null;
   reason: string;
+  observed_url?: string;
 };
 
 const knowledgeWriteSchema = z.object({

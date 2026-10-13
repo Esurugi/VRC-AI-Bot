@@ -21,6 +21,7 @@ import { resolveScope } from "../../discord/facts.js";
 import type { AppConfig, WatchLocationConfig } from "../../domain/types.js";
 import { HarnessRunner } from "../../harness/harness-runner.js";
 import { appendRuntimeTrace } from "../../observability/runtime-trace.js";
+import { ResearchProgressDelivery } from "../forum/research-progress-delivery.js";
 import { RecentChatHistoryService } from "../chat/recent-chat-history-service.js";
 import {
   ChatEngagementPolicy,
@@ -223,7 +224,7 @@ export class MessageProcessingService {
       }
 
       try {
-        replyTarget = await this.replyDispatchService.dispatchResolvedMessage(routedItem, routed);
+        replyTarget = await this.replyDispatchService.dispatchResolvedMessage(routedItem, routed, this.workflowSwitchRerunService?.activeSignal(routedItem));
         if (this.shouldStopForWorkflowSwitchRerun(routedItem)) {
           return;
         }
@@ -297,7 +298,9 @@ export class MessageProcessingService {
       message: item.message,
       watchLocation: item.watchLocation
     });
-    return this.harnessRunner.routeMessage({
+    const callbacks = isForumResearchPlace(item.watchLocation) ? this.buildForumCallbacks(item, typingIndicator) : undefined;
+    try {
+      return await this.harnessRunner.routeMessage({
       envelope: item.envelope,
       watchLocation: item.watchLocation,
       actorRole: item.actorRole,
@@ -307,15 +310,11 @@ export class MessageProcessingService {
       chatEngagement: admission.chatEngagement,
       recentRoomEvents: roomContext.recentRoomEvents,
       forumStarterMessage: resolvedForumBootstrap.starterMessage,
-      ...(isForumResearchPlace(item.watchLocation)
-        ? {
-            forumRetryCallbacks: this.buildForumCallbacks(
-              item,
-              typingIndicator
-            )
-          }
-        : {})
-    });
+      ...(callbacks ? { forumRetryCallbacks: callbacks } : {})
+      });
+    } finally {
+      callbacks?.stopProgress();
+    }
   }
 
   private async resolveProcessingAdmission(
@@ -349,8 +348,9 @@ export class MessageProcessingService {
 
   private shouldStopForWorkflowSwitchRerun(item: QueuedMessage): boolean {
     return Boolean(
-      item.source !== "workflow_switch_rerun" &&
-        this.workflowSwitchRerunService?.isRerunRequested(item.envelope.messageId)
+      this.workflowSwitchRerunService?.activeSignal(item)?.aborted ||
+      (item.source !== "workflow_switch_rerun" &&
+        this.workflowSwitchRerunService?.isRerunRequested(item.envelope.messageId))
     );
   }
 
@@ -457,30 +457,28 @@ export class MessageProcessingService {
         }>
       | null = null;
     const sentStatuses = new Set<string>();
-    const sentProgressNotices = new Set<string>();
+    const signal = this.workflowSwitchRerunService?.activeSignal(item);
+    const progress = new ResearchProgressDelivery(async content => {
+      if (item.source !== "live" && item.source !== "workflow_switch_rerun") return;
+      signal?.throwIfAborted();
+      await typingIndicator.pulseNow("progress_notice");
+      await this.replyDispatchService.sendFollowupInSamePlace(item, content, signal);
+    }, error => this.logger.debug({ error }, "research progress delivery failed"), signal);
 
     return {
-      onProgressNotice: async (content: string) => {
-        const normalized = content.trim();
-        if (
-          item.source !== "live" ||
-          normalized.length === 0 ||
-          sentProgressNotices.has(normalized)
-        ) {
-          return;
-        }
-        sentProgressNotices.add(normalized);
-        await typingIndicator.pulseNow("progress_notice");
-        await this.replyDispatchService.sendFollowupInSamePlace(item, content);
-      },
+      ...(signal ? { signal } : {}),
+      stopProgress: progress.stop,
+      recentProgressNotices: progress.recent,
+      onProgressNotice: progress.offer,
       onRetryStatus: async (content: string) => {
+        signal?.throwIfAborted();
         const normalized = content.trim();
         if (normalized.length === 0 || sentStatuses.has(normalized)) {
           return;
         }
         sentStatuses.add(normalized);
         await typingIndicator.pulseNow("retry_status");
-        await this.replyDispatchService.sendFollowupInSamePlace(item, content);
+        await this.replyDispatchService.sendFollowupInSamePlace(item, content, signal);
       },
       onRetryStream: {
         onAgentMessageDelta: async (delta: string) => {

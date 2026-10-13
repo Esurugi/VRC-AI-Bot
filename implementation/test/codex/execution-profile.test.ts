@@ -7,7 +7,8 @@ import {
   CHAT_CONVERSATION_LOW_CODEX_MODEL_PROFILE,
   CLEAR_EXPLANATION_GATE_CODEX_MODEL_PROFILE,
   DEFAULT_CODEX_MODEL_PROFILE,
-  FORUM_LONGFORM_CODEX_MODEL_PROFILE
+  FORUM_RESEARCH_WORKER_CODEX_MODEL_PROFILE,
+  FORUM_RESEARCH_SUPERVISOR_CODEX_MODEL_PROFILE
 } from "../../src/codex/session-policy.js";
 
 test("chat and ambient profiles use gpt-5.5 with low reasoning", () => {
@@ -28,15 +29,17 @@ test("chat and ambient profiles use gpt-5.5 with low reasoning", () => {
   );
 });
 
-test("default and forum high profiles stay on gpt-5.5", () => {
+test("default and role-specific forum profiles follow their configured models", () => {
   assert.deepEqual(resolveCodexExecutionProfile(DEFAULT_CODEX_MODEL_PROFILE), {
     model: "gpt-5.5",
     reasoningEffort: null
   });
 
-  assert.deepEqual(resolveCodexExecutionProfile(FORUM_LONGFORM_CODEX_MODEL_PROFILE), {
-    model: "gpt-5.5",
-    reasoningEffort: "high"
+  assert.deepEqual(resolveCodexExecutionProfile(FORUM_RESEARCH_SUPERVISOR_CODEX_MODEL_PROFILE), {
+    model: "gpt-6-astra", reasoningEffort: "low"
+  });
+  assert.deepEqual(resolveCodexExecutionProfile(FORUM_RESEARCH_WORKER_CODEX_MODEL_PROFILE), {
+    model: "gpt-5.6-luna", reasoningEffort: "xhigh"
   });
 });
 

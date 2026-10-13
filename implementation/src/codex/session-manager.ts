@@ -298,9 +298,11 @@ export class SessionManager {
 
 function buildThreadInstructionOptions(identity: ResolvedSessionIdentity): {
   includeClearExplanationSkill: boolean;
+  forumResearchSingle: boolean;
 } {
   return {
-    includeClearExplanationSkill: identity.workloadKind === "clear_explanation"
+    includeClearExplanationSkill: identity.workloadKind === "clear_explanation" || identity.workloadKind === "forum_longform",
+    forumResearchSingle: identity.workloadKind === "forum_longform"
   };
 }
 

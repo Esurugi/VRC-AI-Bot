@@ -301,10 +301,9 @@ export function resolveAnnouncementWindow(now: Date): {
   const isMonday = parts.weekday === "Mon";
   const currentMinutes = Number(parts.hour) * 60 + Number(parts.minute);
   const announceMinutes = resolveMinutesFromTime(ANNOUNCE_TIME);
-  const eventMinutes = resolveMinutesFromTime(EVENT_TIME);
 
   return {
-    shouldSend: isMonday && currentMinutes >= announceMinutes && currentMinutes < eventMinutes,
+    shouldSend: isMonday && currentMinutes >= announceMinutes,
     occurrenceDate
   };
 }

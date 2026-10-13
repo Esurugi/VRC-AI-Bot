@@ -55,9 +55,8 @@ if ($existingContainerId) {
     exit 0
   }
 
-  & docker start $ContainerName | Out-Null
-  Write-Output "Container '$ContainerName' started."
-  exit 0
+  & docker rm $ContainerName | Out-Null
+  Write-Output "Removed stopped container '$ContainerName' so current env-file settings are applied."
 }
 
 $dockerArgs = @(

@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import type { GeneratedImageArtifact } from "../../src/codex/app-server-client.js";
 import type { MessageEnvelope, WatchLocationConfig } from "../../src/domain/types.js";
@@ -12,6 +13,7 @@ import {
 } from "../../src/runtime/message/reply-dispatch-service.js";
 import {
   FakeDiscordWorld,
+  createFakeMessage,
   type FakeDiscordChannel
 } from "../support/fake-discord-sink.js";
 
@@ -147,6 +149,36 @@ test("dispatchHarnessResponseToChannel sends long chat replies as Discord-safe c
   );
 });
 
+test("recorded RAG citations retain their source through the real Discord chunk and reference consumer", async () => {
+  const { compileForumCitations } = await import("../../src/forum-research/citations.js");
+  const recording = JSON.parse(readFileSync(new URL("../fixtures/forum-research/rag-citations.json", import.meta.url), "utf8")) as {
+    answer: string; source_catalog: Array<{ index: number; url: string; claims: string[] }>;
+  };
+  const catalog = recording.source_catalog.map(entry => ({ ...entry, source_id: `recorded-${entry.index}`, evidence_fact_ids: [`recorded-${entry.index}`] }));
+  const raw = recording.answer.replace(/\[(\d+)\]/g, "[[source:recorded-$1]]") + "\nコード例: values[2]";
+  const compiled = compileForumCitations(raw, catalog);
+  const { service, world } = createDispatchHarness();
+  const root = world.createTextChannel({ id: "forum-root" });
+  const thread = world.createThread({ id: "forum-thread", parent: root });
+  await service.dispatchHarnessResponseToChannel({
+    channel: thread as never,
+    messageContext: messageContext({ channel: thread, watchLocation: { ...chatWatchLocation(root.id), features: ["forum_research", "conversation"] } }),
+    response: harnessResponse({ outcome: "chat_reply", public_text: compiled.text, sources_used: compiled.sourcesUsed }),
+    session: harnessSession(), knowledgePersistenceScope: null
+  });
+  const messages = world.sink.events.filter(event => event.type === "send");
+  assert.ok(messages.length > 2, "the recorded answer must exercise long-answer splitting");
+  assert.ok(messages.every(event => event.channelId === thread.id && event.content.length <= 1900));
+  const displayed = messages.map(event => event.content).join("\n");
+  const references = new Map([...displayed.matchAll(/^\[(\d+)\]: (.+)$/gm)].map(match => [Number(match[1]), match[2]]));
+  const originalOrder = [...recording.answer.matchAll(/\[(\d+)\]/g)].map(match => Number(match[1]));
+  const finalOrder = [...compiled.text.slice(0, compiled.text.indexOf("コード例:")).matchAll(/\[(\d+)\]/g)].map(match => Number(match[1]));
+  assert.deepEqual(finalOrder.map(index => references.get(index)), originalOrder.map(index => recording.source_catalog.find(source => source.index === index)?.url));
+  assert.ok(displayed.includes("values[2]"), "ordinary numeric brackets are not citation markers");
+  assert.ok(!displayed.includes("[[source:"));
+  assert.throws(() => compileForumCitations("不明な根拠[[source:foreign-run]]", catalog), /citation/i);
+});
+
 test("dispatchHarnessResponseToChannel sends generated image artifacts as files", async () => {
   const { service, world } = createDispatchHarness();
   const root = world.createTextChannel({ id: "chat-root" });
@@ -214,6 +246,23 @@ test("dispatchHarnessResponseToChannel blocks admin diagnostics without admin fe
     world.sink.sentTexts().some((text) => text.includes("codex_thread_id")),
     false
   );
+});
+
+test("workflow cancellation after answer delivery withholds generated image results", async () => {
+  const { service, world } = createDispatchHarness();
+  const root = world.createTextChannel({ id: "root" });
+  const thread = world.createThread({ id: "thread", parent: root });
+  const controller = new AbortController();
+  const message = createFakeMessage({ id: "message", channel: thread, world, content: "question" });
+  const originalReply = message.reply.bind(message);
+  message.reply = async (...args: Parameters<typeof message.reply>) => {
+    const result = await originalReply(...args);
+    controller.abort(new Error("Workflow switched"));
+    return result;
+  };
+  const item = { message, ...messageContext({ channel: thread, watchLocation: chatWatchLocation("thread") }) };
+  await assert.rejects(service.dispatchHarnessResponse(item as never, harnessResponse({ outcome: "chat_reply", public_text: "answer" }), harnessSession(), null, [generatedImage({ id: "image" })], controller.signal), /Workflow switched/);
+  assert.equal(world.sink.sentFiles().length, 0);
 });
 
 function createDispatchHarness(): {

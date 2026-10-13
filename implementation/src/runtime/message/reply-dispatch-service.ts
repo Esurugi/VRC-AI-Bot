@@ -70,7 +70,8 @@ export class ReplyDispatchService {
 
   async dispatchResolvedMessage(
     item: QueuedMessage,
-    routed: RoutedHarnessMessage | null
+    routed: RoutedHarnessMessage | null,
+    signal?: AbortSignal
   ): Promise<FailureReplyTarget> {
     if (!routed) {
       return buildSamePlaceReplyTarget(item);
@@ -84,7 +85,7 @@ export class ReplyDispatchService {
       await this.sendReferenceAppendixIfNeeded(
         {
           sendFollowupInSamePlace: async (content) =>
-            this.sendFollowupInSamePlace(item, content)
+            this.sendFollowupInSamePlace(item, content, signal)
         },
         {
           envelope: item.envelope,
@@ -94,7 +95,7 @@ export class ReplyDispatchService {
         },
         routed.response
       );
-      await this.sendGeneratedImagesInSamePlace(item, routed.generatedImages);
+      await this.sendGeneratedImagesInSamePlace(item, routed.generatedImages, signal);
       return buildSamePlaceReplyTarget(item);
     }
 
@@ -103,7 +104,8 @@ export class ReplyDispatchService {
       routed.response,
       routed.session,
       routed.knowledgePersistenceScope,
-      routed.generatedImages
+      routed.generatedImages,
+      signal
     );
   }
 
@@ -112,7 +114,8 @@ export class ReplyDispatchService {
     response: HarnessResponse,
     session: HarnessResolvedSession,
     knowledgePersistenceScope: Scope | null,
-    generatedImages: GeneratedImageArtifact[] = []
+    generatedImages: GeneratedImageArtifact[] = [],
+    signal?: AbortSignal
   ): Promise<FailureReplyTarget> {
     return this.dispatchHarnessResponseWithContext(
       {
@@ -122,18 +125,18 @@ export class ReplyDispatchService {
         scope: item.scope
       },
       {
-        replyInSamePlace: async (content) => this.replyInSamePlace(item, content),
+        replyInSamePlace: async (content) => this.replyInSamePlace(item, content, signal),
         sendFollowupInSamePlace: async (content) =>
-          this.sendFollowupInSamePlace(item, content),
+          this.sendFollowupInSamePlace(item, content, signal),
         sendGeneratedImagesInSamePlace: async (images) =>
-          this.sendGeneratedImagesInSamePlace(item, images),
+          this.sendGeneratedImagesInSamePlace(item, images, signal),
         resolveSamePlaceReplyTarget: () => buildSamePlaceReplyTarget(item),
         sendToExistingThread: async (content, threadId) => {
           const channel = await this.fetchReplyChannel(threadId);
           if (!channel || !channel.isThread()) {
             throw new Error("thread no longer available");
           }
-          await this.sendChunksToChannel(channel, content);
+          await this.sendChunksToChannel(channel, content, signal);
         },
         resolveKnowledgeThread: async () => this.resolveKnowledgeThread(item)
       },
@@ -414,24 +417,26 @@ export class ReplyDispatchService {
 
   async sendChunksToChannel(
     channel: AnyThreadChannel,
-    content: string
+    content: string,
+    signal?: AbortSignal
   ): Promise<void> {
-    await this.discordReplySender.sendChunksToChannel(channel, content);
+    await this.discordReplySender.sendChunksToChannel(channel, content, signal);
   }
 
-  async replyInSamePlace(item: QueuedMessage, content: string): Promise<void> {
-    await this.discordReplySender.replyInSamePlace(item, content);
+  async replyInSamePlace(item: QueuedMessage, content: string, signal?: AbortSignal): Promise<void> {
+    await this.discordReplySender.replyInSamePlace(item, content, signal);
   }
 
-  async sendFollowupInSamePlace(item: QueuedMessage, content: string): Promise<void> {
-    await this.discordReplySender.sendFollowupInSamePlace(item, content);
+  async sendFollowupInSamePlace(item: QueuedMessage, content: string, signal?: AbortSignal): Promise<void> {
+    await this.discordReplySender.sendFollowupInSamePlace(item, content, signal);
   }
 
   async sendGeneratedImagesInSamePlace(
     item: QueuedMessage,
-    images: GeneratedImageArtifact[]
+    images: GeneratedImageArtifact[],
+    signal?: AbortSignal
   ): Promise<void> {
-    await this.discordReplySender.sendGeneratedImagesInSamePlace(item, images);
+    await this.discordReplySender.sendGeneratedImagesInSamePlace(item, images, signal);
   }
 
   async sendGeneratedImagesToChannel(

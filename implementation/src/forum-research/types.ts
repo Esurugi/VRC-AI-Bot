@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { PublicSourceFact, PublicSourceFailure } from "../harness/contracts.js";
 
 export const FORUM_RESEARCH_DISTINCT_SOURCE_TARGET = 8;
 export const FORUM_RESEARCH_MAX_WORKERS = 4;
@@ -28,6 +29,7 @@ export type ForumResearchWorkerTask = z.infer<
 
 export const forumResearchSupervisorActionSchema = z.enum([
   "launch_workers",
+  "wait_for_workers",
   "finalize"
 ]);
 
@@ -45,8 +47,14 @@ export type PromptRefinementArtifact = z.infer<
   typeof promptRefinementArtifactSchema
 >;
 
+export const forumResearchProgressSchema = z.object({
+  message: z.string().trim().min(1),
+  evidence_fact_ids: z.array(z.string().min(1))
+});
+export type ForumResearchProgress = z.infer<typeof forumResearchProgressSchema>;
+
 export const forumResearchSupervisorDecisionSchema = z.object({
-  progress_notice: z.string().min(1).nullable(),
+  progress_notice: forumResearchProgressSchema.nullable(),
   worker_tasks: z.array(forumResearchWorkerTaskSchema).max(
     FORUM_RESEARCH_MAX_WORKERS
   ),
@@ -70,7 +78,8 @@ export type ForumResearchWorkerCitation = z.infer<
 
 export const forumResearchEvidenceItemSchema = z.object({
   claim: z.string().min(1),
-  source_urls: z.array(z.string().url()).min(1).max(5)
+  source_urls: z.array(z.string().url()),
+  evidence_fact_ids: z.array(z.string().min(1)).min(1)
 });
 
 export type ForumResearchEvidenceItem = z.infer<
@@ -81,7 +90,10 @@ export const forumResearchWorkerPacketSchema = z.object({
   worker_id: z.string().min(1),
   subquestion: z.string().min(1),
   evidence_items: z.array(forumResearchEvidenceItemSchema),
-  citations: z.array(forumResearchWorkerCitationSchema)
+  citations: z.array(forumResearchWorkerCitationSchema),
+  applicability: z.array(z.string().min(1)),
+  limitations: z.array(z.string().min(1)),
+  unresolved_questions: z.array(z.string().min(1))
 });
 
 export type ForumResearchWorkerPacket = z.infer<
@@ -90,8 +102,10 @@ export type ForumResearchWorkerPacket = z.infer<
 
 export type ForumResearchSourceCatalogEntry = {
   index: number;
+  source_id: string;
   url: string;
   claims: string[];
+  evidence_fact_ids: string[];
 };
 
 export type ForumResearchBundle = {
@@ -100,6 +114,8 @@ export type ForumResearchBundle = {
   distinctSourceTarget: number;
   distinctSources: string[];
   sourceCatalog: ForumResearchSourceCatalogEntry[];
+  publicSourceFacts: PublicSourceFact[];
+  publicSourceFailures: PublicSourceFailure[];
 };
 
 export type PersistedForumResearchState = {
@@ -149,7 +165,17 @@ export const forumResearchSupervisorDecisionJsonSchema = {
   ],
   properties: {
     progress_notice: {
-      type: ["string", "null"]
+      anyOf: [
+        { type: "null" },
+        {
+          type: "object", additionalProperties: false,
+          required: ["message", "evidence_fact_ids"],
+          properties: {
+            message: { type: "string" },
+            evidence_fact_ids: { type: "array", items: { type: "string" } }
+          }
+        }
+      ]
     },
     worker_tasks: {
       type: "array",
@@ -200,7 +226,7 @@ export const forumResearchSupervisorDecisionJsonSchema = {
     },
     next_action: {
       type: "string",
-      enum: ["launch_workers", "finalize"]
+      enum: ["launch_workers", "wait_for_workers", "finalize"]
     },
     final_brief: {
       type: ["string", "null"]
@@ -211,7 +237,7 @@ export const forumResearchSupervisorDecisionJsonSchema = {
 export const forumResearchWorkerPacketJsonSchema = {
   type: "object",
   additionalProperties: false,
-  required: ["worker_id", "subquestion", "evidence_items", "citations"],
+  required: ["worker_id", "subquestion", "evidence_items", "citations", "applicability", "limitations", "unresolved_questions"],
   properties: {
     worker_id: { type: "string" },
     subquestion: { type: "string" },
@@ -220,16 +246,17 @@ export const forumResearchWorkerPacketJsonSchema = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["claim", "source_urls"],
+        required: ["claim", "source_urls", "evidence_fact_ids"],
         properties: {
           claim: { type: "string" },
           source_urls: {
             type: "array",
-            minItems: 1,
-            maxItems: 5,
             items: {
               type: "string"
             }
+          },
+          evidence_fact_ids: {
+            type: "array", minItems: 1, items: { type: "string" }
           }
         }
       }
@@ -245,6 +272,9 @@ export const forumResearchWorkerPacketJsonSchema = {
           claim: { type: "string" }
         }
       }
-    }
+    },
+    applicability: { type: "array", items: { type: "string" } },
+    limitations: { type: "array", items: { type: "string" } },
+    unresolved_questions: { type: "array", items: { type: "string" } }
   }
 } as const;
